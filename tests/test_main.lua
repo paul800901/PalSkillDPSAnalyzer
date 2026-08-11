@@ -446,6 +446,8 @@ assert(runtime_config.SkillDiagnosticsOnly == true, "diagnostic-only output shou
 assert(runtime_config.IncludePlayerDamage == false, "player damage should default to disabled")
 assert(runtime_config.SkillDiagnosticChatMode == "off", "diagnostic chat should default to disabled")
 assert(runtime_config.EnableSkillDPSHUD == true, "skill DPS HUD should default to enabled")
+assert(runtime_config.EnableExternalHUD == true, "external HUD should default to enabled")
+assert(runtime_config.ExternalHUDAutoLaunch == true, "external HUD should auto-launch by default")
 assert(runtime_config.HUDDetailMode == "full", "HUD should default to full timing details")
 assert(runtime_config.HUDShowInternalSkillCode == false,
     "internal skill code should default to hidden")
@@ -464,6 +466,8 @@ do
     runtime_config.Language = "zh-TW"
     assert(runtime_config.HUDUseExperimentalUMG == false,
         "unsafe dynamic UMG backend must be disabled by default")
+    assert(runtime_config.HUDUseScreenTextFallback == false,
+        "unsafe PrintString backend must be disabled by default")
     local snapshot = {
         state = "active",
         boss = "測試 Boss",
@@ -509,8 +513,12 @@ do
     BossDPSBroadcastTestApi.skill_hud:render_text(hud_header, hud_summary, hud_body, hud_footer)
     phase = previous_phase
     BossDPSBroadcastTestApi.skill_hud.create_widget = original_create_widget
-    assert(BossDPSBroadcastTestApi.skill_hud.backend == "screen-text",
-        "safe screen-text backend was not selected")
+    assert(BossDPSBroadcastTestApi.skill_hud.backend == "external-file",
+        "external file-backed HUD was not selected")
+    assert(BossDPSBroadcastTestApi.skill_hud.last_external_state.visible == true,
+        "external HUD state should be visible after rendering")
+    assert(string.find(BossDPSBroadcastTestApi.skill_hud.last_external_state.text,
+        "切割龍息", 1, true) ~= nil, "external HUD state did not receive localized text")
     assert(string.find(hud_header, "帕魯技能 DPS", 1, true) ~= nil, "HUD title missing")
     assert(string.find(hud_summary, "總傷害 2,000", 1, true) ~= nil, "HUD encounter summary missing")
     assert(string.find(hud_body, "切割龍息", 1, true) ~= nil,
@@ -1467,4 +1475,4 @@ assert(#delivered_by_uid[test_guid_key(uid_spectator)] == 0, "spectator received
 
 assert(#BossDPSBroadcastTestApi.sessions == 0, "sessions table must be map-like")
 assert(original_os_time ~= nil)
-print("PalSkillDPSAnalyzer v0.4.1 safe-overlay/multilingual/diagnostic/source/thread/lifetime/stress tests passed")
+print("PalSkillDPSAnalyzer v0.4.2 external-hud/multilingual/diagnostic/source/thread/lifetime/stress tests passed")

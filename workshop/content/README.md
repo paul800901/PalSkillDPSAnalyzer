@@ -24,7 +24,7 @@ config.IncludePlayerDamage = true
 Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\config.lua
 ```
 
-這是 v0.4.1 安全多語言顯示版。F1 可選跟隨遊戲或 17 種指定語言，設定、DPS 欄位與技能名稱會同步切換；也可選擇顯示內部英文代碼。因目前 Palworld／UE4SS 的動態 UMG Widget 會造成 GameThread 崩潰，本版改用具固定識別鍵的安全螢幕文字層，仍不使用聊天框。同一技能不同次施放會合併，同時保留逐次動作計時。只需要 UE4SS Experimental；PalSchema 不是必要依賴。
+這是 v0.4.2 外部透明 HUD 版。F1 可選跟隨遊戲或 17 種指定語言，設定、DPS 欄位與技能名稱會同步切換；也可選擇顯示內部英文代碼。實機確認目前 UE4SS 的 Lua 動態 UMG 與 `PrintString` 都可能造成 GameThread 崩潰，因此本版只由 Lua 寫入本機狀態檔，再交給隨附的 Windows WPF 透明面板顯示，不再呼叫 Unreal UI，也不使用聊天框。同一技能不同次施放會合併，同時保留逐次動作計時。只需要 UE4SS Experimental；PalSchema 不是必要依賴。
 
 專案：https://github.com/paul800901/PalSkillDPSAnalyzer
 

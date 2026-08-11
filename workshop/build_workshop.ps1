@@ -15,6 +15,7 @@ Copy-Item -LiteralPath (Join-Path $projectDirectory "Scripts\commentary.lua") -D
 Copy-Item -LiteralPath (Join-Path $projectDirectory "Scripts\localization.lua") -Destination (Join-Path $contentScripts "localization.lua") -Force
 Copy-Item -LiteralPath (Join-Path $projectDirectory "Scripts\hud_strings.lua") -Destination (Join-Path $contentScripts "hud_strings.lua") -Force
 Copy-Item -LiteralPath (Join-Path $projectDirectory "Scripts\skill_names.lua") -Destination (Join-Path $contentScripts "skill_names.lua") -Force
+Copy-Item -LiteralPath (Join-Path $projectDirectory "Scripts\skill_dps_overlay.ps1") -Destination (Join-Path $contentScripts "skill_dps_overlay.ps1") -Force
 Copy-Item -Path (Join-Path $projectDirectory "Scripts\locales\*.lua") -Destination $contentLocales -Force
 Copy-Item -LiteralPath (Join-Path $workshopDirectory "assets\thumbnail-pal-skill-dps-v1.png") -Destination (Join-Path $contentDirectory "thumbnail.png") -Force
 
@@ -26,7 +27,7 @@ $expectedWorkshopTitle = -join @(
 )
 if ($info.ModName -ne $expectedWorkshopTitle) { throw "Unexpected Workshop ModName" }
 if ($info.PackageName -ne "PalSkillDPSAnalyzerSP") { throw "Unexpected Workshop PackageName" }
-if ($info.Version -ne "0.4.1") { throw "Unexpected Workshop version" }
+if ($info.Version -ne "0.4.2") { throw "Unexpected Workshop version" }
 if ($info.Dependencies -notcontains "UE4SSExperimentalPW") { throw "UE4SS dependency missing" }
 if ($info.InstallRule.Count -ne 1 -or $info.InstallRule[0].Type -ne "Lua") { throw "Lua InstallRule missing" }
 
@@ -39,7 +40,10 @@ foreach ($requiredSetting in @(
     "config.IncludePlayerDamage = false",
     'config.SkillDiagnosticChatMode = "off"',
     "config.EnableSkillDPSHUD = true",
+    "config.EnableExternalHUD = true",
+    "config.ExternalHUDAutoLaunch = true",
     "config.HUDUseExperimentalUMG = false",
+    "config.HUDUseScreenTextFallback = false",
     "config.HUDShowInternalSkillCode = false",
     "config.PreferNativeCollector = false"
 )) {
@@ -64,13 +68,21 @@ if ($LASTEXITCODE -ne 0) { throw "Workshop localization.lua parse failed" }
 if ($LASTEXITCODE -ne 0) { throw "Workshop hud_strings.lua parse failed" }
 & npx --yes --package=luaparse luaparse --quiet --file (Join-Path $contentScripts "skill_names.lua")
 if ($LASTEXITCODE -ne 0) { throw "Workshop skill_names.lua parse failed" }
+$overlayTokens = $null
+$overlayErrors = $null
+[void][System.Management.Automation.Language.Parser]::ParseFile(
+    (Join-Path $contentScripts "skill_dps_overlay.ps1"),
+    [ref]$overlayTokens,
+    [ref]$overlayErrors
+)
+if ($overlayErrors.Count -gt 0) { throw "Workshop external HUD PowerShell parse failed" }
 foreach ($localePath in Get-ChildItem -LiteralPath $contentLocales -Filter "*.lua" -File) {
     & npx --yes --package=luaparse luaparse --quiet --file $localePath.FullName
     if ($LASTEXITCODE -ne 0) { throw "Workshop locale parse failed: $($localePath.Name)" }
 }
 
 New-Item -ItemType Directory -Path $distDirectory -Force | Out-Null
-$zipPath = Join-Path $distDirectory "PalSkillDPSAnalyzerSP-Workshop-v0.4.1.zip"
+$zipPath = Join-Path $distDirectory "PalSkillDPSAnalyzerSP-Workshop-v0.4.2.zip"
 Compress-Archive -Path (Join-Path $contentDirectory "*") -DestinationPath $zipPath -CompressionLevel Optimal -Force
 
 Write-Host "Workshop package ready: $zipPath"

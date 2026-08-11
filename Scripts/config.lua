@@ -58,11 +58,16 @@ config.HUDAnchor = "top-right"
 config.HUDScale = 1.0
 config.HUDMaxSkillRows = 6
 config.HUDKeepFinalResults = true
--- Dynamic UMG object construction is disabled: current Palworld/UE4SS builds
--- can crash the GameThread after the widget is created. The keyed screen-text
--- backend remains a dedicated non-chat overlay and is the safe default.
+-- Current Palworld/UE4SS builds crash when a Lua-only mod constructs UMG or
+-- calls PrintString from the live damage path. The shipped HUD is therefore a
+-- separate transparent Windows overlay fed by a local state file. It never
+-- calls Unreal UI APIs and remains hidden while Palworld is not foreground.
+config.EnableExternalHUD = true
+config.ExternalHUDAutoLaunch = true
+-- Retained as explicit compatibility guards for older user settings. Neither
+-- unsafe backend is called by v0.4.2, even if an old settings file says true.
 config.HUDUseExperimentalUMG = false
-config.HUDUseScreenTextFallback = true
+config.HUDUseScreenTextFallback = false
 -- The chat shows aggregate timing for every displayed skill. UE4SS.log can
 -- additionally keep one row per observed cast for later comparison.
 config.SkillDiagnosticLogCasts = true

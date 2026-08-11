@@ -12,6 +12,7 @@ This is not a player ranking meter. Each Pal is an independent test source. Dama
 [*]Panel cooldown compared with observed cast-start intervals affected by combat AI, movement, and skill selection
 [*]Damage per cast, full action duration, cast DPS, reuse gap, and timing coverage shown at completion
 [*]Dedicated top-right skill-DPS HUD updates live, stays after combat, and replaces chat output by default
+[*]Crash-isolated display: Lua writes a local UTF-8 state file and a bundled transparent Windows overlay renders it without Unreal UMG or PrintString
 [*]F1 changes player damage, full/compact detail, position, scale, post-fight retention, and chat mode
 [*]Official localized names are shown alone by default; internal skill codes are optional in F1
 [*]Bounded per-hit and per-cast evidence in UE4SS.log
@@ -33,7 +34,7 @@ Enable player damage in the F1 panel and use one weapon for the entire fight. If
 [h2]Scope[/h2]
 [list]
 [*][b]Target:[/b] Windows single-player worlds
-[*][b]Current status:[/b] v0.4.1 safe overlay with 17 selectable languages, synchronized skill names, optional internal codes, panel/observed cooldown comparison, and full-action DPS
+[*][b]Current status:[/b] v0.4.2 external transparent HUD with 17 selectable languages, synchronized skill names, optional internal codes, panel/observed cooldown comparison, and full-action DPS
 [*][b]Required dependency:[/b] UE4SS Experimental; PalSchema is not required
 [*][b]Not a goal:[/b] comparing players or producing a competitive DPS leaderboard
 [/list]

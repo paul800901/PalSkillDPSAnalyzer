@@ -9,6 +9,7 @@ $commentaryScript = Join-Path $projectDirectory "Scripts\commentary.lua"
 $localizationScript = Join-Path $projectDirectory "Scripts\localization.lua"
 $hudStringsScript = Join-Path $projectDirectory "Scripts\hud_strings.lua"
 $skillNamesScript = Join-Path $projectDirectory "Scripts\skill_names.lua"
+$overlayScript = Join-Path $projectDirectory "Scripts\skill_dps_overlay.ps1"
 $localeDirectory = Join-Path $projectDirectory "Scripts\locales"
 $workshopDirectory = Join-Path $projectDirectory "workshop\content"
 $workshopScripts = Join-Path $workshopDirectory "Scripts"
@@ -47,6 +48,12 @@ if ($LASTEXITCODE -eq 0) {
     $matches | Write-Host
     throw "forbidden API found in main.lua"
 }
+$forbiddenHud = "StaticConstructObject|WidgetBlueprintLibrary|PrintString|AddToViewport"
+$hudMatches = & rg -n $forbiddenHud $hudScript
+if ($LASTEXITCODE -eq 0) {
+    $hudMatches | Write-Host
+    throw "forbidden Unreal UI API found in hud.lua"
+}
 
 Write-Host "[3/5] Validating strict UTF-8"
 $utf8 = [System.Text.UTF8Encoding]::new($false, $true)
@@ -58,6 +65,7 @@ foreach ($file in @(
     $localizationScript,
     $hudStringsScript,
     $skillNamesScript,
+    $overlayScript,
     (Join-Path $testDirectory "test_main.lua"),
     (Join-Path $testDirectory "test_localization.lua"),
     (Join-Path $workshopDirectory "Info.json"),
@@ -72,6 +80,7 @@ foreach ($file in @(
     (Join-Path $workshopScripts "localization.lua"),
     (Join-Path $workshopScripts "hud_strings.lua"),
     (Join-Path $workshopScripts "skill_names.lua")
+    ,(Join-Path $workshopScripts "skill_dps_overlay.ps1")
 )) {
     [void]$utf8.GetString([System.IO.File]::ReadAllBytes($file))
 }
@@ -93,7 +102,7 @@ $expectedWorkshopTitle = -join @(
 )
 if ($workshopInfo.ModName -ne $expectedWorkshopTitle) { throw "unexpected Workshop ModName" }
 if ($workshopInfo.PackageName -ne "PalSkillDPSAnalyzerSP") { throw "unexpected Workshop PackageName" }
-if ($workshopInfo.Version -ne "0.4.1") { throw "unexpected Workshop version" }
+if ($workshopInfo.Version -ne "0.4.2") { throw "unexpected Workshop version" }
 if ($workshopInfo.Dependencies -notcontains "UE4SSExperimentalPW") { throw "Workshop UE4SS dependency missing" }
 if ($workshopInfo.InstallRule.Count -ne 1 -or $workshopInfo.InstallRule[0].Type -ne "Lua") {
     throw "Workshop Lua InstallRule missing"
@@ -103,6 +112,9 @@ foreach ($sharedName in @("main.lua", "hud.lua", "commentary.lua", "localization
     $workshopHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $workshopScripts $sharedName)).Hash
     if ($sharedHash -ne $workshopHash) { throw "Workshop $sharedName is not synchronized with shared core" }
 }
+$sharedOverlayHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $overlayScript).Hash
+$workshopOverlayHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $workshopScripts "skill_dps_overlay.ps1")).Hash
+if ($sharedOverlayHash -ne $workshopOverlayHash) { throw "Workshop external HUD script is not synchronized" }
 $sharedLocales = Get-ChildItem -LiteralPath $localeDirectory -Filter "*.lua" -File
 if ($sharedLocales.Count -ne 17) { throw "expected exactly 17 shared locales" }
 foreach ($localePath in $sharedLocales) {
@@ -124,7 +136,10 @@ foreach ($requiredSetting in @(
     "config.IncludePlayerDamage = false",
     'config.SkillDiagnosticChatMode = "off"',
     "config.EnableSkillDPSHUD = true",
+    "config.EnableExternalHUD = true",
+    "config.ExternalHUDAutoLaunch = true",
     "config.HUDUseExperimentalUMG = false",
+    "config.HUDUseScreenTextFallback = false",
     "config.HUDShowInternalSkillCode = false",
     "config.PreferNativeCollector = false"
 )) {
@@ -165,6 +180,14 @@ if ($LASTEXITCODE -ne 0) { throw "Workshop localization.lua parse failed" }
 if ($LASTEXITCODE -ne 0) { throw "Workshop hud_strings.lua parse failed" }
 & npx --yes --package=luaparse luaparse --quiet --file (Join-Path $workshopScripts "skill_names.lua")
 if ($LASTEXITCODE -ne 0) { throw "Workshop skill_names.lua parse failed" }
+$overlayTokens = $null
+$overlayErrors = $null
+[void][System.Management.Automation.Language.Parser]::ParseFile(
+    (Join-Path $workshopScripts "skill_dps_overlay.ps1"),
+    [ref]$overlayTokens,
+    [ref]$overlayErrors
+)
+if ($overlayErrors.Count -gt 0) { throw "Workshop external HUD PowerShell parse failed" }
 
 Write-Host "[5/5] Running integration, thread-affinity, lifetime, and stress tests"
 Push-Location $testDirectory
@@ -172,7 +195,7 @@ try {
     $testOutput = & npx --yes --package=fengari-node-cli fengari test_main.lua 2>&1
     $testExitCode = $LASTEXITCODE
     $testOutput | Write-Host
-    if ($testExitCode -ne 0 -or -not ($testOutput -match "v0\.4\.1 safe-overlay/multilingual/diagnostic/source/thread/lifetime/stress tests passed")) {
+    if ($testExitCode -ne 0 -or -not ($testOutput -match "v0\.4\.2 external-hud/multilingual/diagnostic/source/thread/lifetime/stress tests passed")) {
         throw "Lua integration test failed or did not reach its completion marker"
     }
     $localeOutput = & npx --yes --package=fengari-node-cli fengari test_localization.lua 2>&1

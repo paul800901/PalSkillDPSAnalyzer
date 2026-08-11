@@ -1,27 +1,8 @@
 local hud = {}
-local unpack_args = table.unpack or unpack
 
 local SETTINGS_FILE = "user_settings.lua"
-
-local function safe_call(object, method_name, ...)
-    if object == nil then
-        return false, nil
-    end
-    local args = { ... }
-    local ok, result = pcall(function()
-        local method = object[method_name]
-        if method == nil then
-            return nil
-        end
-        return method(object, unpack_args(args))
-    end)
-    return ok, result
-end
-
-local function is_valid(object)
-    local ok, result = safe_call(object, "IsValid")
-    return ok and result == true
-end
+local STATE_FILE = "skill_dps_hud_state.txt"
+local OVERLAY_SCRIPT = "skill_dps_overlay.ps1"
 
 local function module_directory()
     local source = debug.getinfo(1, "S").source or ""
@@ -51,29 +32,6 @@ local function integer(value)
     return formatted
 end
 
-local function ftext(value)
-    if type(FText) == "function" then
-        return FText(tostring(value or ""))
-    end
-    return tostring(value or "")
-end
-
-local function static_object(path)
-    if type(StaticFindObject) ~= "function" then
-        return nil
-    end
-    local ok, value = pcall(StaticFindObject, path)
-    return ok and value or nil
-end
-
-local function construct(class, outer)
-    if class == nil or type(StaticConstructObject) ~= "function" then
-        return nil
-    end
-    local ok, value = pcall(StaticConstructObject, class, outer)
-    return ok and value or nil
-end
-
 local function write_setting(file, key, value)
     if type(value) == "string" then
         file:write("    ", key, " = ", string.format("%q", value), ",\n")
@@ -95,19 +53,17 @@ function hud.new(options)
         get_skill_name = options.get_skill_name,
         on_reset = options.on_reset,
         settings_path = module_directory() .. SETTINGS_FILE,
+        state_path = module_directory() .. STATE_FILE,
+        overlay_script_path = module_directory() .. OVERLAY_SCRIPT,
         settings_open = false,
         selected_setting = 1,
-        widget = nil,
-        panel_slot = nil,
-        header_text = nil,
-        summary_text = nil,
-        body_text = nil,
-        footer_text = nil,
         backend = "pending",
         key_label = "F1",
         latest_snapshot = nil,
         last_rendered_text = nil,
         logged_create_failure = false,
+        overlay_launch_attempted = false,
+        state_sequence = 0,
     }
 
     self.setting_keys = {
@@ -172,6 +128,89 @@ function hud.new(options)
         return true
     end
 
+    function self:write_external_state(text, visible)
+        self.state_sequence = self.state_sequence + 1
+        if rawget(_G, "__BOSS_DPS_TEST") == true then
+            self.last_external_state = {
+                text = tostring(text or ""),
+                visible = visible == true,
+                sequence = self.state_sequence,
+            }
+            return true
+        end
+        local temporary_path = self.state_path .. ".tmp"
+        local file, open_error = io.open(temporary_path, "wb")
+        if file == nil then
+            self.log("external HUD state write failed: " .. tostring(open_error))
+            return false
+        end
+        file:write("PAL_SKILL_DPS_HUD_V1\n")
+        file:write("sequence=", tostring(self.state_sequence), "\n")
+        file:write("visible=", visible == true and "1" or "0", "\n")
+        file:write("anchor=", tostring(self.config.HUDAnchor or "top-right"), "\n")
+        file:write("scale=", tostring(tonumber(self.config.HUDScale) or 1.0), "\n")
+        file:write("settings=", self.settings_open and "1" or "0", "\n")
+        file:write("---\n")
+        file:write(tostring(text or ""))
+        file:write("\n")
+        file:close()
+
+        os.remove(self.state_path)
+        local renamed, rename_error = os.rename(temporary_path, self.state_path)
+        if not renamed then
+            self.log("external HUD state replace failed: " .. tostring(rename_error))
+            return false
+        end
+        return true
+    end
+
+    function self:start_external_overlay()
+        if self.overlay_launch_attempted then
+            return self.backend == "external-file"
+        end
+        self.overlay_launch_attempted = true
+        self.backend = "external-file"
+        if self.config.ExternalHUDAutoLaunch ~= true then
+            self.log("HUD backend=external-file; automatic overlay launch disabled")
+            return true
+        end
+        if rawget(_G, "__BOSS_DPS_TEST") == true then
+            return true
+        end
+        local probe = io.open(self.overlay_script_path, "rb")
+        if probe == nil then
+            self.log("external HUD script missing: " .. self.overlay_script_path)
+            return false
+        end
+        probe:close()
+
+        local system_root = os.getenv("SystemRoot") or "C:\\Windows"
+        local powershell = system_root .. "\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+        local command = string.format(
+            'cmd.exe /d /c start "" /b "%s" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -STA -File "%s" -StatePath "%s"',
+            powershell,
+            self.overlay_script_path,
+            self.state_path
+        )
+        local launched, launch_kind, launch_code = os.execute(command)
+        if launched == nil or launched == false then
+            self.log("external HUD launch failed: " .. tostring(launch_kind or launch_code))
+            return false
+        end
+        self.log("HUD backend=external-file; all Unreal UI calls disabled")
+        return true
+    end
+
+    function self:initialize_external()
+        if self.config.EnableExternalHUD ~= true then
+            self.backend = "file-only"
+            self.log("HUD backend=file-only; external overlay disabled")
+            return false
+        end
+        self:start_external_overlay()
+        return self:write_external_state("", false)
+    end
+
     function self:language_code()
         if self.get_language ~= nil then
             local ok, value = pcall(self.get_language)
@@ -219,175 +258,21 @@ function hud.new(options)
     end
 
     function self:apply_layout()
-        if not is_valid(self.panel_slot) then
-            return
-        end
-        local scale = tonumber(self.config.HUDScale) or 1.0
-        scale = math.max(0.7, math.min(1.4, scale))
-        local right = self.config.HUDAnchor ~= "top-left"
-        safe_call(self.panel_slot, "SetAnchors", {
-            Minimum = { X = right and 1 or 0, Y = 0 },
-            Maximum = { X = right and 1 or 0, Y = 0 },
-        })
-        safe_call(self.panel_slot, "SetAlignment", { X = right and 1 or 0, Y = 0 })
-        safe_call(self.panel_slot, "SetPosition", { X = right and -28 or 28, Y = 82 })
-        safe_call(self.panel_slot, "SetSize", { X = 620 * scale, Y = 720 * scale })
-    end
-
-    function self:create_text_block(tree, parent, size, color)
-        local text_class = static_object("/Script/UMG.TextBlock")
-        local block = construct(text_class, tree)
-        if not is_valid(block) then
-            return nil
-        end
-        local added = select(2, safe_call(parent, "AddChild", block))
-        if added == nil then
-            return nil
-        end
-        safe_call(block, "SetColorAndOpacity", {
-            SpecifiedColor = color,
-            ColorUseRule = 0,
-        })
-        safe_call(block, "SetShadowOffset", { X = 1, Y = 1 })
-        safe_call(block, "SetShadowColorAndOpacity", { R = 0, G = 0, B = 0, A = 0.8 })
-        safe_call(block, "SetAutoWrapText", false)
-        local font_ok, font = pcall(function() return block.Font end)
-        if font_ok and font ~= nil then
-            pcall(function() font.Size = size end)
-            pcall(function() block.Font = font end)
-        end
-        return block
-    end
-
-    function self:create_widget()
-        if is_valid(self.widget) then
-            return true
-        end
-        local controller = self.get_player_controller and self.get_player_controller() or nil
-        if not is_valid(controller) then
-            return false
-        end
-
-        local library = static_object("/Script/UMG.Default__WidgetBlueprintLibrary")
-        local widget_class = static_object("/Script/Pal.PalDamageDisplayCanvas")
-            or static_object("/Script/UMG.UserWidget")
-        local tree_class = static_object("/Script/UMG.WidgetTree")
-        local canvas_class = static_object("/Script/UMG.CanvasPanel")
-        local border_class = static_object("/Script/UMG.Border")
-        local vertical_class = static_object("/Script/UMG.VerticalBox")
-        if library == nil or widget_class == nil or tree_class == nil
-            or canvas_class == nil or border_class == nil or vertical_class == nil then
-            return false
-        end
-
-        local create_ok, widget = safe_call(library, "Create", controller, widget_class, controller)
-        if not create_ok or not is_valid(widget) then
-            return false
-        end
-        local tree = construct(tree_class, widget)
-        local canvas = construct(canvas_class, tree)
-        local border = construct(border_class, tree)
-        local vertical = construct(vertical_class, tree)
-        if not is_valid(tree) or not is_valid(canvas) or not is_valid(border)
-            or not is_valid(vertical) then
-            safe_call(widget, "RemoveFromParent")
-            return false
-        end
-
-        local assigned = pcall(function()
-            widget.WidgetTree = tree
-            tree.RootWidget = canvas
-        end)
-        if not assigned then
-            safe_call(widget, "RemoveFromParent")
-            return false
-        end
-        local slot_ok, panel_slot = safe_call(canvas, "AddChild", border)
-        if not slot_ok or not is_valid(panel_slot) then
-            safe_call(widget, "RemoveFromParent")
-            return false
-        end
-        safe_call(border, "SetContent", vertical)
-        safe_call(border, "SetPadding", { Left = 16, Top = 12, Right = 16, Bottom = 12 })
-        safe_call(border, "SetBrushColor", { R = 0.018, G = 0.055, B = 0.075, A = 0.92 })
-        safe_call(border, "SetHorizontalAlignment", 0)
-        safe_call(border, "SetVerticalAlignment", 0)
-
-        local header = self:create_text_block(tree, vertical, 21, { R = 0.35, G = 0.92, B = 1, A = 1 })
-        local summary = self:create_text_block(tree, vertical, 16, { R = 0.93, G = 0.96, B = 1, A = 1 })
-        local body = self:create_text_block(tree, vertical, 15, { R = 0.88, G = 0.92, B = 0.95, A = 1 })
-        local footer = self:create_text_block(tree, vertical, 13, { R = 0.52, G = 0.72, B = 0.78, A = 1 })
-        if not is_valid(header) or not is_valid(summary) or not is_valid(body) or not is_valid(footer) then
-            safe_call(widget, "RemoveFromParent")
-            return false
-        end
-        safe_call(widget, "AddToViewport", 950)
-        safe_call(widget, "SetVisibility", 3)
-
-        self.widget = widget
-        self.panel_slot = panel_slot
-        self.header_text = header
-        self.summary_text = summary
-        self.body_text = body
-        self.footer_text = footer
-        self.backend = "umg"
-        self:apply_layout()
-        self.log("HUD backend=umg hotkey=" .. self.key_label)
-        return true
+        -- The external overlay reads anchor and scale from every state update.
     end
 
     function self:render_text(header, summary, body, footer)
         local combined = table.concat({ header, summary, body, footer }, "\n")
-        if self.last_rendered_text == combined and self.backend == "umg" then
+        if self.last_rendered_text == combined and self.backend == "external-file" then
             return
         end
         self.last_rendered_text = combined
-
-        local experimental_umg = self.config.HUDUseExperimentalUMG == true
-        if experimental_umg and self:create_widget() then
-            safe_call(self.widget, "SetVisibility", 3)
-            safe_call(self.header_text, "SetText", ftext(header))
-            safe_call(self.summary_text, "SetText", ftext(summary))
-            safe_call(self.body_text, "SetText", ftext(body))
-            safe_call(self.footer_text, "SetText", ftext(footer))
-            return
-        end
-
-        if not self.logged_create_failure then
-            self.logged_create_failure = true
-            if experimental_umg then
-                self.log("HUD UMG creation unavailable; using safe screen-text backend")
-            else
-                self.log("HUD backend=safe-screen-text; experimental UMG disabled")
-            end
-        end
-        self.backend = "screen-text"
-        if self.config.HUDUseScreenTextFallback == false then
-            return
-        end
-        local library = static_object("/Script/Engine.Default__KismetSystemLibrary")
-        local world = self.get_world_context and self.get_world_context() or nil
-        if library == nil or not is_valid(world) then
-            return
-        end
-        local key = type(FName) == "function" and FName("PalSkillDPSHUD") or "PalSkillDPSHUD"
-        safe_call(
-            library,
-            "PrintString",
-            world,
-            combined,
-            true,
-            false,
-            { R = 0.35, G = 0.92, B = 1, A = 1 },
-            math.max(0.6, (tonumber(self.config.HUDRefreshMilliseconds) or 500) / 1000 + 0.15),
-            key
-        )
+        self.backend = self.config.EnableExternalHUD == true and "external-file" or "file-only"
+        self:write_external_state(combined, true)
     end
 
     function self:hide()
-        if is_valid(self.widget) then
-            safe_call(self.widget, "SetVisibility", 1)
-        end
+        self:write_external_state("", false)
         self.last_rendered_text = nil
     end
 

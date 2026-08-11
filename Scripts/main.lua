@@ -3677,7 +3677,7 @@ local function register_hooks()
 
     if hooks.damage and hooks.death then
         log(string.format(
-            "loaded v0.4.1-safe-overlay; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s chat_mode=%s waza_hook=%s action_hooks=%s/%s local_only=%s; captured_hooks=%d",
+            "loaded v0.4.2-external-hud; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s chat_mode=%s waza_hook=%s action_hooks=%s/%s local_only=%s; captured_hooks=%d",
             hooks.damage_mode,
             tostring(config.EnableDPSRecording ~= false),
             tostring(config.EnableSkillDiagnostics == true),
@@ -3707,6 +3707,7 @@ skill_hud = hud_module.new({
     get_skill_name = skill_display_name,
     on_reset = reset_skill_diagnostics,
 })
+skill_hud:initialize_external()
 skill_hud:register_keybinds()
 
 register_hooks()

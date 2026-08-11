@@ -1,5 +1,12 @@
 # 更新日志
 
+## 0.4.2-external-hud — 隔離所有 Unreal 畫面呼叫
+
+- 實機確認 `PrintString` 也會在首次傷害後造成 UE4SS GameThread 存取違規，因此從即時傷害路徑完全移除動態 UMG 與 `PrintString`。
+- 新增獨立透明置頂 HUD：Lua 只寫入 UTF-8 狀態檔，由隨附的 Windows WPF 顯示程序呈現，不呼叫任何 Unreal UI API。
+- 保留 F1、方向鍵、多語言、人物傷害、資料密度、位置、縮放與戰後保留設定；Palworld 不在前景時面板自動隱藏，遊戲結束後程序自動退出。
+- 新增外部 HUD PowerShell 語法、啟動／結束、Workshop 同步與禁用兩條崩潰路徑的回歸驗證。
+
 ## 0.4.1-safe-overlay — 修正首次傷害後崩潰
 
 - 根據實機 CrashContext 與 UE4SS.log，停用會在 GameThread 造成存取違規的動態 UMG Widget 建立流程。

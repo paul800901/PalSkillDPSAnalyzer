@@ -1,4 +1,4 @@
-# PalSkillDPSAnalyzer v0.4.1-safe-overlay
+# PalSkillDPSAnalyzer v0.4.2-external-hud
 
 Palworld 1.0 單機用 UE4SS Lua 傷害驗證 Mod。它不是玩家排行榜，目標是把一場 Boss 測試中的每隻帕魯視為獨立來源，依可讀到的技能、投射物或攻擊欄位分桶，輸出總傷害、整場 DPS、占比、命中、每次施放傷害、完整動作時間、單次施放 DPS、實際施放間隔與 AI／再用空窗。
 
@@ -6,7 +6,9 @@ Palworld 1.0 單機用 UE4SS Lua 傷害驗證 Mod。它不是玩家排行榜，�
 
 ## 獨立技能 DPS 面板
 
-第一次打中 Boss 後，畫面會開啟具固定識別鍵的專用螢幕文字層；聊天輸出預設關閉。每個技能會顯示總傷害、整場 DPS、命中、施放次數、每次傷害、完整動作時間、單次施放 DPS、面板 CD、實際開始間隔及 AI／再用空窗。技能預設只顯示本地化名稱，內部英文代碼保留在紀錄並可由 F1 選擇顯示。動態建立 UMG Widget 在目前 Palworld／UE4SS 實機會造成 GameThread 存取違規，因此 v0.4.1 預設停用。
+第一次打中 Boss 後，畫面右上會開啟專用透明置頂 HUD；聊天輸出預設關閉。每個技能會顯示總傷害、整場 DPS、命中、施放次數、每次傷害、完整動作時間、單次施放 DPS、面板 CD、實際開始間隔及 AI／再用空窗。技能預設只顯示本地化名稱，內部英文代碼保留在紀錄並可由 F1 選擇顯示。
+
+實機已確認目前 Palworld／UE4SS 會在 Lua 動態 UMG 與 `PrintString` 路徑造成 GameThread 存取違規。v0.4.2 因此把顯示層隔離成隨附的 Windows WPF 程序：Lua 只寫入本機 UTF-8 狀態檔，不再從傷害回呼呼叫 Unreal UI。面板只在 Palworld 位於前景時顯示，遊戲關閉後約 10 秒自行退出。
 
 F1 可選擇「跟隨遊戲」或 Palworld 的 17 種支援語言。切換後設定頁、DPS 面板與技能名稱會立即同步更新；即使 MOD 選擇的語言不同於遊戲介面，技能名稱仍會使用內建對照表切換。未收錄的新技能會先回退英文，再回退遊戲執行中讀到的名稱或內部代碼。
 
@@ -40,6 +42,8 @@ config.SkillDiagnosticsOnly = true
 config.IncludePlayerDamage = false
 config.SkillDiagnosticChatMode = "off"
 config.EnableSkillDPSHUD = true
+config.EnableExternalHUD = true
+config.ExternalHUDAutoLaunch = true
 config.DumpDamageSchema = false
 config.SkillDiagnosticLogCasts = true
 ```
@@ -60,7 +64,7 @@ Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\
 powershell -ExecutionPolicy Bypass -File .\workshop\build_workshop.ps1
 ```
 
-輸出位於 `workshop/dist/PalSkillDPSAnalyzerSP-Workshop-v0.4.1.zip`。專案已保留獨立的 `Info.json`、PackageName 與空白 Workshop Published File ID，不會覆蓋上游 Mod。
+輸出位於 `workshop/dist/PalSkillDPSAnalyzerSP-Workshop-v0.4.2.zip`。專案已保留獨立的 `Info.json`、PackageName 與空白 Workshop Published File ID，不會覆蓋上游 Mod。
 
 ## 驗證流程
 
@@ -68,7 +72,7 @@ powershell -ExecutionPolicy Bypass -File .\workshop\build_workshop.ps1
 2. 進入世界後按 F1，確認專用面板與設定可開啟。
 3. 預設先只帶一隻帕魯，使用已知的 2–3 個技能攻擊 Boss。
 4. 結束戰鬥後保留 `UE4SS.log`。
-5. 以 `HUD backend=umg`、`Waza attribution hook`、`action_hooks=true/true`、`diagnostic-candidate` 和 `diagnostic-cast` 行確認 UI、技能代號、官方名稱與動作計時。
+5. 以 `HUD backend=external-file`、`Waza attribution hook`、`action_hooks=true/true`、`diagnostic-candidate` 和 `diagnostic-cast` 行確認顯示後端、技能代號、官方名稱與動作計時。
 6. 如需測武器，在 F1 面板開啟人物傷害，另開一場全程只使用同一武器。
 
 ## 適用邊界
@@ -80,6 +84,7 @@ powershell -ExecutionPolicy Bypass -File .\workshop\build_workshop.ps1
 - 「完整動作」只統計成功捕捉開始與結束的施放。報表的 `完整計時 n/m` 是覆蓋率；未完整捕捉時只保留首末命中窗，不把它冒充動作時間。
 - 診斷版強制使用 Lua 傷害事件，避免原生聚合器先丟失技能候選欄位。
 - F1 的 HUD／語言／人物傷害等選項會即時保存；直接編輯 `config.lua` 時仍建議完整重開 Palworld。
+- 外部 HUD 需要 Windows PowerShell 5.1 與 WPF（Windows 10／11 內建）；若安全軟體阻擋 PowerShell，統計核心與 `UE4SS.log` 仍可運作，但畫面面板不會出現。
 
 ## 測試
 

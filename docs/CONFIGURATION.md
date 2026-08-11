@@ -38,9 +38,14 @@ Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\config.lua
 | `HUDScale` | `1.0` | F1 可選 0.8、1.0、1.2 |
 | `HUDMaxSkillRows` | `6` | 面板最多顯示幾個技能候選 |
 | `HUDKeepFinalResults` | `true` | 戰鬥結束後保留面板，方便抄錄與比較 |
-| `HUDUseScreenTextFallback` | `true` | UMG 因遊戲版本不相容時，改用螢幕文字且不使用聊天框 |
+| `EnableExternalHUD` | `true` | 啟用不碰 Unreal UI 的透明 Windows HUD |
+| `ExternalHUDAutoLaunch` | `true` | MOD 載入時自動啟動隨附 WPF 顯示程序 |
+| `HUDUseExperimentalUMG` | `false` | 相容保護；v0.4.2 不再呼叫此崩潰路徑 |
+| `HUDUseScreenTextFallback` | `false` | 相容保護；v0.4.2 不再呼叫會崩潰的 `PrintString` |
 
 F1 已被其他 UE4SS 模組註冊時，本 Mod 會改用 `Ctrl+F1`。方向鍵上下選擇，左右鍵或 Enter 調整。使用者設定保存在 `Scripts/user_settings.lua`；「清除本場測試」不會修改歷史檔案，只會清空目前記憶中的遭遇。
+
+外部 HUD 的即時狀態檔是 `Scripts/skill_dps_hud_state.txt`。面板只讀此檔，不讀取或修改世界存檔；Palworld 不在前景時自動隱藏，遊戲程序結束後自動退出。
 
 ## 結算口徑
 

@@ -45,10 +45,12 @@ config.HUDAnchor = "top-right"
 config.HUDScale = 1.0
 config.HUDMaxSkillRows = 6
 config.HUDKeepFinalResults = true
--- Dynamic UMG construction can crash current Palworld/UE4SS builds. Keep the
--- dedicated keyed screen-text overlay as the safe non-chat backend.
+-- Lua-only UMG and PrintString both crash current Palworld/UE4SS builds. The
+-- HUD is a separate transparent Windows overlay fed by a local state file.
+config.EnableExternalHUD = true
+config.ExternalHUDAutoLaunch = true
 config.HUDUseExperimentalUMG = false
-config.HUDUseScreenTextFallback = true
+config.HUDUseScreenTextFallback = false
 config.SkillDiagnosticLogCasts = true
 config.SkillDiagnosticMaxCastLogRows = 128
 config.SkillActionMaxEntries = 4096
