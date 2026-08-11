@@ -1,4 +1,4 @@
-# PalSkillDPSAnalyzer v0.3.0-hud
+# PalSkillDPSAnalyzer v0.3.1-hud
 
 Palworld 1.0 單機用 UE4SS Lua 傷害驗證 Mod。它不是玩家排行榜，目標是把一場 Boss 測試中的每隻帕魯視為獨立來源，依可讀到的技能、投射物或攻擊欄位分桶，輸出總傷害、整場 DPS、占比、命中、每次施放傷害、完整動作時間、單次施放 DPS、實際施放間隔與 AI／再用空窗。
 
@@ -6,13 +6,14 @@ Palworld 1.0 單機用 UE4SS Lua 傷害驗證 Mod。它不是玩家排行榜，�
 
 ## 獨立技能 DPS 面板
 
-第一次打中 Boss 後，畫面右上會開啟專用 HUD；聊天輸出預設關閉。每個技能會顯示總傷害、整場 DPS、命中、施放次數、每次傷害、完整動作時間、單次施放 DPS、面板 CD、實際開始間隔及 AI／再用空窗。技能名稱優先使用遊戲目前語言的官方本地化文字，並保留內部英文代碼。
+第一次打中 Boss 後，畫面右上會開啟專用 HUD；聊天輸出預設關閉。每個技能會顯示總傷害、整場 DPS、命中、施放次數、每次傷害、完整動作時間、單次施放 DPS、面板 CD、實際開始間隔及 AI／再用空窗。技能預設只顯示遊戲目前語言的官方本地化文字，內部英文代碼保留在紀錄並可由 F1 選擇顯示。
 
 按 `F1` 開啟設定面板，以方向鍵選擇、左右鍵或 Enter 調整：
 
 - 技能 DPS 面板開關
 - 人物／武器傷害（預設關閉）
 - 完整／精簡資料密度
+- 內部英文技能代碼（預設不顯示）
 - 左上／右上位置與 80%／100%／120% 縮放
 - 戰後是否保留結果
 - 聊天輸出關閉／摘要／完整
@@ -56,7 +57,7 @@ Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\
 powershell -ExecutionPolicy Bypass -File .\workshop\build_workshop.ps1
 ```
 
-輸出位於 `workshop/dist/PalSkillDPSAnalyzerSP-Workshop-v0.3.0.zip`。專案已保留獨立的 `Info.json`、PackageName 與空白 Workshop Published File ID，不會覆蓋上游 Mod。
+輸出位於 `workshop/dist/PalSkillDPSAnalyzerSP-Workshop-v0.3.1.zip`。專案已保留獨立的 `Info.json`、PackageName 與空白 Workshop Published File ID，不會覆蓋上游 Mod。
 
 ## 驗證流程
 

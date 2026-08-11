@@ -122,6 +122,7 @@ function hud.new(options)
         "EnableSkillDPSHUD",
         "IncludePlayerDamage",
         "HUDDetailMode",
+        "HUDShowInternalSkillCode",
         "HUDAnchor",
         "HUDScale",
         "HUDKeepFinalResults",
@@ -133,6 +134,7 @@ function hud.new(options)
         "EnableSkillDPSHUD",
         "IncludePlayerDamage",
         "HUDDetailMode",
+        "HUDShowInternalSkillCode",
         "HUDAnchor",
         "HUDScale",
         "HUDKeepFinalResults",
@@ -364,6 +366,7 @@ function hud.new(options)
             EnableSkillDPSHUD = "顯示技能 DPS 面板",
             IncludePlayerDamage = "納入人物／武器傷害",
             HUDDetailMode = "資料密度",
+            HUDShowInternalSkillCode = "顯示內部英文代碼",
             HUDAnchor = "面板位置",
             HUDScale = "面板縮放",
             HUDKeepFinalResults = "戰後保留結果",
@@ -373,6 +376,7 @@ function hud.new(options)
             EnableSkillDPSHUD = "Show skill DPS panel",
             IncludePlayerDamage = "Include player/weapon damage",
             HUDDetailMode = "Detail mode",
+            HUDShowInternalSkillCode = "Show internal skill code",
             HUDAnchor = "Panel position",
             HUDScale = "Panel scale",
             HUDKeepFinalResults = "Keep final result",
@@ -382,6 +386,7 @@ function hud.new(options)
         local function value_text(key)
             local value = self.config[key]
             if key == "EnableSkillDPSHUD" or key == "IncludePlayerDamage"
+                or key == "HUDShowInternalSkillCode"
                 or key == "HUDKeepFinalResults" then
                 return bool_text(value == true, chinese)
             elseif key == "HUDDetailMode" then
@@ -432,6 +437,7 @@ function hud.new(options)
             end
             return
         elseif key == "EnableSkillDPSHUD" or key == "IncludePlayerDamage"
+            or key == "HUDShowInternalSkillCode"
             or key == "HUDKeepFinalResults" then
             self.config[key] = self.config[key] ~= true
         elseif key == "HUDDetailMode" then
@@ -566,14 +572,22 @@ function hud.new(options)
             for _, skill in ipairs(source.skills or {}) do
                 if shown >= maximum then break end
                 shown = shown + 1
+                local skill_name = tostring(skill.name or skill.internal_code or "UNKNOWN")
+                local internal_code = tostring(skill.internal_code or "")
+                if self.config.HUDShowInternalSkillCode == true
+                    and internal_code ~= "" and internal_code ~= skill_name then
+                    skill_name = chinese
+                        and (skill_name .. "（" .. internal_code .. "）")
+                        or (skill_name .. " (" .. internal_code .. ")")
+                end
                 if self.config.HUDDetailMode == "compact" then
                     lines[#lines + 1] = chinese
-                        and string.format("  %d. %s｜%s 傷害｜%s DPS｜%d次", shown, skill.name, integer(skill.damage), decimal(skill.encounter_dps), skill.casts)
-                        or string.format("  %d. %s | %s dmg | %s DPS | %d casts", shown, skill.name, integer(skill.damage), decimal(skill.encounter_dps), skill.casts)
+                        and string.format("  %d. %s｜%s 傷害｜%s DPS｜%d次", shown, skill_name, integer(skill.damage), decimal(skill.encounter_dps), skill.casts)
+                        or string.format("  %d. %s | %s dmg | %s DPS | %d casts", shown, skill_name, integer(skill.damage), decimal(skill.encounter_dps), skill.casts)
                 elseif chinese then
                     lines[#lines + 1] = string.format(
                         "  %d. %s｜傷害 %s｜整場DPS %s｜命中 %d｜施放 %d",
-                        shown, skill.name, integer(skill.damage), decimal(skill.encounter_dps), skill.hits, skill.casts
+                        shown, skill_name, integer(skill.damage), decimal(skill.encounter_dps), skill.hits, skill.casts
                     )
                     lines[#lines + 1] = string.format(
                         "     每次 %s｜動作 %s秒｜施放DPS %s｜完整計時 %d/%d",
@@ -587,7 +601,7 @@ function hud.new(options)
                 else
                     lines[#lines + 1] = string.format(
                         "  %d. %s | damage %s | encounter DPS %s | hits %d | casts %d",
-                        shown, skill.name, integer(skill.damage), decimal(skill.encounter_dps), skill.hits, skill.casts
+                        shown, skill_name, integer(skill.damage), decimal(skill.encounter_dps), skill.hits, skill.casts
                     )
                     lines[#lines + 1] = string.format(
                         "     damage/cast %s | action %ss | cast DPS %s | timing %d/%d",

@@ -24,7 +24,7 @@ config.IncludePlayerDamage = true
 Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\config.lua
 ```
 
-這是 v0.3.0 HUD 版。技能優先顯示遊戲官方本地化名稱與英文代碼；同一技能不同次施放會合併，同時保留逐次動作計時。實際開始間隔包含戰鬥 AI、移動與選招等待，不等同面板 CD；完整計時覆蓋率會直接列出。只需要 UE4SS Experimental；PalSchema 不是必要依賴。
+這是 v0.3.1 HUD 版。技能預設只顯示遊戲官方本地化名稱，F1 可選擇顯示內部英文代碼；同一技能不同次施放會合併，同時保留逐次動作計時。實際開始間隔包含戰鬥 AI、移動與選招等待，不等同面板 CD；完整計時覆蓋率會直接列出。只需要 UE4SS Experimental；PalSchema 不是必要依賴。
 
 專案：https://github.com/paul800901/PalSkillDPSAnalyzer
 

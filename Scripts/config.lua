@@ -50,6 +50,9 @@ config.SkillDiagnosticChatMode = "off"
 config.EnableSkillDPSHUD = true
 config.HUDRefreshMilliseconds = 500
 config.HUDDetailMode = "full"
+-- Keep the panel compact: show the official localized skill name by default.
+-- F1 can reveal the internal English Waza/action code when diagnosing a skill.
+config.HUDShowInternalSkillCode = false
 config.HUDAnchor = "top-right"
 config.HUDScale = 1.0
 config.HUDMaxSkillRows = 6

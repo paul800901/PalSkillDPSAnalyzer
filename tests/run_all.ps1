@@ -83,7 +83,7 @@ $expectedWorkshopTitle = -join @(
 )
 if ($workshopInfo.ModName -ne $expectedWorkshopTitle) { throw "unexpected Workshop ModName" }
 if ($workshopInfo.PackageName -ne "PalSkillDPSAnalyzerSP") { throw "unexpected Workshop PackageName" }
-if ($workshopInfo.Version -ne "0.3.0") { throw "unexpected Workshop version" }
+if ($workshopInfo.Version -ne "0.3.1") { throw "unexpected Workshop version" }
 if ($workshopInfo.Dependencies -notcontains "UE4SSExperimentalPW") { throw "Workshop UE4SS dependency missing" }
 if ($workshopInfo.InstallRule.Count -ne 1 -or $workshopInfo.InstallRule[0].Type -ne "Lua") {
     throw "Workshop Lua InstallRule missing"
@@ -114,6 +114,7 @@ foreach ($requiredSetting in @(
     "config.IncludePlayerDamage = false",
     'config.SkillDiagnosticChatMode = "off"',
     "config.EnableSkillDPSHUD = true",
+    "config.HUDShowInternalSkillCode = false",
     "config.PreferNativeCollector = false"
 )) {
     if (-not $workshopConfig.Contains($requiredSetting)) { throw "Workshop config missing: $requiredSetting" }
@@ -156,7 +157,7 @@ try {
     $testOutput = & npx --yes --package=fengari-node-cli fengari test_main.lua 2>&1
     $testExitCode = $LASTEXITCODE
     $testOutput | Write-Host
-    if ($testExitCode -ne 0 -or -not ($testOutput -match "v0\.3\.0 HUD/diagnostic/source/thread/lifetime/stress tests passed")) {
+    if ($testExitCode -ne 0 -or -not ($testOutput -match "v0\.3\.1 HUD/diagnostic/source/thread/lifetime/stress tests passed")) {
         throw "Lua integration test failed or did not reach its completion marker"
     }
     $localeOutput = & npx --yes --package=fengari-node-cli fengari test_localization.lua 2>&1

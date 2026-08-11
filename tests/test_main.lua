@@ -447,6 +447,8 @@ assert(runtime_config.IncludePlayerDamage == false, "player damage should defaul
 assert(runtime_config.SkillDiagnosticChatMode == "off", "diagnostic chat should default to disabled")
 assert(runtime_config.EnableSkillDPSHUD == true, "skill DPS HUD should default to enabled")
 assert(runtime_config.HUDDetailMode == "full", "HUD should default to full timing details")
+assert(runtime_config.HUDShowInternalSkillCode == false,
+    "internal skill code should default to hidden")
 assert(runtime_config.DumpDamageSchema == false, "schema dump should default to disabled after field discovery")
 assert(runtime_config.SkillDiagnosticLogCasts == true,
     "per-cast diagnostic log should default to enabled")
@@ -459,8 +461,7 @@ assert(type(key_callbacks[Key.UP_ARROW]) == "function"
     "HUD settings navigation keys were not registered")
 
 do
-    local hud_header, hud_summary, hud_body, hud_footer =
-        BossDPSBroadcastTestApi.skill_hud:format_snapshot({
+    local snapshot = {
         state = "active",
         boss = "測試 Boss",
         duration = 20,
@@ -476,7 +477,8 @@ do
                 hits = 4,
                 skills = {
                     {
-                        name = "切割龍息（BeamSlicer）",
+                        name = "切割龍息",
+                        internal_code = "BeamSlicer",
                         damage = 2000,
                         encounter_dps = 100,
                         hits = 4,
@@ -492,17 +494,26 @@ do
                 },
             },
         },
-        })
+    }
+    local hud_header, hud_summary, hud_body, hud_footer =
+        BossDPSBroadcastTestApi.skill_hud:format_snapshot(snapshot)
     assert(string.find(hud_header, "帕魯技能 DPS", 1, true) ~= nil, "HUD title missing")
     assert(string.find(hud_summary, "總傷害 2,000", 1, true) ~= nil, "HUD encounter summary missing")
-    assert(string.find(hud_body, "切割龍息（BeamSlicer）", 1, true) ~= nil,
+    assert(string.find(hud_body, "切割龍息", 1, true) ~= nil,
         "HUD localized skill name missing")
+    assert(string.find(hud_body, "BeamSlicer", 1, true) == nil,
+        "HUD should hide the internal skill code by default")
     assert(string.find(hud_body, "施放DPS 400.0", 1, true) ~= nil,
         "HUD action DPS missing")
     assert(string.find(hud_body, "實際間隔 20.5秒", 1, true) ~= nil,
         "HUD observed interval missing")
     assert(string.find(hud_footer, "人物傷害 關", 1, true) ~= nil,
         "HUD player-damage state missing")
+    runtime_config.HUDShowInternalSkillCode = true
+    local _, _, diagnostic_body = BossDPSBroadcastTestApi.skill_hud:format_snapshot(snapshot)
+    assert(string.find(diagnostic_body, "切割龍息（BeamSlicer）", 1, true) ~= nil,
+        "HUD internal skill code toggle is ineffective")
+    runtime_config.HUDShowInternalSkillCode = false
 end
 -- Most existing scenarios also exercise the enabled commentary branches.
 -- They verify the inherited BossDPS core, so opt back into legacy output for
@@ -1421,4 +1432,4 @@ assert(#delivered_by_uid[test_guid_key(uid_spectator)] == 0, "spectator received
 
 assert(#BossDPSBroadcastTestApi.sessions == 0, "sessions table must be map-like")
 assert(original_os_time ~= nil)
-print("PalSkillDPSAnalyzer v0.3.0 HUD/diagnostic/source/thread/lifetime/stress tests passed")
+print("PalSkillDPSAnalyzer v0.3.1 HUD/diagnostic/source/thread/lifetime/stress tests passed")

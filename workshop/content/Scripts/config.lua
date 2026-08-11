@@ -41,6 +41,7 @@ config.SkillDiagnosticChatMode = "off"
 config.EnableSkillDPSHUD = true
 config.HUDRefreshMilliseconds = 500
 config.HUDDetailMode = "full"
+config.HUDShowInternalSkillCode = false
 config.HUDAnchor = "top-right"
 config.HUDScale = 1.0
 config.HUDMaxSkillRows = 6

@@ -2039,8 +2039,11 @@ local function diagnostic_snapshot(session, state, reason)
         }
         for _, candidate in ipairs(ranked_damage_entries(source.skill_candidates or {})) do
             local timing = candidate_timing(session, source, candidate)
+            local internal_code = tostring(candidate.name or "UNKNOWN")
+            local localized_name = tostring(candidate.localized_name or "")
             source_row.skills[#source_row.skills + 1] = {
-                name = skill_display_name(candidate, translator_code),
+                name = localized_name ~= "" and localized_name or internal_code,
+                internal_code = internal_code,
                 damage = candidate.damage,
                 encounter_dps = candidate.damage / duration,
                 hits = candidate.hits or 0,
@@ -3653,7 +3656,7 @@ local function register_hooks()
 
     if hooks.damage and hooks.death then
         log(string.format(
-            "loaded v0.3.0-hud; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s chat_mode=%s waza_hook=%s action_hooks=%s/%s local_only=%s; captured_hooks=%d",
+            "loaded v0.3.1-hud; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s chat_mode=%s waza_hook=%s action_hooks=%s/%s local_only=%s; captured_hooks=%d",
             hooks.damage_mode,
             tostring(config.EnableDPSRecording ~= false),
             tostring(config.EnableSkillDiagnostics == true),

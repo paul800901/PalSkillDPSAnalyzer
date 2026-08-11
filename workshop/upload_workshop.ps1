@@ -58,7 +58,7 @@ $vdf = @(
     ('    "visibility" "{0}"' -f $Visibility)
     ('    "title" "{0}"' -f (ConvertTo-VdfValue $workshopTitle))
     ('    "description" "{0}"' -f (ConvertTo-VdfValue $description))
-    '    "changenote" "v0.3.0: dedicated live skill-DPS HUD, F1 settings, persistent preferences, and chat disabled by default."'
+    '    "changenote" "v0.3.1: localized skill names are now compact by default; internal English codes can be toggled in F1 settings."'
     '}'
 ) -join "`r`n"
 [System.IO.File]::WriteAllText($vdfPath, $vdf, [System.Text.UTF8Encoding]::new($false))
@@ -76,8 +76,8 @@ if (-not $match.Success -or $match.Groups[1].Value -eq "0") {
 }
 
 $metadata.publishedfileid = $match.Groups[1].Value
-$metadata.changenote = "v0.3.0: dedicated live skill-DPS HUD, F1 settings, persistent preferences, and chat disabled by default."
-$metadata.last_published_version = "0.3.0"
+$metadata.changenote = "v0.3.1: localized skill names are now compact by default; internal English codes can be toggled in F1 settings."
+$metadata.last_published_version = "0.3.1"
 $metadataJson = $metadata | ConvertTo-Json -Depth 4
 [System.IO.File]::WriteAllText($metadataPath, $metadataJson + "`r`n", [System.Text.UTF8Encoding]::new($false))
 

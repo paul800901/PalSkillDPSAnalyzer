@@ -33,6 +33,7 @@ Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\config.lua
 | `EnableSkillDPSHUD` | `true` | 顯示獨立技能 DPS 面板 |
 | `HUDRefreshMilliseconds` | `500` | 即時面板更新間隔 |
 | `HUDDetailMode` | `"full"` | `full` 顯示所有計時；`compact` 每招一列 |
+| `HUDShowInternalSkillCode` | `false` | 是否在官方本地化名稱後附加內部英文 Waza／動作代碼 |
 | `HUDAnchor` | `"top-right"` | `top-right` 或 `top-left` |
 | `HUDScale` | `1.0` | F1 可選 0.8、1.0、1.2 |
 | `HUDMaxSkillRows` | `6` | 面板最多顯示幾個技能候選 |
