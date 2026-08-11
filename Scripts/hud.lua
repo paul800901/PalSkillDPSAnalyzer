@@ -343,7 +343,8 @@ function hud.new(options)
         end
         self.last_rendered_text = combined
 
-        if self:create_widget() then
+        local experimental_umg = self.config.HUDUseExperimentalUMG == true
+        if experimental_umg and self:create_widget() then
             safe_call(self.widget, "SetVisibility", 3)
             safe_call(self.header_text, "SetText", ftext(header))
             safe_call(self.summary_text, "SetText", ftext(summary))
@@ -354,7 +355,11 @@ function hud.new(options)
 
         if not self.logged_create_failure then
             self.logged_create_failure = true
-            self.log("HUD UMG creation unavailable; using on-screen text fallback")
+            if experimental_umg then
+                self.log("HUD UMG creation unavailable; using safe screen-text backend")
+            else
+                self.log("HUD backend=safe-screen-text; experimental UMG disabled")
+            end
         end
         self.backend = "screen-text"
         if self.config.HUDUseScreenTextFallback == false then

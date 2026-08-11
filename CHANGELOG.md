@@ -1,5 +1,11 @@
 # 更新日志
 
+## 0.4.1-safe-overlay — 修正首次傷害後崩潰
+
+- 根據實機 CrashContext 與 UE4SS.log，停用會在 GameThread 造成存取違規的動態 UMG Widget 建立流程。
+- F1 設定與多語言技能 DPS 改走具固定識別鍵的安全螢幕文字層，仍不使用聊天框。
+- 新增回歸測試，禁止預設路徑呼叫實驗性 UMG 建立函式。
+
 ## 0.4.0-multilingual-hud — 介面與技能名稱同步切換
 
 - F1 新增顯示語言，可選跟隨遊戲或 Palworld 的 17 種支援語言，切換後立即保存。

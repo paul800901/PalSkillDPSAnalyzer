@@ -45,6 +45,9 @@ config.HUDAnchor = "top-right"
 config.HUDScale = 1.0
 config.HUDMaxSkillRows = 6
 config.HUDKeepFinalResults = true
+-- Dynamic UMG construction can crash current Palworld/UE4SS builds. Keep the
+-- dedicated keyed screen-text overlay as the safe non-chat backend.
+config.HUDUseExperimentalUMG = false
 config.HUDUseScreenTextFallback = true
 config.SkillDiagnosticLogCasts = true
 config.SkillDiagnosticMaxCastLogRows = 128

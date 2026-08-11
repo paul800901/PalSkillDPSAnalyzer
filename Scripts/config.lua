@@ -58,8 +58,10 @@ config.HUDAnchor = "top-right"
 config.HUDScale = 1.0
 config.HUDMaxSkillRows = 6
 config.HUDKeepFinalResults = true
--- A version-incompatible UMG layer falls back to keyed on-screen text rather
--- than silently losing the diagnostic result. It never uses the chat feed.
+-- Dynamic UMG object construction is disabled: current Palworld/UE4SS builds
+-- can crash the GameThread after the widget is created. The keyed screen-text
+-- backend remains a dedicated non-chat overlay and is the safe default.
+config.HUDUseExperimentalUMG = false
 config.HUDUseScreenTextFallback = true
 -- The chat shows aggregate timing for every displayed skill. UE4SS.log can
 -- additionally keep one row per observed cast for later comparison.

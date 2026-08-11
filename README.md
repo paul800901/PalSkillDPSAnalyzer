@@ -1,4 +1,4 @@
-# PalSkillDPSAnalyzer v0.4.0-multilingual-hud
+# PalSkillDPSAnalyzer v0.4.1-safe-overlay
 
 Palworld 1.0 單機用 UE4SS Lua 傷害驗證 Mod。它不是玩家排行榜，目標是把一場 Boss 測試中的每隻帕魯視為獨立來源，依可讀到的技能、投射物或攻擊欄位分桶，輸出總傷害、整場 DPS、占比、命中、每次施放傷害、完整動作時間、單次施放 DPS、實際施放間隔與 AI／再用空窗。
 
@@ -6,7 +6,7 @@ Palworld 1.0 單機用 UE4SS Lua 傷害驗證 Mod。它不是玩家排行榜，�
 
 ## 獨立技能 DPS 面板
 
-第一次打中 Boss 後，畫面右上會開啟專用 HUD；聊天輸出預設關閉。每個技能會顯示總傷害、整場 DPS、命中、施放次數、每次傷害、完整動作時間、單次施放 DPS、面板 CD、實際開始間隔及 AI／再用空窗。技能預設只顯示本地化名稱，內部英文代碼保留在紀錄並可由 F1 選擇顯示。
+第一次打中 Boss 後，畫面會開啟具固定識別鍵的專用螢幕文字層；聊天輸出預設關閉。每個技能會顯示總傷害、整場 DPS、命中、施放次數、每次傷害、完整動作時間、單次施放 DPS、面板 CD、實際開始間隔及 AI／再用空窗。技能預設只顯示本地化名稱，內部英文代碼保留在紀錄並可由 F1 選擇顯示。動態建立 UMG Widget 在目前 Palworld／UE4SS 實機會造成 GameThread 存取違規，因此 v0.4.1 預設停用。
 
 F1 可選擇「跟隨遊戲」或 Palworld 的 17 種支援語言。切換後設定頁、DPS 面板與技能名稱會立即同步更新；即使 MOD 選擇的語言不同於遊戲介面，技能名稱仍會使用內建對照表切換。未收錄的新技能會先回退英文，再回退遊戲執行中讀到的名稱或內部代碼。
 
@@ -60,7 +60,7 @@ Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\
 powershell -ExecutionPolicy Bypass -File .\workshop\build_workshop.ps1
 ```
 
-輸出位於 `workshop/dist/PalSkillDPSAnalyzerSP-Workshop-v0.4.0.zip`。專案已保留獨立的 `Info.json`、PackageName 與空白 Workshop Published File ID，不會覆蓋上游 Mod。
+輸出位於 `workshop/dist/PalSkillDPSAnalyzerSP-Workshop-v0.4.1.zip`。專案已保留獨立的 `Info.json`、PackageName 與空白 Workshop Published File ID，不會覆蓋上游 Mod。
 
 ## 驗證流程
 

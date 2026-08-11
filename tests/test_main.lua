@@ -462,6 +462,8 @@ assert(type(key_callbacks[Key.UP_ARROW]) == "function"
 
 do
     runtime_config.Language = "zh-TW"
+    assert(runtime_config.HUDUseExperimentalUMG == false,
+        "unsafe dynamic UMG backend must be disabled by default")
     local snapshot = {
         state = "active",
         boss = "測試 Boss",
@@ -498,6 +500,17 @@ do
     }
     local hud_header, hud_summary, hud_body, hud_footer =
         BossDPSBroadcastTestApi.skill_hud:format_snapshot(snapshot)
+    local original_create_widget = BossDPSBroadcastTestApi.skill_hud.create_widget
+    BossDPSBroadcastTestApi.skill_hud.create_widget = function()
+        error("experimental UMG path must not run")
+    end
+    local previous_phase = phase
+    phase = "game"
+    BossDPSBroadcastTestApi.skill_hud:render_text(hud_header, hud_summary, hud_body, hud_footer)
+    phase = previous_phase
+    BossDPSBroadcastTestApi.skill_hud.create_widget = original_create_widget
+    assert(BossDPSBroadcastTestApi.skill_hud.backend == "screen-text",
+        "safe screen-text backend was not selected")
     assert(string.find(hud_header, "帕魯技能 DPS", 1, true) ~= nil, "HUD title missing")
     assert(string.find(hud_summary, "總傷害 2,000", 1, true) ~= nil, "HUD encounter summary missing")
     assert(string.find(hud_body, "切割龍息", 1, true) ~= nil,
@@ -1454,4 +1467,4 @@ assert(#delivered_by_uid[test_guid_key(uid_spectator)] == 0, "spectator received
 
 assert(#BossDPSBroadcastTestApi.sessions == 0, "sessions table must be map-like")
 assert(original_os_time ~= nil)
-print("PalSkillDPSAnalyzer v0.4.0 multilingual HUD/diagnostic/source/thread/lifetime/stress tests passed")
+print("PalSkillDPSAnalyzer v0.4.1 safe-overlay/multilingual/diagnostic/source/thread/lifetime/stress tests passed")
