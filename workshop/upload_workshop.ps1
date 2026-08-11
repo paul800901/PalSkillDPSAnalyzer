@@ -58,7 +58,7 @@ $vdf = @(
     ('    "visibility" "{0}"' -f $Visibility)
     ('    "title" "{0}"' -f (ConvertTo-VdfValue $workshopTitle))
     ('    "description" "{0}"' -f (ConvertTo-VdfValue $description))
-    '    "changenote" "v0.1.1 diagnostic: attribute Pal damage with EPalWazaID and BasePower fallback."'
+    '    "changenote" "v0.1.2 diagnostic: merge repeated action instances and reconcile uniquely identified generic damage."'
     '}'
 ) -join "`r`n"
 [System.IO.File]::WriteAllText($vdfPath, $vdf, [System.Text.UTF8Encoding]::new($false))
@@ -76,8 +76,8 @@ if (-not $match.Success -or $match.Groups[1].Value -eq "0") {
 }
 
 $metadata.publishedfileid = $match.Groups[1].Value
-$metadata.changenote = "v0.1.1 diagnostic: attribute Pal damage with EPalWazaID and BasePower fallback."
-$metadata.last_published_version = "0.1.1"
+$metadata.changenote = "v0.1.2 diagnostic: merge repeated action instances and reconcile uniquely identified generic damage."
+$metadata.last_published_version = "0.1.2"
 $metadataJson = $metadata | ConvertTo-Json -Depth 4
 [System.IO.File]::WriteAllText($metadataPath, $metadataJson + "`r`n", [System.Text.UTF8Encoding]::new($false))
 

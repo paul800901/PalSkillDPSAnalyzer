@@ -1166,27 +1166,77 @@ local function first_diagnostic_field(fields, names)
     return nil
 end
 
+local function canonical_skill_name(value)
+    local name = tostring(value or "")
+    name = string.gsub(name, "^.*::", "")
+    name = string.gsub(name, "^:+", "")
+    name = string.gsub(name, "^BP_", "")
+    name = string.gsub(name, "_C_%d+$", "")
+    name = string.gsub(name, "_C$", "")
+    -- Palworld's enum and action Blueprint use different spellings here.
+    if name == "BlastCanon" then
+        name = "BlastCannon"
+    end
+    return name
+end
+
+local function action_skill_name(value)
+    local name = canonical_skill_name(value)
+    if name == "" or name == "ActionDamage" or name == "Action_Damage" then
+        return nil
+    end
+    name = string.gsub(name, "^Action_?", "")
+    return name ~= "" and canonical_skill_name(name) or nil
+end
+
+local function attack_signature(diagnostic_fields)
+    local base_power = first_diagnostic_field(diagnostic_fields, {
+        "result.BasePower", "info.BasePower",
+    })
+    if base_power == nil then
+        return nil
+    end
+    local element = first_diagnostic_field(diagnostic_fields, {
+        "result.AttackElementType", "info.AttackElementType",
+    })
+    return string.format("bp:%s|element:%s", tostring(base_power), tostring(element or "unknown"))
+end
+
 local function skill_candidate_from_event(event, source_actor, source_kind)
     local causer = diagnostic_object_info(event and event.damage_causer or nil)
     local source = diagnostic_object_info(source_actor)
     local diagnostic_fields = event and event.diagnostic_fields or {}
     local fields = diagnostic_fields_text(diagnostic_fields)
+    local signature = attack_signature(diagnostic_fields)
     local label
     local identity
+    local concrete = false
 
+    local waza_name = first_diagnostic_field(diagnostic_fields, { "waza.Name" })
+    local waza_id = first_diagnostic_field(diagnostic_fields, { "waza.ID" })
     local explicit_skill = first_diagnostic_field(diagnostic_fields, {
-        "waza.Name",
         "result.SkillName", "info.SkillName",
         "result.SkillID", "info.SkillID",
         "result.SkillId", "info.SkillId",
         "result.AttackSkillID", "info.AttackSkillID",
         "result.AttackSkillId", "info.AttackSkillId",
-        "action.SimpleName", "action.Class",
     })
+    local action_name = action_skill_name(first_diagnostic_field(diagnostic_fields, {
+        "action.Class", "action.SimpleName",
+    }))
 
-    if explicit_skill ~= nil then
-        label = tostring(explicit_skill)
+    if waza_name ~= nil or waza_id ~= nil then
+        label = canonical_skill_name(waza_name or ("WAZA_ID_" .. tostring(waza_id)))
         identity = "skill:" .. label
+        concrete = true
+    elseif explicit_skill ~= nil then
+        label = canonical_skill_name(explicit_skill)
+        identity = "skill:" .. label
+        concrete = true
+    elseif action_name ~= nil then
+        label = action_name
+        identity = "skill:" .. label
+        concrete = true
     elseif causer.full_name == "" and causer.class_name == "" then
         local base_power = first_diagnostic_field(diagnostic_fields, {
             "result.BasePower", "info.BasePower",
@@ -1210,12 +1260,19 @@ local function skill_candidate_from_event(event, source_actor, source_kind)
             or causer.class_name ~= "" and causer.class_name
             or causer.full_name
         identity = causer.class_name ~= "" and causer.class_name or causer.full_name
+        concrete = true
     end
 
     return {
-        key = tostring(identity) .. "|" .. fields,
+        -- The evidence text deliberately stays out of the key. It contains
+        -- per-cast UObject instance numbers and variable hit metadata; using
+        -- it as identity split every repeated cast into a different skill.
+        key = tostring(identity),
         name = tostring(label),
         fields = fields,
+        signature = signature,
+        concrete = concrete,
+        unresolved_signature = not concrete and signature or nil,
         causer_full_name = causer.full_name ~= "" and causer.full_name or "none",
         causer_class_name = causer.class_name ~= "" and causer.class_name or "none",
         source_full_name = source.full_name ~= "" and source.full_name or "none",
@@ -1228,6 +1285,15 @@ local function record_skill_candidate(session, source, event, source_actor, dama
     end
     source.skill_candidates = source.skill_candidates or {}
     local evidence = skill_candidate_from_event(event, source_actor, source.kind)
+    if evidence.concrete and evidence.signature ~= nil then
+        source.skill_signatures = source.skill_signatures or {}
+        local signature_candidates = source.skill_signatures[evidence.signature]
+        if signature_candidates == nil then
+            signature_candidates = {}
+            source.skill_signatures[evidence.signature] = signature_candidates
+        end
+        signature_candidates[evidence.key] = true
+    end
     local candidate = source.skill_candidates[evidence.key]
     if candidate == nil then
         candidate = {
@@ -1237,6 +1303,7 @@ local function record_skill_candidate(session, source, event, source_actor, dama
             causer_full_name = evidence.causer_full_name,
             causer_class_name = evidence.causer_class_name,
             source_full_name = evidence.source_full_name,
+            unresolved_signature = evidence.unresolved_signature,
             damage = 0,
             hits = 0,
             samples = 0,
@@ -1268,6 +1335,54 @@ local function record_skill_candidate(session, source, event, source_actor, dama
             candidate.fields,
             candidate.source_full_name
         ))
+    end
+end
+
+local function reconcile_signature_candidates(session, source)
+    local merges = {}
+    for unresolved_key, candidate in pairs(source.skill_candidates or {}) do
+        local signature = candidate.unresolved_signature
+        local signature_candidates = signature ~= nil
+            and source.skill_signatures ~= nil
+            and source.skill_signatures[signature]
+            or nil
+        if signature_candidates ~= nil then
+            local concrete_key = nil
+            local concrete_count = 0
+            for candidate_key in pairs(signature_candidates) do
+                if source.skill_candidates[candidate_key] ~= nil then
+                    concrete_count = concrete_count + 1
+                    concrete_key = candidate_key
+                end
+            end
+            if concrete_count == 1 and concrete_key ~= unresolved_key then
+                merges[#merges + 1] = {
+                    unresolved_key = unresolved_key,
+                    concrete_key = concrete_key,
+                    signature = signature,
+                }
+            end
+        end
+    end
+
+    for _, merge in ipairs(merges) do
+        local unresolved = source.skill_candidates[merge.unresolved_key]
+        local concrete = source.skill_candidates[merge.concrete_key]
+        if unresolved ~= nil and concrete ~= nil then
+            concrete.damage = concrete.damage + unresolved.damage
+            concrete.hits = concrete.hits + unresolved.hits
+            concrete.samples = concrete.samples + unresolved.samples
+            source.skill_candidates[merge.unresolved_key] = nil
+            session.skill_candidate_count = math.max(0, (session.skill_candidate_count or 1) - 1)
+            log(string.format(
+                "diagnostic-reconciled source=%s signature=%s candidate=%s damage=%s hits=%d",
+                source.name,
+                merge.signature,
+                concrete.name,
+                format_integer(unresolved.damage),
+                unresolved.hits
+            ))
+        end
     end
 end
 
@@ -1439,6 +1554,9 @@ local function queue_team_details(session, duration)
 end
 
 local function finish_skill_diagnostics(session, duration, reason, recipients)
+    for _, source in pairs(session.diagnostic_sources or {}) do
+        reconcile_signature_candidates(session, source)
+    end
     local sources = ranked_damage_entries(session.diagnostic_sources)
     local candidate_total = 0
     local translator_code = get_translator().code
@@ -2801,7 +2919,7 @@ local function register_hooks()
 
     if hooks.damage and hooks.death then
         log(string.format(
-            "loaded v0.1.1-diagnostic; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s waza_hook=%s local_only=%s; captured_hooks=%d",
+            "loaded v0.1.2-diagnostic; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s waza_hook=%s local_only=%s; captured_hooks=%d",
             hooks.damage_mode,
             tostring(config.EnableDPSRecording ~= false),
             tostring(config.EnableSkillDiagnostics == true),

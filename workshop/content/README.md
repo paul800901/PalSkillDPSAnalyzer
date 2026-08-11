@@ -23,7 +23,7 @@ config.IncludePlayerDamage = true
 Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\config.lua
 ```
 
-這是 v0.1.1 診斷版。帕魯傷害優先使用遊戲的 `EPalWazaID` 技能代號；缺少 Waza 訊號時才保留為有原始證據的未解析候選，不會硬套名稱。
+這是 v0.1.2 診斷版。同一技能不同次施放會依穩定動作名稱合併；泛用持續傷害只有能唯一對應時才併回技能，無法證明則保留為未解析候選。
 
 專案：https://github.com/paul800901/PalSkillDPSAnalyzer
 

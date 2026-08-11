@@ -30,7 +30,7 @@ config.SkillDiagnosticsOnly = true
 -- Optional player/weapon verification lane. Keep false for Pal-only tests.
 -- Enable it for a separate run when testing one weapon at a time.
 config.IncludePlayerDamage = false
-config.DumpDamageSchema = true
+config.DumpDamageSchema = false
 config.SkillDiagnosticMaxSamplesPerCandidate = 3
 config.SkillDiagnosticMaxSchemaFields = 128
 config.SkillDiagnosticChatMaxRows = 12

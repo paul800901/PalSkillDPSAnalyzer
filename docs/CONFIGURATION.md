@@ -16,7 +16,7 @@ Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\config.lua
 | `EnableSkillDiagnostics` | `true` | 建立技能／武器候選與原始證據 |
 | `SkillDiagnosticsOnly` | `true` | 只輸出驗證摘要，不輸出玩家排名 |
 | `IncludePlayerDamage` | `false` | 是否加入人物／武器來源 |
-| `DumpDamageSchema` | `true` | 啟動後反射傷害事件欄位一次 |
+| `DumpDamageSchema` | `false` | 選用：啟動後反射傷害事件欄位一次；目前 UE4SS 巢狀反射可能失敗 |
 | `SkillDiagnosticMaxSamplesPerCandidate` | `3` | 每個候選最多保留幾筆逐擊樣本 |
 | `SkillDiagnosticMaxSchemaFields` | `128` | 反射欄位數上限 |
 | `SkillDiagnosticChatMaxRows` | `12` | 結算時在遊戲聊天欄顯示的技能／武器明細上限 |
@@ -28,7 +28,8 @@ Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\config.lua
 ## 結算口徑
 
 - 來源：每隻帕魯；啟用人物後，人物角色另算一個來源。
-- 候選：優先使用 `EPalWazaID`；缺少 Waza 時才使用基礎威力、屬性、當前動作、投射物、武器來源或未知桶。
+- 候選：優先使用 `EPalWazaID`；缺少 Waza 時使用去除實例編號的當前動作、投射物、武器來源或未知桶。
+- 泛用持續傷害：只有 `BasePower + AttackElementType` 在整場唯一對應到一個已知技能時才合併；有歧義時保持未解析。
 - 整場 DPS：候選累計傷害除以 Boss 遭遇總秒數。
 - 平均每擊：候選累計傷害除以有效命中數。
 - 占比：候選傷害除以該來源的累計傷害。

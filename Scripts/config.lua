@@ -36,7 +36,7 @@ config.SkillDiagnosticsOnly = true
 -- damage causer exposes a weapon/projectile, the analyzer creates one bucket
 -- per candidate; otherwise it falls back to a generic player source bucket.
 config.IncludePlayerDamage = false
-config.DumpDamageSchema = true
+config.DumpDamageSchema = false
 config.SkillDiagnosticMaxSamplesPerCandidate = 3
 config.SkillDiagnosticMaxSchemaFields = 128
 config.SkillDiagnosticChatMaxRows = 12

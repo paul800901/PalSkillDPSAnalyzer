@@ -372,6 +372,7 @@ assert(runtime_config.LocalOnlyMessages == false, "server package should not def
 assert(runtime_config.EnableSkillDiagnostics == true, "skill diagnostics should default to enabled")
 assert(runtime_config.SkillDiagnosticsOnly == true, "diagnostic-only output should default to enabled")
 assert(runtime_config.IncludePlayerDamage == false, "player damage should default to disabled")
+assert(runtime_config.DumpDamageSchema == false, "schema dump should default to disabled after field discovery")
 -- Most existing scenarios also exercise the enabled commentary branches.
 -- They verify the inherited BossDPS core, so opt back into legacy output for
 -- those scenarios. Dedicated diagnostics cases below test the new defaults.
@@ -695,6 +696,83 @@ assert(string.find(diagnostic_joined, "DarkBall｜伤害 600｜占比 60.0%｜�
     "per-skill chat result missing")
 assert(string.find(diagnostic_joined, "MVP", 1, true) == nil,
     "diagnostic-only mode emitted a player ranking")
+
+-- Real Palworld action Blueprints append a new UObject instance number to
+-- every cast. Repeated casts must share one stable skill bucket. A generic
+-- ActionDamage tick may join a skill only when BasePower+element identifies
+-- exactly one concrete skill in the completed encounter.
+local current_action = nil
+local action_component = object({}, {
+    GetCurrentAction = function()
+        return current_action
+    end,
+})
+local action_pal = actor("BP_PinkCat_C_184", {
+    CharacterParameterComponent = player_two_pal_component,
+    ActionComponent = action_component,
+})
+trainer_by_actor[action_pal] = player_two
+local action_boss = boss_actor("BP_RaidBoss_ActionDiagnostic_C_185")
+local action_before = #bob_inbox
+
+current_action = actor("BP_ActionBeamSlicer_C_2147000001")
+damage(action_pal, action_boss, 300, { BasePower = 350, AttackElementType = 9 })
+run_game_tasks()
+current_action = actor("BP_ActionBeamSlicer_C_2147000002")
+damage(action_pal, action_boss, 200, { BasePower = 350, AttackElementType = 9 })
+run_game_tasks()
+current_action = actor("BP_ActionFlareTornado_C_2147000003")
+damage(action_pal, action_boss, 100, { BasePower = 200, AttackElementType = 2 })
+run_game_tasks()
+current_action = actor("BP_ActionDamage_C_2147000004")
+damage(action_pal, action_boss, 50, { BasePower = 200, AttackElementType = 2 })
+run_game_tasks()
+current_action = nil
+damage(action_pal, action_boss, 25, { BasePower = 200, AttackElementType = 9 })
+run_game_tasks()
+
+local action_session
+for _, candidate in pairs(BossDPSBroadcastTestApi.sessions) do
+    if candidate.name == "RaidBoss_ActionDiagnostic" then
+        action_session = candidate
+        break
+    end
+end
+assert(action_session ~= nil and action_session.total_damage == 675,
+    "action diagnostic session total is incorrect")
+local action_source
+for _, source in pairs(action_session.diagnostic_sources) do
+    action_source = source
+end
+local action_candidate_count = 0
+local beam_candidate
+for _, candidate in pairs(action_source.skill_candidates) do
+    action_candidate_count = action_candidate_count + 1
+    if candidate.name == "BeamSlicer" then
+        beam_candidate = candidate
+    end
+end
+assert(action_candidate_count == 4,
+    "action diagnostic did not preserve pre-report unresolved signatures")
+assert(beam_candidate ~= nil and beam_candidate.damage == 500 and beam_candidate.hits == 2,
+    "per-cast action instance numbers split one Pal skill")
+
+death(action_boss)
+run_game_tasks()
+run_delayed_tasks()
+local action_messages = {}
+for index = action_before + 1, #bob_inbox do
+    action_messages[#action_messages + 1] = bob_inbox[index]
+end
+local action_joined = table.concat(action_messages, "\n")
+assert(string.find(action_joined, "BeamSlicer｜伤害 500", 1, true) ~= nil,
+    "stable action skill total missing")
+assert(string.find(action_joined, "FlareTornado｜伤害 150", 1, true) ~= nil,
+    "uniquely identified generic damage was not reconciled")
+assert(string.find(action_joined, "UNRESOLVED_PAL_ATTACK_BP_200_ELEMENT_9｜伤害 25", 1, true) ~= nil,
+    "ambiguous generic damage was assigned without proof")
+assert(string.find(action_joined, "技能/武器候选 3个", 1, true) ~= nil,
+    "post-reconciliation candidate count is incorrect")
 
 -- Enabling player verification creates one player source and separates a
 -- weapon/projectile candidate. A one-weapon-per-fight workflow remains valid
@@ -1177,4 +1255,4 @@ assert(#delivered_by_uid[test_guid_key(uid_spectator)] == 0, "spectator received
 
 assert(#BossDPSBroadcastTestApi.sessions == 0, "sessions table must be map-like")
 assert(original_os_time ~= nil)
-print("PalSkillDPSAnalyzer v0.1.1 diagnostic/source/thread/lifetime/stress tests passed")
+print("PalSkillDPSAnalyzer v0.1.2 diagnostic/source/thread/lifetime/stress tests passed")

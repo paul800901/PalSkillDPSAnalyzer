@@ -1,10 +1,18 @@
 # 更新日志
 
+## 0.1.2-diagnostic — 穩定技能分桶
+
+- 修正每次技能施放的 UObject 實例編號被誤當成技能 ID，造成同一招拆成多列。
+- 優先使用穩定化動作類別，將 `BP_ActionBeamSlicer_C_...` 等名稱合併為 `BeamSlicer`。
+- 泛用 `ActionDamage` 只有在基礎威力與屬性於整場可唯一對應到一招時才併回該技能；歸屬有衝突則保留未解析。
+- 傷害 schema 反射改為預設關閉，避免目前 UE4SS 版本的巢狀反射錯誤污染 log。
+- 新增重複施放、唯一持續傷害回歸與模糊傷害拒絕歸屬測試。
+
 ## 0.1.1-diagnostic — Waza 技能歸屬修正
 
 - 改用 `PalUtility:MakeDamageInfoByWazaType` 的 `EPalWazaID` 關聯每次帕魯技能傷害。
 - 補抓 `BasePower` 與 `AttackElementType`，沒有 Waza 訊號時仍可分開未解析攻擊候選。
-- 修正傷害 schema 反射在第一個巢狀欄位提前中止的問題。
+- 調整傷害 schema 巢狀反射流程；此功能仍屬選用診斷工具。
 - 結算時直接在遊戲聊天欄列出逐技能傷害、占比、整場 DPS、命中與平均每擊。
 - 新增 Waza 多段命中、技能切換與過期回退測試。
 

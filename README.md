@@ -1,4 +1,4 @@
-# PalSkillDPSAnalyzer v0.1.1-diagnostic
+# PalSkillDPSAnalyzer v0.1.2-diagnostic
 
 Palworld 1.0 單機用 UE4SS Lua 傷害驗證 Mod。它不是玩家排行榜，目標是把一場 Boss 測試中的每隻帕魯視為獨立來源，依可讀到的技能、投射物或攻擊欄位分桶，輸出總傷害、整場 DPS、占比、命中數與平均每擊傷害。
 
@@ -13,7 +13,7 @@ Palworld 1.0 單機用 UE4SS Lua 傷害驗證 Mod。它不是玩家排行榜，�
 [PalSkillDPSAnalyzer] diagnostic-candidate boss=... candidate=... damage=... share=... dps=... hits=... avg_hit=... causer=... fields=...
 ```
 
-帕魯攻擊會優先讀取 Palworld 建立傷害資料時帶入的 `EPalWazaID`，因此候選可直接得到 `DarkBall`、`PoisonFog` 之類的遊戲技能代號。若某次傷害沒有 Waza 訊號，才依 `BasePower`、攻擊屬性與當前動作建立未解析候選；不會硬猜名稱。
+帕魯攻擊會優先讀取 Palworld 建立傷害資料時帶入的 `EPalWazaID`；實機沒有 Waza 訊號時，改用穩定化後的動作類別，例如 `BeamSlicer`、`FlareTornado`。每次施放產生的 UObject 編號不會再把同一技能拆成多列。泛用持續傷害只有在 `BasePower + AttackElementType` 能唯一對應到一招時才合併，否則保留未解析候選，不會硬猜名稱。
 
 ## 預設測試模式
 
@@ -21,7 +21,7 @@ Palworld 1.0 單機用 UE4SS Lua 傷害驗證 Mod。它不是玩家排行榜，�
 config.EnableSkillDiagnostics = true
 config.SkillDiagnosticsOnly = true
 config.IncludePlayerDamage = false
-config.DumpDamageSchema = true
+config.DumpDamageSchema = false
 ```
 
 要另外測試人物武器，將 `IncludePlayerDamage` 設為 `true`，完整重開遊戲，再以一場只使用一種武器的 Boss 戰進行測試。
@@ -40,7 +40,7 @@ Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\
 powershell -ExecutionPolicy Bypass -File .\workshop\build_workshop.ps1
 ```
 
-輸出位於 `workshop/dist/PalSkillDPSAnalyzerSP-Workshop-v0.1.1.zip`。專案已保留獨立的 `Info.json`、PackageName 與空白 Workshop Published File ID，不會覆蓋上游 Mod。
+輸出位於 `workshop/dist/PalSkillDPSAnalyzerSP-Workshop-v0.1.2.zip`。專案已保留獨立的 `Info.json`、PackageName 與空白 Workshop Published File ID，不會覆蓋上游 Mod。
 
 ## 驗證流程
 
