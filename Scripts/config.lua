@@ -39,6 +39,11 @@ config.IncludePlayerDamage = false
 config.DumpDamageSchema = true
 config.SkillDiagnosticMaxSamplesPerCandidate = 3
 config.SkillDiagnosticMaxSchemaFields = 128
+config.SkillDiagnosticChatMaxRows = 12
+-- A Pal Waza marker is emitted immediately before its damage info is built.
+-- Keep it briefly so delayed projectiles and multi-hit skills remain attributed.
+config.SkillMarkerTTLSeconds = 30
+config.SkillMarkerMaxEntries = 2048
 
 -- Optional components. Compact, low-noise output is the public default.
 -- Change a switch, then restart the server once to apply it.

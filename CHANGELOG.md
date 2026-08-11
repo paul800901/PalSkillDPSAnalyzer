@@ -1,5 +1,13 @@
 # 更新日志
 
+## 0.1.1-diagnostic — Waza 技能歸屬修正
+
+- 改用 `PalUtility:MakeDamageInfoByWazaType` 的 `EPalWazaID` 關聯每次帕魯技能傷害。
+- 補抓 `BasePower` 與 `AttackElementType`，沒有 Waza 訊號時仍可分開未解析攻擊候選。
+- 修正傷害 schema 反射在第一個巢狀欄位提前中止的問題。
+- 結算時直接在遊戲聊天欄列出逐技能傷害、占比、整場 DPS、命中與平均每擊。
+- 新增 Waza 多段命中、技能切換與過期回退測試。
+
 ## 0.1.0-diagnostic — 獨立 Mod
 
 - 建立獨立 `PalSkillDPSAnalyzerSP` 套件與全新 Workshop metadata，不沿用上游 Published File ID。

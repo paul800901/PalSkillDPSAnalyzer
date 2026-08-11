@@ -1,4 +1,4 @@
-# PalSkillDPSAnalyzer v0.1.0-diagnostic
+# PalSkillDPSAnalyzer v0.1.1-diagnostic
 
 Palworld 1.0 單機用 UE4SS Lua 傷害驗證 Mod。它不是玩家排行榜，目標是把一場 Boss 測試中的每隻帕魯視為獨立來源，依可讀到的技能、投射物或攻擊欄位分桶，輸出總傷害、整場 DPS、占比、命中數與平均每擊傷害。
 
@@ -6,14 +6,14 @@ Palworld 1.0 單機用 UE4SS Lua 傷害驗證 Mod。它不是玩家排行榜，�
 
 ## 診斷版輸出
 
-第一次打中 Boss 後，聊天欄會顯示開始提示。擊殺、捕捉或 60 秒無傷害後，聊天欄只顯示一行完成提示；完整證據寫入 `UE4SS.log`：
+第一次打中 Boss 後，聊天欄會顯示開始提示。擊殺、捕捉或 60 秒無傷害後，聊天欄會列出每個技能候選的傷害、占比、整場 DPS、命中與平均每擊；完整原始證據也會寫入 `UE4SS.log`：
 
 ```text
 [PalSkillDPSAnalyzer] diagnostic-source boss=... source_kind=pal source=... damage=... dps=... hits=... candidates=...
 [PalSkillDPSAnalyzer] diagnostic-candidate boss=... candidate=... damage=... share=... dps=... hits=... avg_hit=... causer=... fields=...
 ```
 
-`candidate` 是診斷候選，不一定已是正式技能名稱。只要 Palworld 提供可靠的 `SkillID`、技能投射物或其他攻擊欄位，後續版本就能建立穩定映射；無法確認的資料保持 `UNKNOWN_*`。
+帕魯攻擊會優先讀取 Palworld 建立傷害資料時帶入的 `EPalWazaID`，因此候選可直接得到 `DarkBall`、`PoisonFog` 之類的遊戲技能代號。若某次傷害沒有 Waza 訊號，才依 `BasePower`、攻擊屬性與當前動作建立未解析候選；不會硬猜名稱。
 
 ## 預設測試模式
 
@@ -40,14 +40,14 @@ Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\
 powershell -ExecutionPolicy Bypass -File .\workshop\build_workshop.ps1
 ```
 
-輸出位於 `workshop/dist/PalSkillDPSAnalyzerSP-Workshop-v0.1.0.zip`。專案已保留獨立的 `Info.json`、PackageName 與空白 Workshop Published File ID，不會覆蓋上游 Mod。
+輸出位於 `workshop/dist/PalSkillDPSAnalyzerSP-Workshop-v0.1.1.zip`。專案已保留獨立的 `Info.json`、PackageName 與空白 Workshop Published File ID，不會覆蓋上游 Mod。
 
 ## 驗證流程
 
 1. 啟用本 Mod 與 UE4SS Experimental。
 2. 預設先只帶一隻帕魯，使用已知的 2–3 個技能攻擊 Boss。
 3. 結束戰鬥後保留 `UE4SS.log`。
-4. 以 `damage-schema`、`damage-sample` 和 `diagnostic-candidate` 行確認技能欄位與候選映射。
+4. 以 `Waza attribution hook`、`damage-sample` 和 `diagnostic-candidate` 行確認技能代號與傷害映射。
 5. 如需測武器，另開一場、開啟 `IncludePlayerDamage`，全程只使用同一武器。
 
 ## 適用邊界

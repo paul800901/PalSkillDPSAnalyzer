@@ -1,6 +1,6 @@
 # 帕魯技能 DPS 分析器
 
-Palworld 1.0 單人世界傷害驗證 Mod。預設只計算帕魯，依技能 ID、投射物或傷害來源建立診斷候選，完整結果寫入 UE4SS.log；不進行玩家排名。
+Palworld 1.0 單人世界傷害驗證 Mod。預設只計算帕魯，依技能 ID、投射物或傷害來源建立診斷候選；結算時會在遊戲聊天欄列出逐技能結果，完整原始證據另寫入 UE4SS.log。不進行玩家排名。
 
 ## 使用方法
 
@@ -23,7 +23,7 @@ config.IncludePlayerDamage = true
 Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\config.lua
 ```
 
-這是 v0.1.0 診斷版。`candidate` 代表有原始證據的候選，不保證已是正式技能名稱；未知傷害不會被硬套名稱。
+這是 v0.1.1 診斷版。帕魯傷害優先使用遊戲的 `EPalWazaID` 技能代號；缺少 Waza 訊號時才保留為有原始證據的未解析候選，不會硬套名稱。
 
 專案：https://github.com/paul800901/PalSkillDPSAnalyzer
 

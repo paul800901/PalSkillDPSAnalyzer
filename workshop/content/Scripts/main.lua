@@ -12,6 +12,7 @@ local session_actor_keys = {}
 local hooks = {
     damage = false,
     damage_mode = "none",
+    waza = false,
     death = false,
     captured = false,
     captured_count = 0,
@@ -20,6 +21,9 @@ local cached_pal_utility = nil
 local cached_gameplay_statics = nil
 local cached_world_context = nil
 local non_boss_addresses = {}
+local recent_waza_by_pair = {}
+local recent_waza_by_attacker = {}
+local cached_waza_enum = nil
 
 -- Native damage hooks may run in the middle of an Unreal call. They must not
 -- call UFunctions or retain references to the temporary event struct. The
@@ -46,6 +50,8 @@ local metrics = {
     native_buckets = 0,
     native_hits = 0,
     ignored_player_damage = 0,
+    waza_markers = 0,
+    waza_matches = 0,
     skill_candidates = 0,
     skill_samples = 0,
 }
@@ -1023,17 +1029,176 @@ local function same_diagnostic_object(left, right)
     return left.full_name ~= "" and left.full_name == right.full_name
 end
 
+local function diagnostic_actor_key(actor)
+    return actor_address(actor) or actor_full_name(actor)
+end
+
+local function waza_name_from_id(waza_id)
+    waza_id = math.floor(to_number(waza_id))
+    if waza_id <= 0 then
+        return nil
+    end
+    if cached_waza_enum == nil then
+        local found, enum_object = pcall(StaticFindObject, "/Script/Pal.EPalWazaID")
+        cached_waza_enum = found and is_valid(enum_object) and enum_object or false
+    end
+    if cached_waza_enum ~= false then
+        local resolved, enum_name = safe_call(cached_waza_enum, "GetNameByValue", waza_id)
+        if resolved then
+            local name = text_value(enum_name)
+            name = string.gsub(name, "^.*::", "")
+            name = string.gsub(name, "^:+", "")
+            if name ~= "" and name ~= "None" then
+                return name
+            end
+        end
+    end
+    return "WAZA_ID_" .. tostring(waza_id)
+end
+
+local function waza_pair_key(attacker, defender)
+    local attacker_key = diagnostic_actor_key(attacker)
+    local defender_key = diagnostic_actor_key(defender)
+    if attacker_key == nil or attacker_key == ""
+        or defender_key == nil or defender_key == "" then
+        return nil, attacker_key
+    end
+    return tostring(attacker_key) .. "->" .. tostring(defender_key), attacker_key
+end
+
+local function prune_waza_markers(now)
+    local ttl = math.max(1, math.floor(to_number(config.SkillMarkerTTLSeconds)))
+    local maximum = math.max(64, math.floor(to_number(config.SkillMarkerMaxEntries)))
+    local function prune(entries)
+        local rows = {}
+        for key, marker in pairs(entries) do
+            if now - marker.at > ttl then
+                entries[key] = nil
+            else
+                rows[#rows + 1] = { key = key, at = marker.at }
+            end
+        end
+        if #rows > maximum then
+            table.sort(rows, function(a, b) return a.at < b.at end)
+            for index = 1, #rows - maximum do
+                entries[rows[index].key] = nil
+            end
+        end
+    end
+    prune(recent_waza_by_pair)
+    prune(recent_waza_by_attacker)
+end
+
+local function process_waza_marker(event)
+    if not is_valid(event.attacker) or not is_valid(event.defender) then
+        return
+    end
+    local waza_id = math.floor(to_number(event.waza_id))
+    if waza_id <= 0 then
+        return
+    end
+    local pair_key, attacker_key = waza_pair_key(event.attacker, event.defender)
+    if attacker_key == nil or attacker_key == "" then
+        return
+    end
+    local marker = {
+        id = waza_id,
+        name = waza_name_from_id(waza_id),
+        at = event.captured_at or os.time(),
+    }
+    if pair_key ~= nil then
+        recent_waza_by_pair[pair_key] = marker
+    end
+    recent_waza_by_attacker[attacker_key] = marker
+    metrics.waza_markers = metrics.waza_markers + 1
+    if metrics.waza_markers % 64 == 1 then
+        prune_waza_markers(marker.at)
+    end
+end
+
+local function attach_runtime_skill_evidence(event, source_actor, source_kind)
+    if config.EnableSkillDiagnostics ~= true then
+        return
+    end
+    event.diagnostic_fields = event.diagnostic_fields or {}
+    local pair_key, attacker_key = waza_pair_key(event.attacker, event.defender)
+    local marker = pair_key ~= nil and recent_waza_by_pair[pair_key] or nil
+    marker = marker or (attacker_key ~= nil and recent_waza_by_attacker[attacker_key] or nil)
+    local ttl = math.max(1, math.floor(to_number(config.SkillMarkerTTLSeconds)))
+    if marker ~= nil and os.time() - marker.at <= ttl then
+        event.diagnostic_fields["waza.ID"] = marker.id
+        event.diagnostic_fields["waza.Name"] = marker.name
+        metrics.waza_matches = metrics.waza_matches + 1
+        return
+    end
+
+    if source_kind ~= "pal" or not is_valid(source_actor) then
+        return
+    end
+    local component_ok, action_component = safe_property(source_actor, "ActionComponent")
+    if not component_ok or not is_valid(action_component) then
+        local call_ok, component = safe_call(source_actor, "GetActionComponent")
+        action_component = call_ok and component or nil
+    end
+    if not is_valid(action_component) then
+        return
+    end
+    local action_ok, action = safe_call(action_component, "GetCurrentAction")
+    if not action_ok or not is_valid(action) then
+        return
+    end
+    local simple_ok, simple_name = safe_call(action, "GetSimpleName")
+    if simple_ok and text_value(simple_name) ~= "" then
+        event.diagnostic_fields["action.SimpleName"] = text_value(simple_name)
+    end
+    local action_info = diagnostic_object_info(action)
+    if action_info.short_name ~= "" then
+        event.diagnostic_fields["action.Class"] = action_info.short_name
+    end
+end
+
+local function first_diagnostic_field(fields, names)
+    for _, name in ipairs(names) do
+        if fields[name] ~= nil and tostring(fields[name]) ~= "" then
+            return fields[name]
+        end
+    end
+    return nil
+end
+
 local function skill_candidate_from_event(event, source_actor, source_kind)
     local causer = diagnostic_object_info(event and event.damage_causer or nil)
     local source = diagnostic_object_info(source_actor)
-    local fields = diagnostic_fields_text(event and event.diagnostic_fields or nil)
+    local diagnostic_fields = event and event.diagnostic_fields or {}
+    local fields = diagnostic_fields_text(diagnostic_fields)
     local label
     local identity
 
-    if causer.full_name == "" and causer.class_name == "" then
+    local explicit_skill = first_diagnostic_field(diagnostic_fields, {
+        "waza.Name",
+        "result.SkillName", "info.SkillName",
+        "result.SkillID", "info.SkillID",
+        "result.SkillId", "info.SkillId",
+        "result.AttackSkillID", "info.AttackSkillID",
+        "result.AttackSkillId", "info.AttackSkillId",
+        "action.SimpleName", "action.Class",
+    })
+
+    if explicit_skill ~= nil then
+        label = tostring(explicit_skill)
+        identity = "skill:" .. label
+    elseif causer.full_name == "" and causer.class_name == "" then
+        local base_power = first_diagnostic_field(diagnostic_fields, {
+            "result.BasePower", "info.BasePower",
+        })
+        local element = first_diagnostic_field(diagnostic_fields, {
+            "result.AttackElementType", "info.AttackElementType",
+        })
         label = source_kind == "player"
             and "UNKNOWN_PLAYER_WEAPON"
-            or "UNKNOWN_NO_DAMAGE_CAUSER"
+            or (base_power ~= nil
+                and string.format("UNRESOLVED_PAL_ATTACK_BP_%s_ELEMENT_%s", tostring(base_power), tostring(element or "unknown"))
+                or "UNKNOWN_NO_DAMAGE_CAUSER")
         identity = label
     elseif same_diagnostic_object(causer, source) then
         label = source_kind == "player"
@@ -1276,6 +1441,9 @@ end
 local function finish_skill_diagnostics(session, duration, reason, recipients)
     local sources = ranked_damage_entries(session.diagnostic_sources)
     local candidate_total = 0
+    local translator_code = get_translator().code
+    local chat_rows = {}
+    local chat_maximum = math.max(0, math.floor(to_number(config.SkillDiagnosticChatMaxRows)))
     log(string.format(
         "diagnostic-summary-begin boss=%s reason=%s duration=%d damage=%s sources=%d include_player=%s",
         session.name,
@@ -1320,6 +1488,33 @@ local function finish_skill_diagnostics(session, duration, reason, recipients)
                 candidate.fields,
                 candidate.source_full_name
             ))
+            if #chat_rows < chat_maximum then
+                if translator_code == "zh-TW" then
+                    chat_rows[#chat_rows + 1] = string.format(
+                        "%s｜技能 #%d %s｜傷害 %s｜占比 %.1f%%｜整場DPS %s｜命中 %d｜平均每擊 %s",
+                        source.name, rank, candidate.name,
+                        format_integer(candidate.damage), share,
+                        format_integer(candidate.damage / duration),
+                        candidate.hits, format_integer(average)
+                    )
+                elseif translator_code == "zh-CN" then
+                    chat_rows[#chat_rows + 1] = string.format(
+                        "%s｜技能 #%d %s｜伤害 %s｜占比 %.1f%%｜整场DPS %s｜命中 %d｜平均每击 %s",
+                        source.name, rank, candidate.name,
+                        format_integer(candidate.damage), share,
+                        format_integer(candidate.damage / duration),
+                        candidate.hits, format_integer(average)
+                    )
+                else
+                    chat_rows[#chat_rows + 1] = string.format(
+                        "%s | skill #%d %s | damage %s | share %.1f%% | encounter DPS %s | hits %d | avg %s",
+                        source.name, rank, candidate.name,
+                        format_integer(candidate.damage), share,
+                        format_integer(candidate.damage / duration),
+                        candidate.hits, format_integer(average)
+                    )
+                end
+            end
         end
     end
     log(string.format(
@@ -1329,7 +1524,6 @@ local function finish_skill_diagnostics(session, duration, reason, recipients)
         tostring(config.DumpDamageSchema == true)
     ))
 
-    local translator_code = get_translator().code
     local message
     if translator_code == "zh-TW" then
         message = string.format(
@@ -1356,7 +1550,11 @@ local function finish_skill_diagnostics(session, duration, reason, recipients)
             candidate_total
         )
     end
-    queue_messages({ message }, recipients)
+    local messages = { message }
+    for _, row in ipairs(chat_rows) do
+        messages[#messages + 1] = row
+    end
+    queue_messages(messages, recipients)
 end
 
 local function bind_session_actor(session, boss_info)
@@ -1963,6 +2161,7 @@ local function process_damage_event(event)
         )
         return
     end
+    attach_runtime_skill_evidence(event, source_actor or event.attacker, source_kind)
     record_damage(
         session,
         state,
@@ -2103,6 +2302,8 @@ local function drain_events()
         local ok, err
         if event.kind == "damage" then
             ok, err = pcall(process_damage_event, event)
+        elseif event.kind == "waza" then
+            ok, err = pcall(process_waza_marker, event)
         else
             ok, err = pcall(process_finish_event, event)
         end
@@ -2137,7 +2338,7 @@ end
 
 local function enqueue_event(event)
     local max_pending = math.max(64, math.floor(to_number(config.MaxPendingEvents)))
-    if event.kind == "damage" and queue_size() >= max_pending then
+    if (event.kind == "damage" or event.kind == "waza") and queue_size() >= max_pending then
         metrics.dropped = metrics.dropped + 1
         return
     end
@@ -2186,6 +2387,7 @@ local function capture_damage(damage_param)
     if config.EnableSkillDiagnostics == true then
         diagnostic_fields = {}
         local field_names = {
+            "BasePower", "AttackElementType",
             "SkillID", "SkillId", "SkillName", "SkillType",
             "AttackSkillID", "AttackSkillId", "AttackType", "AttackAttribute",
             "AttackElement", "ElementType", "DamageType", "DamageAttribute",
@@ -2215,6 +2417,25 @@ local function capture_damage(damage_param)
         override_network_owner = override_network_owner,
         info_attacker = info_attacker,
         diagnostic_fields = diagnostic_fields,
+    })
+end
+
+local function capture_waza_marker(attacker_param, defender_param, waza_param)
+    if config.EnableDPSRecording == false or config.EnableSkillDiagnostics ~= true then
+        return
+    end
+    local attacker = unwrap(attacker_param)
+    local defender = unwrap(defender_param)
+    local waza_id = math.floor(to_number(waza_param))
+    if attacker == nil or defender == nil or waza_id <= 0 then
+        return
+    end
+    enqueue_event({
+        kind = "waza",
+        attacker = attacker,
+        defender = defender,
+        waza_id = waza_id,
+        captured_at = os.time(),
     })
 end
 
@@ -2403,6 +2624,7 @@ local function dump_damage_schema()
         if owner == nil or count >= maximum then
             return
         end
+        local nested_structs = {}
         local walked, walk_error = safe_call(owner, "ForEachProperty", function(property)
             if count >= maximum then
                 return true
@@ -2430,7 +2652,10 @@ local function dump_damage_schema()
                     if seen_structs[struct_name] ~= true then
                         seen_structs[struct_name] = true
                         log("damage-schema struct=" .. struct_name .. " parent=" .. prefix .. property_name)
-                        walk(script_struct, prefix .. property_name .. ".", depth + 1)
+                        nested_structs[#nested_structs + 1] = {
+                            value = script_struct,
+                            prefix = prefix .. property_name .. ".",
+                        }
                     end
                 end
             end
@@ -2438,6 +2663,10 @@ local function dump_damage_schema()
         end)
         if not walked then
             log("damage-schema reflection failed owner=" .. prefix .. " error=" .. tostring(walk_error))
+            return
+        end
+        for _, nested in ipairs(nested_structs) do
+            walk(nested.value, nested.prefix, depth + 1)
         end
     end
 
@@ -2492,6 +2721,27 @@ local function register_hooks()
         log("native collector is required but unavailable; damage recording disabled")
     else
         activate_lua_damage_fallback("native collector unavailable")
+    end
+
+    if config.EnableSkillDiagnostics == true then
+        local waza_ok, waza_err = pcall(function()
+            RegisterHook("/Script/Pal.PalUtility:MakeDamageInfoByWazaType", function(
+                _, attacker, defender, attacker_hit_component,
+                defender_hit_component, hit_location, foliage_index, waza_type
+            )
+                local ok, err = pcall(capture_waza_marker, attacker, defender, waza_type)
+                if not ok then
+                    metrics.errors = metrics.errors + 1
+                    log("Waza marker capture error: " .. tostring(err))
+                end
+            end)
+        end)
+        hooks.waza = waza_ok
+        if waza_ok then
+            log("Waza attribution hook=/Script/Pal.PalUtility:MakeDamageInfoByWazaType")
+        else
+            log("Waza attribution hook unavailable; using BasePower/action evidence: " .. tostring(waza_err))
+        end
     end
 
     local death_ok, death_err = pcall(function()
@@ -2551,12 +2801,13 @@ local function register_hooks()
 
     if hooks.damage and hooks.death then
         log(string.format(
-            "loaded v0.1.0-diagnostic; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s local_only=%s; captured_hooks=%d",
+            "loaded v0.1.1-diagnostic; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s waza_hook=%s local_only=%s; captured_hooks=%d",
             hooks.damage_mode,
             tostring(config.EnableDPSRecording ~= false),
             tostring(config.EnableSkillDiagnostics == true),
             tostring(config.SkillDiagnosticsOnly == true),
             tostring(config.IncludePlayerDamage == true),
+            tostring(hooks.waza == true),
             tostring(config.LocalOnlyMessages == true),
             hooks.captured_count
         ))

@@ -204,6 +204,16 @@ local internationalization_library = object({}, {
     end,
 })
 
+local waza_names = {
+    [501] = "EPalWazaID::DarkBall",
+    [502] = "EPalWazaID::PoisonFog",
+}
+local waza_enum = object({}, {
+    GetNameByValue = function(_, value)
+        return waza_names[value] or ("EPalWazaID::TestWaza" .. tostring(value))
+    end,
+})
+
 function StaticFindObject(path)
     require_game_thread("StaticFindObject")
     if path == "/Script/Pal.Default__PalUtility" then
@@ -214,6 +224,9 @@ function StaticFindObject(path)
     end
     if path == "/Script/Engine.Default__KismetInternationalizationLibrary" then
         return internationalization_library
+    end
+    if path == "/Script/Pal.EPalWazaID" then
+        return waza_enum
     end
     error("unexpected StaticFindObject path: " .. tostring(path))
 end
@@ -229,6 +242,7 @@ function RegisterHook(path, callback)
         "RegisterHook must run during bootstrap or on the game thread")
     local allowed = {
         ["/Script/Pal.PalEventNotify_Character:OnCharacterDamaged_ServerInternal"] = true,
+        ["/Script/Pal.PalUtility:MakeDamageInfoByWazaType"] = true,
         ["/Script/Pal.PalEventNotify_Character:OnCharacterDead_ServerInternal"] = true,
         ["/Script/Pal.PalUtility:PalCaptureSuccess"] = true,
     }
@@ -307,6 +321,21 @@ local function damage(attacker, defender, amount, extra_fields)
     end
     phase = "hook"
     callbacks["/Script/Pal.PalEventNotify_Character:OnCharacterDamaged_ServerInternal"](nil, hook_param(payload))
+    phase = "idle"
+end
+
+local function waza(attacker, defender, waza_id)
+    phase = "hook"
+    callbacks["/Script/Pal.PalUtility:MakeDamageInfoByWazaType"](
+        nil,
+        hook_param(attacker),
+        hook_param(defender),
+        hook_param(nil),
+        hook_param(nil),
+        hook_param(nil),
+        hook_param({}),
+        hook_param(waza_id)
+    )
     phase = "idle"
 end
 
@@ -405,9 +434,11 @@ commentary_case({ total = 20000, top_share = 90, second_share = 0 }, true)
 commentary_case({}, true)
 
 local damage_hook = callbacks["/Script/Pal.PalEventNotify_Character:OnCharacterDamaged_ServerInternal"]
+local waza_hook = callbacks["/Script/Pal.PalUtility:MakeDamageInfoByWazaType"]
 local death_hook = callbacks["/Script/Pal.PalEventNotify_Character:OnCharacterDead_ServerInternal"]
 local captured_hook = callbacks["/Script/Pal.PalUtility:PalCaptureSuccess"]
 assert(damage_hook ~= nil, "damage hook was not registered")
+assert(waza_hook ~= nil, "Waza attribution hook was not registered")
 assert(death_hook ~= nil, "death hook was not registered")
 assert(captured_hook ~= nil, "capture hook was not registered")
 assert(#loop_tasks == 2, "cleanup and progress loops were not configured")
@@ -597,19 +628,27 @@ damage(player_one, diagnostic_boss, 200, {
     DamageCauser = rifle_projectile,
     DamageInfo = { WeaponType = "AssaultRifle" },
 })
-damage(player_two, diagnostic_boss, 250, {
-    DamageCauser = pal_skill_projectile,
-    DamageInfo = { SkillID = "DarkBall" },
+waza(player_two_pal, diagnostic_boss, 501)
+damage(player_two_pal, diagnostic_boss, 250, {
+    BasePower = 80,
+    AttackElementType = 8,
 })
-damage(player_two, diagnostic_boss, 350, {
-    DamageCauser = pal_skill_projectile,
-    DamageInfo = { SkillID = "DarkBall" },
+waza(player_two_pal, diagnostic_boss, 501)
+damage(player_two_pal, diagnostic_boss, 350, {
+    BasePower = 80,
+    AttackElementType = 8,
 })
-damage(player_two, diagnostic_boss, 300, {
-    DamageCauser = poison_projectile,
-    DamageInfo = { SkillID = "PoisonFog" },
+waza(player_two_pal, diagnostic_boss, 502)
+damage(player_two_pal, diagnostic_boss, 300, {
+    BasePower = 100,
+    AttackElementType = 8,
 })
-damage(player_two_pal, diagnostic_boss, 100)
+run_game_tasks()
+fake_time = fake_time + runtime_config.SkillMarkerTTLSeconds + 1
+damage(player_two_pal, diagnostic_boss, 100, {
+    BasePower = 30,
+    AttackElementType = 1,
+})
 run_game_tasks()
 local diagnostic_session
 for _, candidate in pairs(BossDPSBroadcastTestApi.sessions) do
@@ -634,7 +673,7 @@ local diagnostic_candidate_count = 0
 local dark_ball_candidate
 for _, candidate in pairs(diagnostic_source.skill_candidates) do
     diagnostic_candidate_count = diagnostic_candidate_count + 1
-    if candidate.fields == "info.SkillID=DarkBall" then
+    if candidate.name == "DarkBall" then
         dark_ball_candidate = candidate
     end
 end
@@ -652,6 +691,8 @@ end
 local diagnostic_joined = table.concat(diagnostic_messages, "\n")
 assert(string.find(diagnostic_joined, "伤害验证完成", 1, true) ~= nil,
     "diagnostic completion message missing")
+assert(string.find(diagnostic_joined, "DarkBall｜伤害 600｜占比 60.0%｜整场DPS 19", 1, true) ~= nil,
+    "per-skill chat result missing")
 assert(string.find(diagnostic_joined, "MVP", 1, true) == nil,
     "diagnostic-only mode emitted a player ranking")
 
@@ -1136,4 +1177,4 @@ assert(#delivered_by_uid[test_guid_key(uid_spectator)] == 0, "spectator received
 
 assert(#BossDPSBroadcastTestApi.sessions == 0, "sessions table must be map-like")
 assert(original_os_time ~= nil)
-print("PalSkillDPSAnalyzer v0.1.0 diagnostic/source/thread/lifetime/stress tests passed")
+print("PalSkillDPSAnalyzer v0.1.1 diagnostic/source/thread/lifetime/stress tests passed")

@@ -19,13 +19,16 @@ Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\config.lua
 | `DumpDamageSchema` | `true` | 啟動後反射傷害事件欄位一次 |
 | `SkillDiagnosticMaxSamplesPerCandidate` | `3` | 每個候選最多保留幾筆逐擊樣本 |
 | `SkillDiagnosticMaxSchemaFields` | `128` | 反射欄位數上限 |
+| `SkillDiagnosticChatMaxRows` | `12` | 結算時在遊戲聊天欄顯示的技能／武器明細上限 |
+| `SkillMarkerTTLSeconds` | `30` | 延遲投射物可沿用 Waza 技能代號的時間 |
+| `SkillMarkerMaxEntries` | `2048` | Waza 關聯快取的有界上限 |
 
 帕魯測試請保持 `IncludePlayerDamage = false`。測試人物武器時改為 `true`，並建議每場只使用一種武器。
 
 ## 結算口徑
 
 - 來源：每隻帕魯；啟用人物後，人物角色另算一個來源。
-- 候選：技能 ID、投射物、武器傷害來源或未知桶。
+- 候選：優先使用 `EPalWazaID`；缺少 Waza 時才使用基礎威力、屬性、當前動作、投射物、武器來源或未知桶。
 - 整場 DPS：候選累計傷害除以 Boss 遭遇總秒數。
 - 平均每擊：候選累計傷害除以有效命中數。
 - 占比：候選傷害除以該來源的累計傷害。
