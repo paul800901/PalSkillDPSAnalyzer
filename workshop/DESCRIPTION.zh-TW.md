@@ -1,36 +1,35 @@
-[h1]不要查我 DPS[/h1]
-[b]適用於 Palworld 1.0 單人世界的輕量 Boss 傷害統計 Mod。[/b]
+[h1]帕魯技能 DPS 分析器[/h1]
+[b]適用於 Palworld 1.0 單人世界的傷害驗證工具。[/b]
 
-攻擊 Boss 後自動開始統計；擊殺、捕捉或戰鬥逾時時，結果會顯示在遊戲聊天視窗。
+這不是玩家排名 Mod。每隻帕魯都是獨立測試來源，依 Palworld 傷害事件可讀到的技能 ID、投射物或傷害來源建立候選，輸出總傷害、整場 DPS、占比、命中數與平均每擊傷害。
 
-[h2]主要功能[/h2]
+[h2]診斷版功能[/h2]
 [list]
-[*]團隊傷害、戰鬥時間、DPS、玩家排名與傷害占比
-[*]分開記錄玩家角色與每隻帕魯的傷害
-[*]優先顯示玩家設定的帕魯暱稱
-[*]將月亮領主等多部位 Boss 合併為一場戰鬥
-[*]自動跟隨 Palworld 支援的 17 種語言
-[*]可選即時戰況、詳細獎項、帕魯明細與趣味點評
+[*]預設只計算帕魯；人物與武器傷害預設關閉
+[*]可選擇以一場一種武器的方式驗證人物傷害
+[*]只使用可回讀證據建立候選；未知傷害不會被猜成某個技能
+[*]在 UE4SS.log 寫入一次性傷害結構與有界逐擊樣本
+[*]支援 Boss 擊殺、捕捉與無傷害逾時結算
 [/list]
 
 [h2]安裝[/h2]
 [olist]
 [*]訂閱本 Mod。
 [*]訂閱並啟用 [url=https://steamcommunity.com/workshop/filedetails/?id=3625223587]UE4SS Experimental (Palworld)[/url]。
-[*]在 Palworld 的 Mod 管理中啟用兩個 Mod。
-[*]進入單人世界並攻擊 Boss。
+[*]在 Palworld Mod 管理器啟用兩個 Mod。
+[*]讓一隻技能配置已知的帕魯攻擊 Boss，結束後保留 UE4SS.log。
 [/olist]
 
-[h2]每隻帕魯的傷害[/h2]
-v1.2.0 預設在結算中顯示玩家角色與每隻帕魯的傷害、占比及 DPS。可修改 [code]config.EnablePalDamageBreakdown = true[/code]；設為 [code]false[/code] 可精簡戰報。Boss 戰鬥場地支援統計，PvP 競技場目前不支援。
+[h2]人物武器測試[/h2]
+將 [code]config.IncludePlayerDamage = true[/code]，完整重開 Palworld，並在整場戰鬥中只使用一種武器。能可靠辨識武器或投射物就建立獨立候選；不能辨識時保留為未知人物武器。
 
 [h2]適用範圍[/h2]
 [list]
-[*][b]支援：[/b]單人世界
-[*][b]實驗性：[/b]房主模式，僅房主可見
-[*][b]不支援：[/b]遠端客戶端統計伺服器權威的全隊傷害
+[*][b]目標：[/b]Windows 單人世界
+[*][b]目前狀態：[/b]v0.1.0 診斷版，候選名稱仍需實機驗證
+[*][b]不做：[/b]比較不同玩家或建立競技 DPS 排名
 [/list]
 
-專用伺服器請使用 [url=https://github.com/AsahiChan-Game/PalBossDPSBroadcast]GitHub[/url] 的伺服器版本。
+原始碼與問題追蹤：[url=https://github.com/paul800901/PalSkillDPSAnalyzer]GitHub[/url]
 
-[i]非官方社群 Mod，與 Pocketpair、Steam 或 UE4SS 無隸屬關係。歡迎協助修正翻譯。[/i]
+[i]獨立 MIT Mod，核心衍生自 AsahiChan-Game/PalBossDPSBroadcast。與 Pocketpair、Steam 或 UE4SS 無隸屬關係。[/i]

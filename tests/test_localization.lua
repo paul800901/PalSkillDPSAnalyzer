@@ -52,4 +52,4 @@ assert(localization.new("auto", function() return "zh-Hant-TW" end).code == "zh-
 assert(localization.new("auto", function() return "pt_BR" end).code == "pt-BR")
 assert(localization.new("unsupported").code == "en")
 
-print("BossDPSBroadcast localization tests passed for 17 languages")
+print("PalSkillDPSAnalyzer localization tests passed for 17 languages")

@@ -4,7 +4,7 @@ local config = require("./config")
 local battle_commentary = require("./commentary")
 local localization = require("./localization")
 
-local MOD = "[BossDPSBroadcast]"
+local MOD = "[PalSkillDPSAnalyzer]"
 local unpack_args = table.unpack or unpack
 local sessions = {}
 local session_addresses = {}
@@ -45,6 +45,9 @@ local metrics = {
     contributor_cache_hits = 0,
     native_buckets = 0,
     native_hits = 0,
+    ignored_player_damage = 0,
+    skill_candidates = 0,
+    skill_samples = 0,
 }
 
 local function log(message)
@@ -339,6 +342,43 @@ local function actor_short_name(actor)
     text = string.gsub(text, "_C$", "")
     text = string.gsub(text, "^BP_", "")
     return text ~= "" and text or "Boss"
+end
+
+local function stable_object_identity(value)
+    local text = tostring(value or "")
+    text = string.gsub(text, "_C_%d+$", "_C")
+    text = string.gsub(text, "_(%d+)$", "")
+    return text
+end
+
+local function diagnostic_object_info(object)
+    if not is_valid(object) then
+        return {
+            address = "",
+            full_name = "",
+            short_name = "",
+            class_name = "",
+        }
+    end
+
+    local full_name = actor_full_name(object)
+    local short_name = actor_short_name(object)
+    local class_name = ""
+    local class_ok, class = safe_call(object, "GetClass")
+    if class_ok and is_valid(class) then
+        class_name = actor_full_name(class)
+        if class_name == "" then
+            local name_ok, name = safe_call(class, "GetName")
+            class_name = name_ok and text_value(name) or ""
+        end
+    end
+
+    return {
+        address = actor_address(object) or "",
+        full_name = stable_object_identity(full_name),
+        short_name = stable_object_identity(short_name),
+        class_name = stable_object_identity(class_name),
+    }
 end
 
 local function guid_parts(value)
@@ -961,6 +1001,111 @@ local function ranked_damage_entries(entries)
     return rows
 end
 
+local function diagnostic_fields_text(fields)
+    local keys = {}
+    for key in pairs(fields or {}) do
+        keys[#keys + 1] = tostring(key)
+    end
+    table.sort(keys)
+    local parts = {}
+    for _, key in ipairs(keys) do
+        local value = sanitize_utf8(tostring(fields[key]))
+        value = string.gsub(value, "[|\r\n]", " ")
+        parts[#parts + 1] = key .. "=" .. truncate_utf8(value, 64)
+    end
+    return #parts > 0 and table.concat(parts, ",") or "none"
+end
+
+local function same_diagnostic_object(left, right)
+    if left.address ~= "" and right.address ~= "" then
+        return left.address == right.address
+    end
+    return left.full_name ~= "" and left.full_name == right.full_name
+end
+
+local function skill_candidate_from_event(event, source_actor, source_kind)
+    local causer = diagnostic_object_info(event and event.damage_causer or nil)
+    local source = diagnostic_object_info(source_actor)
+    local fields = diagnostic_fields_text(event and event.diagnostic_fields or nil)
+    local label
+    local identity
+
+    if causer.full_name == "" and causer.class_name == "" then
+        label = source_kind == "player"
+            and "UNKNOWN_PLAYER_WEAPON"
+            or "UNKNOWN_NO_DAMAGE_CAUSER"
+        identity = label
+    elseif same_diagnostic_object(causer, source) then
+        label = source_kind == "player"
+            and "PLAYER_CHARACTER_OR_WEAPON"
+            or "UNKNOWN_DIRECT_PAL_ACTOR"
+        identity = label
+    else
+        label = causer.short_name ~= "" and causer.short_name
+            or causer.class_name ~= "" and causer.class_name
+            or causer.full_name
+        identity = causer.class_name ~= "" and causer.class_name or causer.full_name
+    end
+
+    return {
+        key = tostring(identity) .. "|" .. fields,
+        name = tostring(label),
+        fields = fields,
+        causer_full_name = causer.full_name ~= "" and causer.full_name or "none",
+        causer_class_name = causer.class_name ~= "" and causer.class_name or "none",
+        source_full_name = source.full_name ~= "" and source.full_name or "none",
+    }
+end
+
+local function record_skill_candidate(session, source, event, source_actor, damage, hit_count)
+    if config.EnableSkillDiagnostics ~= true or source == nil then
+        return
+    end
+    source.skill_candidates = source.skill_candidates or {}
+    local evidence = skill_candidate_from_event(event, source_actor, source.kind)
+    local candidate = source.skill_candidates[evidence.key]
+    if candidate == nil then
+        candidate = {
+            name = evidence.name,
+            evidence_key = evidence.key,
+            fields = evidence.fields,
+            causer_full_name = evidence.causer_full_name,
+            causer_class_name = evidence.causer_class_name,
+            source_full_name = evidence.source_full_name,
+            damage = 0,
+            hits = 0,
+            samples = 0,
+        }
+        source.skill_candidates[evidence.key] = candidate
+        session.skill_candidate_count = (session.skill_candidate_count or 0) + 1
+        metrics.skill_candidates = metrics.skill_candidates + 1
+    end
+
+    candidate.damage = candidate.damage + damage
+    candidate.hits = candidate.hits + hit_count
+    local sample_limit = math.max(
+        0,
+        math.floor(to_number(config.SkillDiagnosticMaxSamplesPerCandidate))
+    )
+    if candidate.samples < sample_limit then
+        candidate.samples = candidate.samples + 1
+        metrics.skill_samples = metrics.skill_samples + 1
+        log(string.format(
+            "damage-sample boss=%s source_kind=%s source=%s candidate=%s damage=%s hits=%d causer=%s class=%s fields=%s actor=%s",
+            session.name,
+            tostring(source.kind),
+            source.name,
+            candidate.name,
+            format_integer(damage),
+            hit_count,
+            candidate.causer_full_name,
+            candidate.causer_class_name,
+            candidate.fields,
+            candidate.source_full_name
+        ))
+    end
+end
+
 local function session_recipients(session)
     local recipients = {}
     for _, entry in pairs(session.contributors) do
@@ -1128,6 +1273,92 @@ local function queue_team_details(session, duration)
     end
 end
 
+local function finish_skill_diagnostics(session, duration, reason, recipients)
+    local sources = ranked_damage_entries(session.diagnostic_sources)
+    local candidate_total = 0
+    log(string.format(
+        "diagnostic-summary-begin boss=%s reason=%s duration=%d damage=%s sources=%d include_player=%s",
+        session.name,
+        tostring(reason),
+        duration,
+        format_integer(session.total_damage),
+        #sources,
+        tostring(config.IncludePlayerDamage == true)
+    ))
+
+    for _, source in ipairs(sources) do
+        local candidates = ranked_damage_entries(source.skill_candidates)
+        candidate_total = candidate_total + #candidates
+        log(string.format(
+            "diagnostic-source boss=%s source_kind=%s source=%s owner=%s damage=%s dps=%s hits=%d candidates=%d",
+            session.name,
+            tostring(source.kind),
+            source.name,
+            source.owner_name,
+            format_integer(source.damage),
+            format_integer(source.damage / duration),
+            source.hits or 0,
+            #candidates
+        ))
+        for rank, candidate in ipairs(candidates) do
+            local share = source.damage > 0 and candidate.damage * 100 / source.damage or 0
+            local average = candidate.hits > 0 and candidate.damage / candidate.hits or 0
+            log(string.format(
+                "diagnostic-candidate boss=%s source_kind=%s source=%s rank=%d candidate=%s damage=%s share=%.1f dps=%s hits=%d avg_hit=%s causer=%s class=%s fields=%s actor=%s",
+                session.name,
+                tostring(source.kind),
+                source.name,
+                rank,
+                candidate.name,
+                format_integer(candidate.damage),
+                share,
+                format_integer(candidate.damage / duration),
+                candidate.hits,
+                format_integer(average),
+                candidate.causer_full_name,
+                candidate.causer_class_name,
+                candidate.fields,
+                candidate.source_full_name
+            ))
+        end
+    end
+    log(string.format(
+        "diagnostic-summary-end boss=%s candidates=%d schema_dump=%s",
+        session.name,
+        candidate_total,
+        tostring(config.DumpDamageSchema == true)
+    ))
+
+    local translator_code = get_translator().code
+    local message
+    if translator_code == "zh-TW" then
+        message = string.format(
+            "傷害驗證完成：%s｜納入傷害 %s｜來源 %d個｜技能／武器候選 %d個｜請保留 UE4SS.log",
+            session.name,
+            format_integer(session.total_damage),
+            #sources,
+            candidate_total
+        )
+    elseif translator_code == "zh-CN" then
+        message = string.format(
+            "伤害验证完成：%s｜纳入伤害 %s｜来源 %d个｜技能/武器候选 %d个｜请保留 UE4SS.log",
+            session.name,
+            format_integer(session.total_damage),
+            #sources,
+            candidate_total
+        )
+    else
+        message = string.format(
+            "Damage diagnostics complete: %s | damage %s | sources %d | candidates %d | keep UE4SS.log",
+            session.name,
+            format_integer(session.total_damage),
+            #sources,
+            candidate_total
+        )
+    end
+    queue_messages({ message }, recipients)
+end
+
 local function bind_session_actor(session, boss_info)
     session.actor_addresses = session.actor_addresses or {}
     session.actor_keys = session.actor_keys or {}
@@ -1227,6 +1458,10 @@ local function finish_session(session, reason)
     local teams = ranked_damage_entries(session.teams)
     local pals = ranked_damage_entries(session.pal_sources)
     local recipients = session_recipients(session)
+    if config.SkillDiagnosticsOnly == true then
+        finish_skill_diagnostics(session, duration, reason, recipients)
+        return
+    end
     local messages = {}
     local team_prefix = #teams == 1 and (teams[1].name .. "｜") or ""
     if reason == "defeated" then
@@ -1375,8 +1610,11 @@ local function start_session(boss_info)
         teams = {},
         pal_sources = {},
         pal_actor_sources = {},
+        player_sources = {},
+        diagnostic_sources = {},
         source_owner_cache = {},
         player_state_entries = {},
+        skill_candidate_count = 0,
         start_announced = false,
         finished = false,
     }
@@ -1393,7 +1631,8 @@ local function record_damage(
     source_kind,
     source_actor,
     utility,
-    hit_count
+    hit_count,
+    event
 )
     hit_count = math.max(1, math.floor(to_number(hit_count)))
     local state_address = actor_address(player_state)
@@ -1459,12 +1698,14 @@ local function record_damage(
         end
         if pal == nil then
             pal = {
+                kind = "pal",
                 name = display_name,
                 owner_name = entry.name,
                 owner_uid_key = key,
                 team_key = entry.team_key,
                 damage = 0,
                 hits = 0,
+                skill_candidates = {},
             }
             session.pal_sources[source_key] = pal
         end
@@ -1473,6 +1714,8 @@ local function record_damage(
         pal.team_key = entry.team_key
         pal.damage = pal.damage + damage
         pal.hits = pal.hits + hit_count
+        session.diagnostic_sources["pal:" .. tostring(source_key)] = pal
+        record_skill_candidate(session, pal, event, source_actor, damage, hit_count)
         session.last_hitter_label = tr("pal_killer", {
             player = entry.name,
             pal = display_name,
@@ -1480,14 +1723,49 @@ local function record_damage(
     else
         entry.direct_damage = entry.direct_damage + damage
         entry.direct_hits = entry.direct_hits + hit_count
+        local player_source = session.player_sources[key]
+        if player_source == nil then
+            player_source = {
+                kind = "player",
+                name = tr("player_role", { player = entry.name }),
+                owner_name = entry.name,
+                owner_uid_key = key,
+                team_key = entry.team_key,
+                damage = 0,
+                hits = 0,
+                skill_candidates = {},
+            }
+            session.player_sources[key] = player_source
+        end
+        player_source.damage = player_source.damage + damage
+        player_source.hits = player_source.hits + hit_count
+        session.diagnostic_sources["player:" .. tostring(key)] = player_source
+        record_skill_candidate(session, player_source, event, source_actor, damage, hit_count)
         session.last_hitter_label = entry.name
     end
 
     if session.start_announced ~= true then
         session.start_announced = true
         if config.BroadcastStart ~= false then
+            local start_message = tr("start", { boss = session.name })
+            if config.SkillDiagnosticsOnly == true then
+                local code = get_translator().code
+                if code == "zh-TW" then
+                    start_message = (config.IncludePlayerDamage == true
+                        and "開始記錄技能／武器候選："
+                        or "開始記錄帕魯技能候選：") .. session.name
+                elseif code == "zh-CN" then
+                    start_message = (config.IncludePlayerDamage == true
+                        and "开始记录技能/武器候选："
+                        or "开始记录帕鲁技能候选：") .. session.name
+                else
+                    start_message = (config.IncludePlayerDamage == true
+                        and "Skill/weapon diagnostics started: "
+                        or "Pal skill diagnostics started: ") .. session.name
+                end
+            end
             queue_messages(
-                { tr("start", { boss = session.name }) },
+                { start_message },
                 session_recipients(session)
             )
         end
@@ -1678,6 +1956,13 @@ local function process_damage_event(event)
     if state == nil then
         return
     end
+    if source_kind ~= "pal" and config.IncludePlayerDamage ~= true then
+        metrics.ignored_player_damage = metrics.ignored_player_damage + math.max(
+            1,
+            math.floor(to_number(event.hits))
+        )
+        return
+    end
     record_damage(
         session,
         state,
@@ -1685,7 +1970,8 @@ local function process_damage_event(event)
         source_kind,
         source_actor or event.attacker,
         utility,
-        event.hits
+        event.hits,
+        event
     )
 end
 
@@ -1896,6 +2182,29 @@ local function capture_damage(damage_param)
     local override_network_owner = copied_field(result, "OverrideNetworkOwner")
         or copied_field(damage_info, "OverrideNetworkOwner")
     local info_attacker = copied_field(damage_info, "Attacker")
+    local diagnostic_fields = nil
+    if config.EnableSkillDiagnostics == true then
+        diagnostic_fields = {}
+        local field_names = {
+            "SkillID", "SkillId", "SkillName", "SkillType",
+            "AttackSkillID", "AttackSkillId", "AttackType", "AttackAttribute",
+            "AttackElement", "ElementType", "DamageType", "DamageAttribute",
+            "WeaponType", "WazaID", "WazaId", "ActionID", "ActionId",
+            "BulletID", "BulletId",
+        }
+        for _, container in ipairs({
+            { prefix = "result.", value = result },
+            { prefix = "info.", value = damage_info },
+        }) do
+            for _, field_name in ipairs(field_names) do
+                local value = copied_field(container.value, field_name)
+                local value_type = type(value)
+                if value_type == "number" or value_type == "string" or value_type == "boolean" then
+                    diagnostic_fields[container.prefix .. field_name] = value
+                end
+            end
+        end
+    end
 
     enqueue_event({
         kind = "damage",
@@ -1905,6 +2214,7 @@ local function capture_damage(damage_param)
         damage_causer = damage_causer,
         override_network_owner = override_network_owner,
         info_attacker = info_attacker,
+        diagnostic_fields = diagnostic_fields,
     })
 end
 
@@ -2063,6 +2373,100 @@ local function schedule_native_drain()
     end
 end
 
+local function reflected_name(object)
+    local ok, fname = safe_call(object, "GetFName")
+    if ok then
+        local value = text_value(fname)
+        if value ~= "" then
+            return value
+        end
+    end
+    ok, fname = safe_call(object, "GetName")
+    return ok and text_value(fname) or "unknown"
+end
+
+local function dump_damage_schema()
+    if config.EnableSkillDiagnostics ~= true or config.DumpDamageSchema ~= true then
+        return
+    end
+    local function_path = "/Script/Pal.PalEventNotify_Character:OnCharacterDamaged_ServerInternal"
+    local ok, damage_function = pcall(StaticFindObject, function_path)
+    if not ok or not is_valid(damage_function) then
+        log("damage-schema unavailable function=" .. function_path .. " error=" .. tostring(damage_function))
+        return
+    end
+
+    local maximum = math.max(1, math.floor(to_number(config.SkillDiagnosticMaxSchemaFields)))
+    local count = 0
+    local seen_structs = {}
+    local function walk(owner, prefix, depth)
+        if owner == nil or count >= maximum then
+            return
+        end
+        local walked, walk_error = safe_call(owner, "ForEachProperty", function(property)
+            if count >= maximum then
+                return true
+            end
+            count = count + 1
+            local property_name = reflected_name(property)
+            local class_ok, property_class = safe_call(property, "GetClass")
+            local property_type = class_ok and reflected_name(property_class) or "unknown"
+            local offset_ok, offset = safe_call(property, "GetOffset_Internal")
+            log(string.format(
+                "damage-schema field=%s%s type=%s offset=%s",
+                prefix,
+                property_name,
+                property_type,
+                offset_ok and tostring(offset) or "unknown"
+            ))
+
+            if depth < 1 and string.find(property_type, "StructProperty", 1, true) ~= nil then
+                local struct_ok, script_struct = safe_call(property, "GetStruct")
+                if struct_ok and is_valid(script_struct) then
+                    local struct_name = actor_full_name(script_struct)
+                    if struct_name == "" then
+                        struct_name = reflected_name(script_struct)
+                    end
+                    if seen_structs[struct_name] ~= true then
+                        seen_structs[struct_name] = true
+                        log("damage-schema struct=" .. struct_name .. " parent=" .. prefix .. property_name)
+                        walk(script_struct, prefix .. property_name .. ".", depth + 1)
+                    end
+                end
+            end
+            return false
+        end)
+        if not walked then
+            log("damage-schema reflection failed owner=" .. prefix .. " error=" .. tostring(walk_error))
+        end
+    end
+
+    log("damage-schema-begin function=" .. function_path)
+    walk(damage_function, "event.", 0)
+    log(string.format("damage-schema-end fields=%d capped=%s", count, tostring(count >= maximum)))
+end
+
+local function schedule_damage_schema_dump()
+    if rawget(_G, "__BOSS_DPS_TEST") == true
+        or config.EnableSkillDiagnostics ~= true
+        or config.DumpDamageSchema ~= true then
+        return
+    end
+    local scheduled, schedule_error = pcall(function()
+        ExecuteInGameThread(function()
+            local dumped, dump_error = pcall(dump_damage_schema)
+            if not dumped then
+                metrics.errors = metrics.errors + 1
+                log("damage-schema error=" .. tostring(dump_error))
+            end
+        end)
+    end)
+    if not scheduled then
+        metrics.errors = metrics.errors + 1
+        log("damage-schema scheduling failed: " .. tostring(schedule_error))
+    end
+end
+
 local function register_hooks()
     local native_ready = false
     if config.PreferNativeCollector ~= false
@@ -2147,12 +2551,12 @@ local function register_hooks()
 
     if hooks.damage and hooks.death then
         log(string.format(
-            "loaded v3.4.0; collector=%s dps=%s progress=%s pal_breakdown=%s comments=%s local_only=%s; captured_hooks=%d",
+            "loaded v0.1.0-diagnostic; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s local_only=%s; captured_hooks=%d",
             hooks.damage_mode,
             tostring(config.EnableDPSRecording ~= false),
-            tostring(config.EnableProgressReports == true),
-            tostring(pal_damage_breakdown_enabled()),
-            tostring(config.EnableFunComments ~= false),
+            tostring(config.EnableSkillDiagnostics == true),
+            tostring(config.SkillDiagnosticsOnly == true),
+            tostring(config.IncludePlayerDamage == true),
             tostring(config.LocalOnlyMessages == true),
             hooks.captured_count
         ))
@@ -2163,6 +2567,7 @@ end
 
 register_hooks()
 if hooks.damage and hooks.death then
+    schedule_damage_schema_dump()
     schedule_native_drain()
     schedule_cleanup()
     schedule_progress()

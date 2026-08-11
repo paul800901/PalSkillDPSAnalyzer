@@ -13,13 +13,17 @@ Copy-Item -LiteralPath (Join-Path $projectDirectory "Scripts\main.lua") -Destina
 Copy-Item -LiteralPath (Join-Path $projectDirectory "Scripts\commentary.lua") -Destination (Join-Path $contentScripts "commentary.lua") -Force
 Copy-Item -LiteralPath (Join-Path $projectDirectory "Scripts\localization.lua") -Destination (Join-Path $contentScripts "localization.lua") -Force
 Copy-Item -Path (Join-Path $projectDirectory "Scripts\locales\*.lua") -Destination $contentLocales -Force
+Copy-Item -LiteralPath (Join-Path $workshopDirectory "assets\thumbnail-pal-skill-dps-v1.png") -Destination (Join-Path $contentDirectory "thumbnail.png") -Force
 
 $infoPath = Join-Path $contentDirectory "Info.json"
 $info = Get-Content -LiteralPath $infoPath -Raw -Encoding UTF8 | ConvertFrom-Json
-$expectedWorkshopTitle = -join @([char]0x4E0D, [char]0x8981, [char]0x67E5, [char]0x6211, "D", "P", "S")
+$expectedWorkshopTitle = -join @(
+    [char]0x5E15, [char]0x9B6F, [char]0x6280, [char]0x80FD,
+    " DPS ", [char]0x5206, [char]0x6790, [char]0x5668
+)
 if ($info.ModName -ne $expectedWorkshopTitle) { throw "Unexpected Workshop ModName" }
-if ($info.PackageName -ne "PalBossDPSBroadcastSP") { throw "Unexpected Workshop PackageName" }
-if ($info.Version -ne "1.2.0") { throw "Unexpected Workshop version" }
+if ($info.PackageName -ne "PalSkillDPSAnalyzerSP") { throw "Unexpected Workshop PackageName" }
+if ($info.Version -ne "0.1.0") { throw "Unexpected Workshop version" }
 if ($info.Dependencies -notcontains "UE4SSExperimentalPW") { throw "UE4SS dependency missing" }
 if ($info.InstallRule.Count -ne 1 -or $info.InstallRule[0].Type -ne "Lua") { throw "Lua InstallRule missing" }
 
@@ -27,8 +31,10 @@ $configPath = Join-Path $contentScripts "config.lua"
 $configText = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8
 foreach ($requiredSetting in @(
     "config.LocalOnlyMessages = true",
-    "config.EnableFunComments = true",
-    "config.EnablePalDamageBreakdown = true"
+    "config.EnableSkillDiagnostics = true",
+    "config.SkillDiagnosticsOnly = true",
+    "config.IncludePlayerDamage = false",
+    "config.PreferNativeCollector = false"
 )) {
     if (-not $configText.Contains($requiredSetting)) { throw "Workshop config missing: $requiredSetting" }
 }
@@ -51,7 +57,7 @@ foreach ($localePath in Get-ChildItem -LiteralPath $contentLocales -Filter "*.lu
 }
 
 New-Item -ItemType Directory -Path $distDirectory -Force | Out-Null
-$zipPath = Join-Path $distDirectory "PalBossDPSBroadcastSP-Workshop-v1.2.0.zip"
+$zipPath = Join-Path $distDirectory "PalSkillDPSAnalyzerSP-Workshop-v0.1.0.zip"
 Compress-Archive -Path (Join-Path $contentDirectory "*") -DestinationPath $zipPath -CompressionLevel Optimal -Force
 
 Write-Host "Workshop package ready: $zipPath"

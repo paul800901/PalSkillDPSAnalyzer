@@ -13,7 +13,9 @@ config.Language = "auto"
 -- The native layer aggregates high-frequency hits before Lua sees them.
 -- Keep RequireNativeCollector false so an incompatible/missing DLL falls back
 -- to the proven Lua hook instead of silently disabling all damage recording.
-config.PreferNativeCollector = true
+-- Diagnostics require the unaggregated Lua event so candidate skill metadata
+-- is not discarded by the native high-frequency collector.
+config.PreferNativeCollector = false
 config.RequireNativeCollector = false
 config.NativeDrainIntervalMilliseconds = 50
 config.NativeMaxBucketsPerDrain = 512
@@ -23,7 +25,20 @@ config.NativeMaxBucketsPerDrain = 512
 config.LocalOnlyMessages = false
 
 -- Prefix used for every participant-only system chat message.
-config.MessagePrefix = "[BossDPS]"
+config.MessagePrefix = "[PalSkillDPS]"
+
+-- Standalone damage verification. Pal skills are the default lane; optional
+-- player/weapon tests use the same source and candidate model. The diagnostic
+-- release records evidence-backed candidates and never invents a name.
+config.EnableSkillDiagnostics = true
+config.SkillDiagnosticsOnly = true
+-- Off by default. Enable for a separate player-character test run. When the
+-- damage causer exposes a weapon/projectile, the analyzer creates one bucket
+-- per candidate; otherwise it falls back to a generic player source bucket.
+config.IncludePlayerDamage = false
+config.DumpDamageSchema = true
+config.SkillDiagnosticMaxSamplesPerCandidate = 3
+config.SkillDiagnosticMaxSchemaFields = 128
 
 -- Optional components. Compact, low-noise output is the public default.
 -- Change a switch, then restart the server once to apply it.

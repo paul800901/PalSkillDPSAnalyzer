@@ -340,7 +340,14 @@ assert(runtime_config.EnableDetailedAwards == false, "detailed awards should def
 assert(runtime_config.EnablePalDamageBreakdown == false, "Pal breakdown should default to disabled on servers")
 assert(runtime_config.EnableTeamDetails == false, "team details should default to disabled")
 assert(runtime_config.LocalOnlyMessages == false, "server package should not default to local-only messages")
+assert(runtime_config.EnableSkillDiagnostics == true, "skill diagnostics should default to enabled")
+assert(runtime_config.SkillDiagnosticsOnly == true, "diagnostic-only output should default to enabled")
+assert(runtime_config.IncludePlayerDamage == false, "player damage should default to disabled")
 -- Most existing scenarios also exercise the enabled commentary branches.
+-- They verify the inherited BossDPS core, so opt back into legacy output for
+-- those scenarios. Dedicated diagnostics cases below test the new defaults.
+runtime_config.SkillDiagnosticsOnly = false
+runtime_config.IncludePlayerDamage = true
 runtime_config.EnableFunComments = true
 runtime_config.BroadcastStart = true
 runtime_config.EnableProgressReports = true
@@ -575,6 +582,123 @@ assert(string.find(mounted_joined, "棉花糖（捣蛋猫）［Bob］｜伤害 5
 assert(string.find(mounted_joined, "Bob（玩家角色）｜伤害 200｜28.6%", 1, true) ~= nil)
 assert(string.find(mounted_joined, "最高伤害队伍", 1, true) == nil, "single-team fight printed a redundant team winner")
 assert(string.find(mounted_joined, "击杀播报：Bob 击败了 RaidBoss_Mounted", 1, true) ~= nil, "player final blow announcement missing")
+
+-- Standalone diagnostics mode treats each Pal or optional player character as
+-- an independent verification source. Player damage is off by default; raw
+-- candidate metadata separates skill/weapon buckets without inventing names.
+runtime_config.SkillDiagnosticsOnly = true
+runtime_config.IncludePlayerDamage = false
+runtime_config.BroadcastStart = false
+local diagnostic_boss = boss_actor("BP_RaidBoss_Diagnostic_C_180")
+local poison_projectile = actor("BP_PoisonFogProjectile_C_181", { Owner = player_two_pal })
+local rifle_projectile = actor("BP_AssaultRifleBullet_C_182", { Owner = player_one })
+local ignored_before = BossDPSBroadcastTestApi.metrics.ignored_player_damage
+damage(player_one, diagnostic_boss, 200, {
+    DamageCauser = rifle_projectile,
+    DamageInfo = { WeaponType = "AssaultRifle" },
+})
+damage(player_two, diagnostic_boss, 250, {
+    DamageCauser = pal_skill_projectile,
+    DamageInfo = { SkillID = "DarkBall" },
+})
+damage(player_two, diagnostic_boss, 350, {
+    DamageCauser = pal_skill_projectile,
+    DamageInfo = { SkillID = "DarkBall" },
+})
+damage(player_two, diagnostic_boss, 300, {
+    DamageCauser = poison_projectile,
+    DamageInfo = { SkillID = "PoisonFog" },
+})
+damage(player_two_pal, diagnostic_boss, 100)
+run_game_tasks()
+local diagnostic_session
+for _, candidate in pairs(BossDPSBroadcastTestApi.sessions) do
+    if candidate.name == "RaidBoss_Diagnostic" then
+        diagnostic_session = candidate
+        break
+    end
+end
+assert(diagnostic_session ~= nil, "Pal diagnostic session was not created")
+assert(diagnostic_session.total_damage == 1000, "disabled player damage entered diagnostic total")
+assert(BossDPSBroadcastTestApi.metrics.ignored_player_damage - ignored_before == 1,
+    "disabled player damage was not counted as ignored")
+local diagnostic_source
+local diagnostic_source_count = 0
+for _, source in pairs(diagnostic_session.diagnostic_sources) do
+    diagnostic_source = source
+    diagnostic_source_count = diagnostic_source_count + 1
+end
+assert(diagnostic_source_count == 1 and diagnostic_source.kind == "pal",
+    "Pal-only diagnostics created an unexpected source")
+local diagnostic_candidate_count = 0
+local dark_ball_candidate
+for _, candidate in pairs(diagnostic_source.skill_candidates) do
+    diagnostic_candidate_count = diagnostic_candidate_count + 1
+    if candidate.fields == "info.SkillID=DarkBall" then
+        dark_ball_candidate = candidate
+    end
+end
+assert(diagnostic_candidate_count == 3, "Pal skill candidates were not separated")
+assert(dark_ball_candidate ~= nil and dark_ball_candidate.damage == 600 and dark_ball_candidate.hits == 2,
+    "repeated Pal skill hits were not aggregated")
+local bob_before_diagnostic_finish = #bob_inbox
+death(diagnostic_boss)
+run_game_tasks()
+run_delayed_tasks()
+local diagnostic_messages = {}
+for index = bob_before_diagnostic_finish + 1, #bob_inbox do
+    diagnostic_messages[#diagnostic_messages + 1] = bob_inbox[index]
+end
+local diagnostic_joined = table.concat(diagnostic_messages, "\n")
+assert(string.find(diagnostic_joined, "伤害验证完成", 1, true) ~= nil,
+    "diagnostic completion message missing")
+assert(string.find(diagnostic_joined, "MVP", 1, true) == nil,
+    "diagnostic-only mode emitted a player ranking")
+
+-- Enabling player verification creates one player source and separates a
+-- weapon/projectile candidate. A one-weapon-per-fight workflow remains valid
+-- even when Palworld exposes no richer weapon identifier.
+runtime_config.IncludePlayerDamage = true
+local weapon_boss = boss_actor("BP_RaidBoss_WeaponDiagnostic_C_183")
+damage(player_one, weapon_boss, 200, {
+    DamageCauser = rifle_projectile,
+    DamageInfo = { WeaponType = "AssaultRifle" },
+})
+damage(player_one, weapon_boss, 300, {
+    DamageCauser = rifle_projectile,
+    DamageInfo = { WeaponType = "AssaultRifle" },
+})
+run_game_tasks()
+local weapon_session
+for _, candidate in pairs(BossDPSBroadcastTestApi.sessions) do
+    if candidate.name == "RaidBoss_WeaponDiagnostic" then
+        weapon_session = candidate
+        break
+    end
+end
+assert(weapon_session ~= nil and weapon_session.total_damage == 500,
+    "enabled player damage was not recorded")
+local player_diagnostic_source
+for _, source in pairs(weapon_session.diagnostic_sources) do
+    player_diagnostic_source = source
+end
+assert(player_diagnostic_source ~= nil and player_diagnostic_source.kind == "player"
+    and player_diagnostic_source.damage == 500,
+    "player diagnostic source was not isolated from Pal damage")
+local weapon_candidate_count = 0
+for _, candidate in pairs(player_diagnostic_source.skill_candidates) do
+    weapon_candidate_count = weapon_candidate_count + 1
+    assert(candidate.damage == 500 and candidate.hits == 2,
+        "weapon candidate totals are incorrect")
+end
+assert(weapon_candidate_count == 1, "one weapon produced multiple diagnostic buckets")
+death(weapon_boss)
+run_game_tasks()
+run_delayed_tasks()
+
+runtime_config.SkillDiagnosticsOnly = false
+runtime_config.IncludePlayerDamage = true
+runtime_config.BroadcastStart = true
 
 -- Regression for the real 1.0 failure: byte-based truncation could split a
 -- Chinese Pal nickname and make SendSystemToPlayerChat raise "bad conversion".
@@ -1012,4 +1136,4 @@ assert(#delivered_by_uid[test_guid_key(uid_spectator)] == 0, "spectator received
 
 assert(#BossDPSBroadcastTestApi.sessions == 0, "sessions table must be map-like")
 assert(original_os_time ~= nil)
-print("BossDPSBroadcast v3.4.0 integration/thread/lifetime/native/stress tests passed")
+print("PalSkillDPSAnalyzer v0.1.0 diagnostic/source/thread/lifetime/stress tests passed")

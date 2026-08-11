@@ -1,54 +1,37 @@
-# Steam 创意工坊发行目录
+# Steam 創意工坊發行
 
-`content/` 是 Palworld 1.0 创意工坊上传目录，结构依据游戏当前的 `Info.json`/`InstallRule` 模组安装机制。
+`content/` 是獨立套件 `PalSkillDPSAnalyzerSP` 的 Palworld 1.0 Workshop 內容目錄。
 
-## 构建
-
-在仓库根目录运行：
+## 建包
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\workshop\build_workshop.ps1
 ```
 
-脚本会：
+建包會同步共享 Lua 核心、驗證 `Info.json`、相依項目、診斷預設值、UTF-8 與 Lua 語法，輸出：
 
-- 将共享核心、语言选择器和 17 个语言包同步到单机包；
-- 保留单机专用 `Scripts/config.lua`；
-- 校验 `Info.json`、封面、依赖和本地消息模式；
-- 在 `workshop/dist/` 生成用于留档检查的 ZIP。
-
-实际上传时，将 `workshop/content/` 作为 Workshop item content folder。首次创建后，把 Steam 返回的 Published File ID 写回 `content/.workshop.json`，以后使用相同 ID 更新。
-
-`localizations.json` 是创意工坊 17 种标题/描述的唯一清单。发布前运行：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\workshop\validate_localizations.ps1
+```text
+workshop/dist/PalSkillDPSAnalyzerSP-Workshop-v0.1.0.zip
 ```
 
-SteamCMD 更新英语回退内容和 Mod 文件；其余语言使用创意工坊页面的语言下拉框维护。
+## 獨立發布邊界
 
-## 上传
+- PackageName：`PalSkillDPSAnalyzerSP`
+- 目前版本：`0.1.0`
+- UE4SS Workshop 相依：`3625223587`
+- `.workshop.json` 的 Published File ID 預設保持空白。
+- 第一次 SteamCMD 成功建立項目後，才由上傳腳本寫回新 ID。
+- 不得填入或沿用 `PalBossDPSBroadcast` 的 Published File ID。
 
-安装 Valve 官方 SteamCMD 后，在可交互的 PowerShell 窗口运行：
+## 上傳
+
+上傳屬於獨立 live 動作，只有在明確授權後執行：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\workshop\upload_workshop.ps1 `
   -SteamCmdPath "C:\steamcmd\steamcmd.exe"
 ```
 
-脚本会依次交互询问 Steam 登录名、密码和 Steam Guard 验证码；这些内容不会写入仓库或命令行。也可以显式传入 `-SteamAccountName "你的Steam登录名"`。脚本默认使用公开可见性（`Visibility = 0`），上传成功后会自动记录 Published File ID。
+腳本互動式詢問 Steam 帳號、密碼與 Steam Guard，不把秘密寫入專案或命令列。首次建立後仍需在 Workshop 頁面接受協議並設定 UE4SS 為 Required Item。
 
-上传后确认：
-
-1. 接受 Steam Workshop Legal Agreement；
-2. 在项目页面将 UE4SS item `3625223587` 设置为 Required Item；
-3. 完成单人世界测试；
-4. 项目可见性仍为“公开”。
-
-## 依赖
-
-- Palworld App ID：`1623730`
-- UE4SS Workshop 依赖：`UE4SSExperimentalPW`
-- 当前参考 Workshop item：`3625223587`
-
-创意工坊网页还应将 UE4SS 项目标记为 Required Item。`Info.json` 中的 `Dependencies` 用于 Palworld 模组管理器识别依赖，两者都要保留。
+目前只維護英文與正體中文 Workshop 頁面；遊戲內沿用核心的 17 種語言名稱與 Boss 訊息能力。

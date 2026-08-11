@@ -41,13 +41,13 @@ $description = Get-Content -LiteralPath (Join-Path $workshopDirectory "DESCRIPTI
 # SteamCMD stores escaped newlines as the visible text "\n". Steam BBCode block tags
 # provide the layout, so collapse physical line breaks before writing the VDF.
 $description = $description.Replace("`r", "").Replace("`n", "")
-$workshopTitle = "Don't Check My DPS - Boss Damage Meter"
+$workshopTitle = "Pal Skill DPS Analyzer - Damage Verification"
 $steamCmdDirectory = Split-Path -Parent ([System.IO.Path]::GetFullPath($SteamCmdPath))
-$stagingDirectory = Join-Path $steamCmdDirectory ("workshop\PalBossDPSBroadcastSP-{0}" -f $PID)
+$stagingDirectory = Join-Path $steamCmdDirectory ("workshop\PalSkillDPSAnalyzerSP-{0}" -f $PID)
 $stagedContentDirectory = Join-Path $stagingDirectory "content"
 New-Item -ItemType Directory -Path $stagedContentDirectory -Force | Out-Null
 Get-ChildItem -LiteralPath $contentDirectory -Force | Copy-Item -Destination $stagedContentDirectory -Recurse -Force
-$vdfPath = Join-Path $stagingDirectory "PalBossDPSBroadcastSP.workshop.vdf"
+$vdfPath = Join-Path $stagingDirectory "PalSkillDPSAnalyzerSP.workshop.vdf"
 $vdf = @(
     '"workshopitem"'
     '{'
@@ -58,7 +58,7 @@ $vdf = @(
     ('    "visibility" "{0}"' -f $Visibility)
     ('    "title" "{0}"' -f (ConvertTo-VdfValue $workshopTitle))
     ('    "description" "{0}"' -f (ConvertTo-VdfValue $description))
-    '    "changenote" "v1.2.0: Per-Pal damage breakdown is now enabled by default in single-player, with a clearer config switch."'
+    '    "changenote" "v0.1.0 diagnostic: evidence-backed Pal skill and optional weapon candidate capture."'
     '}'
 ) -join "`r`n"
 [System.IO.File]::WriteAllText($vdfPath, $vdf, [System.Text.UTF8Encoding]::new($false))
@@ -76,8 +76,8 @@ if (-not $match.Success -or $match.Groups[1].Value -eq "0") {
 }
 
 $metadata.publishedfileid = $match.Groups[1].Value
-$metadata.changenote = "v1.2.0: Per-Pal damage breakdown is now enabled by default in single-player, with a clearer config switch."
-$metadata.last_published_version = "1.2.0"
+$metadata.changenote = "v0.1.0 diagnostic: evidence-backed Pal skill and optional weapon candidate capture."
+$metadata.last_published_version = "0.1.0"
 $metadataJson = $metadata | ConvertTo-Json -Depth 4
 [System.IO.File]::WriteAllText($metadataPath, $metadataJson + "`r`n", [System.Text.UTF8Encoding]::new($false))
 

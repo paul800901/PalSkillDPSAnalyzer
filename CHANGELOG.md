@@ -1,5 +1,14 @@
 # 更新日志
 
+## 0.1.0-diagnostic — 獨立 Mod
+
+- 建立獨立 `PalSkillDPSAnalyzerSP` 套件與全新 Workshop metadata，不沿用上游 Published File ID。
+- 定位改為傷害驗證工具，不輸出玩家比較排名。
+- 預設只納入帕魯；人物／武器來源可由 `IncludePlayerDamage` 選擇性開啟。
+- 依技能欄位、投射物或傷害來源建立候選桶，輸出總傷害、占比、整場 DPS、命中與平均每擊。
+- 啟動時反射傷害事件 schema，逐候選保留有界樣本；未知資料不猜名稱。
+- 新增帕魯技能與人物武器候選回歸測試。
+
 ## 3.4.0
 
 - 新增语义明确的 `EnablePalDamageBreakdown` 开关，用于显示玩家角色和每只参战帕鲁的伤害、占比及 DPS。

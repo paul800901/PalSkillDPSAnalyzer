@@ -72,10 +72,13 @@ foreach ($entry in $workshopLocalizationEntries) {
 
 Write-Host "[4/5] Validating Steam Workshop package"
 $workshopInfo = Get-Content -LiteralPath (Join-Path $workshopDirectory "Info.json") -Raw -Encoding UTF8 | ConvertFrom-Json
-$expectedWorkshopTitle = -join @([char]0x4E0D, [char]0x8981, [char]0x67E5, [char]0x6211, "D", "P", "S")
+$expectedWorkshopTitle = -join @(
+    [char]0x5E15, [char]0x9B6F, [char]0x6280, [char]0x80FD,
+    " DPS ", [char]0x5206, [char]0x6790, [char]0x5668
+)
 if ($workshopInfo.ModName -ne $expectedWorkshopTitle) { throw "unexpected Workshop ModName" }
-if ($workshopInfo.PackageName -ne "PalBossDPSBroadcastSP") { throw "unexpected Workshop PackageName" }
-if ($workshopInfo.Version -ne "1.2.0") { throw "unexpected Workshop version" }
+if ($workshopInfo.PackageName -ne "PalSkillDPSAnalyzerSP") { throw "unexpected Workshop PackageName" }
+if ($workshopInfo.Version -ne "0.1.0") { throw "unexpected Workshop version" }
 if ($workshopInfo.Dependencies -notcontains "UE4SSExperimentalPW") { throw "Workshop UE4SS dependency missing" }
 if ($workshopInfo.InstallRule.Count -ne 1 -or $workshopInfo.InstallRule[0].Type -ne "Lua") {
     throw "Workshop Lua InstallRule missing"
@@ -101,8 +104,10 @@ foreach ($localePath in $sharedLocales) {
 $workshopConfig = Get-Content -LiteralPath (Join-Path $workshopScripts "config.lua") -Raw -Encoding UTF8
 foreach ($requiredSetting in @(
     "config.LocalOnlyMessages = true",
-    "config.EnableFunComments = true",
-    "config.EnablePalDamageBreakdown = true"
+    "config.EnableSkillDiagnostics = true",
+    "config.SkillDiagnosticsOnly = true",
+    "config.IncludePlayerDamage = false",
+    "config.PreferNativeCollector = false"
 )) {
     if (-not $workshopConfig.Contains($requiredSetting)) { throw "Workshop config missing: $requiredSetting" }
 }
@@ -142,7 +147,7 @@ try {
     $testOutput = & npx --yes --package=fengari-node-cli fengari test_main.lua 2>&1
     $testExitCode = $LASTEXITCODE
     $testOutput | Write-Host
-    if ($testExitCode -ne 0 -or -not ($testOutput -match "v3\.4\.0 integration/thread/lifetime/native/stress tests passed")) {
+    if ($testExitCode -ne 0 -or -not ($testOutput -match "v0\.1\.0 diagnostic/source/thread/lifetime/stress tests passed")) {
         throw "Lua integration test failed or did not reach its completion marker"
     }
     $localeOutput = & npx --yes --package=fengari-node-cli fengari test_localization.lua 2>&1

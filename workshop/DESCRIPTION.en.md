@@ -1,16 +1,15 @@
-[h1]Don't Check My DPS[/h1]
-[b]A lightweight Boss damage meter for Palworld 1.0 single-player worlds.[/b]
+[h1]Pal Skill DPS Analyzer[/h1]
+[b]A single-player damage verification tool for Palworld 1.0.[/b]
 
-Hit a Boss to start tracking automatically. When the Boss is defeated, captured, or the encounter times out, the result appears in the in-game chat.
+This is not a player ranking meter. Each Pal is treated as an independent test source. Damage is grouped by evidence available in Palworld's damage event, such as a skill ID, projectile, or damage causer. The log reports total damage, encounter DPS, share, hit count, and average damage per hit.
 
-[h2]Features[/h2]
+[h2]Diagnostic release[/h2]
 [list]
-[*]Team damage, encounter time, DPS, player rankings, and damage share
-[*]Separates player-character damage from every Pal
-[*]Uses player-assigned Pal nicknames first
-[*]Merges multi-part Bosses such as the Moon Lord into one encounter
-[*]Automatically follows any of Palworld's 17 supported languages
-[*]Optional live reports, detailed awards, Pal breakdowns, and fun comments
+[*]Pal damage enabled by default; player/weapon damage disabled by default
+[*]Optional one-weapon-per-fight player verification mode
+[*]Evidence-backed candidates; unknown damage is never assigned a guessed skill name
+[*]One-time reflected damage-event schema and bounded per-candidate samples in UE4SS.log
+[*]Boss defeat, capture, and inactivity completion paths
 [/list]
 
 [h2]Installation[/h2]
@@ -18,19 +17,19 @@ Hit a Boss to start tracking automatically. When the Boss is defeated, captured,
 [*]Subscribe to this mod.
 [*]Subscribe to and enable [url=https://steamcommunity.com/workshop/filedetails/?id=3625223587]UE4SS Experimental (Palworld)[/url].
 [*]Enable both mods in Palworld's Mod Manager.
-[*]Enter a single-player world and attack a Boss.
+[*]Use one Pal with known skills against a Boss, then keep UE4SS.log after the fight.
 [/olist]
 
-[h2]Per-Pal damage[/h2]
-Version 1.2.0 enables the final player-character and per-Pal breakdown by default. To change it, edit [code]config.EnablePalDamageBreakdown = true[/code] and use [code]false[/code] for a shorter result. Boss arenas are supported; the PvP Arena is not.
+[h2]Optional weapon test[/h2]
+Set [code]config.IncludePlayerDamage = true[/code], fully restart Palworld, and use one weapon for the entire fight. If a reliable weapon or projectile source is exposed it receives its own candidate; otherwise the result remains an unknown player-weapon candidate.
 
 [h2]Scope[/h2]
 [list]
-[*][b]Supported:[/b] single-player worlds
-[*][b]Experimental:[/b] host mode, displayed only to the host
-[*][b]Not supported:[/b] tracking server-authoritative team damage as a remote client
+[*][b]Target:[/b] Windows single-player worlds
+[*][b]Current status:[/b] v0.1.0 diagnostic; candidate names require live verification
+[*][b]Not a goal:[/b] comparing players or producing a competitive DPS leaderboard
 [/list]
 
-Dedicated servers should use the server edition on [url=https://github.com/AsahiChan-Game/PalBossDPSBroadcast]GitHub[/url].
+Source and issue tracker: [url=https://github.com/paul800901/PalSkillDPSAnalyzer]GitHub[/url]
 
-[i]Unofficial community mod. Not affiliated with Pocketpair, Steam, or UE4SS. Translation corrections are welcome.[/i]
+[i]Independent MIT-licensed mod derived from AsahiChan-Game/PalBossDPSBroadcast. Unofficial and not affiliated with Pocketpair, Steam, or UE4SS.[/i]
