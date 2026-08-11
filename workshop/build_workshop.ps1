@@ -13,6 +13,8 @@ Copy-Item -LiteralPath (Join-Path $projectDirectory "Scripts\main.lua") -Destina
 Copy-Item -LiteralPath (Join-Path $projectDirectory "Scripts\hud.lua") -Destination (Join-Path $contentScripts "hud.lua") -Force
 Copy-Item -LiteralPath (Join-Path $projectDirectory "Scripts\commentary.lua") -Destination (Join-Path $contentScripts "commentary.lua") -Force
 Copy-Item -LiteralPath (Join-Path $projectDirectory "Scripts\localization.lua") -Destination (Join-Path $contentScripts "localization.lua") -Force
+Copy-Item -LiteralPath (Join-Path $projectDirectory "Scripts\hud_strings.lua") -Destination (Join-Path $contentScripts "hud_strings.lua") -Force
+Copy-Item -LiteralPath (Join-Path $projectDirectory "Scripts\skill_names.lua") -Destination (Join-Path $contentScripts "skill_names.lua") -Force
 Copy-Item -Path (Join-Path $projectDirectory "Scripts\locales\*.lua") -Destination $contentLocales -Force
 Copy-Item -LiteralPath (Join-Path $workshopDirectory "assets\thumbnail-pal-skill-dps-v1.png") -Destination (Join-Path $contentDirectory "thumbnail.png") -Force
 
@@ -24,7 +26,7 @@ $expectedWorkshopTitle = -join @(
 )
 if ($info.ModName -ne $expectedWorkshopTitle) { throw "Unexpected Workshop ModName" }
 if ($info.PackageName -ne "PalSkillDPSAnalyzerSP") { throw "Unexpected Workshop PackageName" }
-if ($info.Version -ne "0.3.1") { throw "Unexpected Workshop version" }
+if ($info.Version -ne "0.4.0") { throw "Unexpected Workshop version" }
 if ($info.Dependencies -notcontains "UE4SSExperimentalPW") { throw "UE4SS dependency missing" }
 if ($info.InstallRule.Count -ne 1 -or $info.InstallRule[0].Type -ne "Lua") { throw "Lua InstallRule missing" }
 
@@ -57,13 +59,17 @@ if ($LASTEXITCODE -ne 0) { throw "Workshop config.lua parse failed" }
 if ($LASTEXITCODE -ne 0) { throw "Workshop commentary.lua parse failed" }
 & npx --yes --package=luaparse luaparse --quiet --file (Join-Path $contentScripts "localization.lua")
 if ($LASTEXITCODE -ne 0) { throw "Workshop localization.lua parse failed" }
+& npx --yes --package=luaparse luaparse --quiet --file (Join-Path $contentScripts "hud_strings.lua")
+if ($LASTEXITCODE -ne 0) { throw "Workshop hud_strings.lua parse failed" }
+& npx --yes --package=luaparse luaparse --quiet --file (Join-Path $contentScripts "skill_names.lua")
+if ($LASTEXITCODE -ne 0) { throw "Workshop skill_names.lua parse failed" }
 foreach ($localePath in Get-ChildItem -LiteralPath $contentLocales -Filter "*.lua" -File) {
     & npx --yes --package=luaparse luaparse --quiet --file $localePath.FullName
     if ($LASTEXITCODE -ne 0) { throw "Workshop locale parse failed: $($localePath.Name)" }
 }
 
 New-Item -ItemType Directory -Path $distDirectory -Force | Out-Null
-$zipPath = Join-Path $distDirectory "PalSkillDPSAnalyzerSP-Workshop-v0.3.1.zip"
+$zipPath = Join-Path $distDirectory "PalSkillDPSAnalyzerSP-Workshop-v0.4.0.zip"
 Compress-Archive -Path (Join-Path $contentDirectory "*") -DestinationPath $zipPath -CompressionLevel Optimal -Force
 
 Write-Host "Workshop package ready: $zipPath"

@@ -4,9 +4,8 @@ local config = {}
 -- Changing this setting requires restarting Palworld.
 config.EnableDPSRecording = true
 
--- "auto" follows the language selected in Palworld. Supported values:
--- en, zh-CN, zh-TW, ja, fr, it, de, es-ES, pt-BR, ru, ko, id, es-419,
--- th, tr, vi and pl.
+-- HUD, settings, skill-name, and chat-report language. "auto" follows the
+-- language selected in Palworld. F1 can switch among all 17 supported values.
 config.Language = "auto"
 
 -- Keep the raw Lua damage event. Native aggregation intentionally discards

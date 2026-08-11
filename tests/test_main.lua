@@ -461,6 +461,7 @@ assert(type(key_callbacks[Key.UP_ARROW]) == "function"
     "HUD settings navigation keys were not registered")
 
 do
+    runtime_config.Language = "zh-TW"
     local snapshot = {
         state = "active",
         boss = "測試 Boss",
@@ -511,9 +512,30 @@ do
         "HUD player-damage state missing")
     runtime_config.HUDShowInternalSkillCode = true
     local _, _, diagnostic_body = BossDPSBroadcastTestApi.skill_hud:format_snapshot(snapshot)
-    assert(string.find(diagnostic_body, "切割龍息（BeamSlicer）", 1, true) ~= nil,
+    assert(string.find(diagnostic_body, "切割龍息 (BeamSlicer)", 1, true) ~= nil,
         "HUD internal skill code toggle is ineffective")
     runtime_config.HUDShowInternalSkillCode = false
+
+    runtime_config.Language = "en"
+    local english_header, english_summary, english_body =
+        BossDPSBroadcastTestApi.skill_hud:format_snapshot(snapshot)
+    assert(string.find(english_header, "PAL SKILL DPS", 1, true) ~= nil,
+        "HUD did not switch its interface to English")
+    assert(string.find(english_summary, "damage 2,000", 1, true) ~= nil,
+        "HUD English summary did not refresh")
+    assert(string.find(english_body, "Beam Slicer", 1, true) ~= nil,
+        "HUD did not switch the skill name to English")
+    assert(string.find(english_body, "切割龍息", 1, true) == nil,
+        "HUD retained the previous language's skill name")
+
+    runtime_config.Language = "ja"
+    local japanese_lines = BossDPSBroadcastTestApi.skill_hud:settings_lines()
+    local _, _, japanese_body = BossDPSBroadcastTestApi.skill_hud:format_snapshot(snapshot)
+    assert(string.find(table.concat(japanese_lines, "\n"), "表示言語", 1, true) ~= nil,
+        "HUD settings did not switch to Japanese")
+    assert(string.find(japanese_body, "ビームスライサー", 1, true) ~= nil,
+        "HUD did not switch the skill name to Japanese")
+    runtime_config.Language = "auto"
 end
 -- Most existing scenarios also exercise the enabled commentary branches.
 -- They verify the inherited BossDPS core, so opt back into legacy output for
@@ -1432,4 +1454,4 @@ assert(#delivered_by_uid[test_guid_key(uid_spectator)] == 0, "spectator received
 
 assert(#BossDPSBroadcastTestApi.sessions == 0, "sessions table must be map-like")
 assert(original_os_time ~= nil)
-print("PalSkillDPSAnalyzer v0.3.1 HUD/diagnostic/source/thread/lifetime/stress tests passed")
+print("PalSkillDPSAnalyzer v0.4.0 multilingual HUD/diagnostic/source/thread/lifetime/stress tests passed")

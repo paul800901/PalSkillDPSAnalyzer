@@ -33,7 +33,7 @@ Enable player damage in the F1 panel and use one weapon for the entire fight. If
 [h2]Scope[/h2]
 [list]
 [*][b]Target:[/b] Windows single-player worlds
-[*][b]Current status:[/b] v0.3.1 HUD with localized names, optional internal codes, panel/observed cooldown comparison, and full-action DPS
+[*][b]Current status:[/b] v0.4.0 HUD with 17 selectable languages, synchronized skill names, optional internal codes, panel/observed cooldown comparison, and full-action DPS
 [*][b]Required dependency:[/b] UE4SS Experimental; PalSchema is not required
 [*][b]Not a goal:[/b] comparing players or producing a competitive DPS leaderboard
 [/list]

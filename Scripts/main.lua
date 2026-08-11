@@ -3,6 +3,7 @@
 local config = require("./config")
 local battle_commentary = require("./commentary")
 local localization = require("./localization")
+local skill_names = require("./skill_names")
 local hud_module = require("./hud")
 
 local MOD = "[PalSkillDPSAnalyzer]"
@@ -190,6 +191,7 @@ local function text_value(value)
 end
 
 local translator = nil
+local translator_requested = nil
 
 local function detect_game_language()
     local ok, library = pcall(
@@ -211,10 +213,12 @@ local function detect_game_language()
 end
 
 local function get_translator()
-    if translator == nil then
-        translator = localization.new(config.Language or "auto", detect_game_language)
+    local requested = tostring(config.Language or "auto")
+    if translator == nil or translator_requested ~= requested then
+        translator = localization.new(requested, detect_game_language)
+        translator_requested = requested
         log("language selected=" .. tostring(translator.code)
-            .. " requested=" .. tostring(config.Language or "auto"))
+            .. " requested=" .. requested)
     end
     return translator
 end
@@ -225,6 +229,22 @@ end
 
 local function localized_override(value)
     return get_translator():override(value)
+end
+
+local function skill_display_name(internal_code, runtime_name)
+    local code = tostring(internal_code or "")
+    local runtime = tostring(runtime_name or "")
+    if tostring(config.Language or "auto") == "auto" and runtime ~= "" then
+        return runtime
+    end
+    local bundled = skill_names.get(code, get_translator().code)
+    if bundled ~= nil and bundled ~= "" then
+        return bundled
+    end
+    if runtime ~= "" then
+        return runtime
+    end
+    return code ~= "" and code or "UNKNOWN"
 end
 
 local function fun_commentary_enabled()
@@ -1891,7 +1911,7 @@ local function stats_text(stats, translator_code)
     return string.format("%.1fs (%.1f–%.1f)", stats.average, stats.minimum, stats.maximum)
 end
 
-local function skill_display_name(candidate, translator_code)
+local function diagnostic_skill_display_name(candidate, translator_code)
     local code = tostring(candidate.name or "UNKNOWN")
     local localized = tostring(candidate.localized_name or "")
     if localized ~= "" and localized ~= code then
@@ -2042,7 +2062,8 @@ local function diagnostic_snapshot(session, state, reason)
             local internal_code = tostring(candidate.name or "UNKNOWN")
             local localized_name = tostring(candidate.localized_name or "")
             source_row.skills[#source_row.skills + 1] = {
-                name = localized_name ~= "" and localized_name or internal_code,
+                name = skill_display_name(internal_code, localized_name),
+                runtime_name = localized_name,
                 internal_code = internal_code,
                 damage = candidate.damage,
                 encounter_dps = candidate.damage / duration,
@@ -2137,7 +2158,7 @@ local function finish_skill_diagnostics(session, duration, reason, recipients)
             local share = source.damage > 0 and candidate.damage * 100 / source.damage or 0
             local average = candidate.hits > 0 and candidate.damage / candidate.hits or 0
             local timing = candidate_timing(session, source, candidate)
-            local display_name = skill_display_name(candidate, translator_code)
+            local display_name = diagnostic_skill_display_name(candidate, translator_code)
             log(string.format(
                 "diagnostic-candidate boss=%s source_kind=%s source=%s rank=%d candidate=%s localized=%s damage=%s share=%.1f encounter_dps=%s hits=%d avg_hit=%s casts=%d hit_casts=%d avg_cast_damage=%s panel_cd=%s actual_interval=%s interval_min=%s interval_max=%s panel_delta=%s action_duration=%s action_duration_min=%s action_duration_max=%s action_dps=%s reuse_gap=%s hit_window=%s lifecycle_coverage=%d/%d causer=%s class=%s fields=%s actor=%s",
                 session.name,
@@ -3656,7 +3677,7 @@ local function register_hooks()
 
     if hooks.damage and hooks.death then
         log(string.format(
-            "loaded v0.3.1-hud; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s chat_mode=%s waza_hook=%s action_hooks=%s/%s local_only=%s; captured_hooks=%d",
+            "loaded v0.4.0-multilingual-hud; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s chat_mode=%s waza_hook=%s action_hooks=%s/%s local_only=%s; captured_hooks=%d",
             hooks.damage_mode,
             tostring(config.EnableDPSRecording ~= false),
             tostring(config.EnableSkillDiagnostics == true),
@@ -3680,6 +3701,10 @@ skill_hud = hud_module.new({
     get_player_controller = get_local_player_controller,
     get_world_context = find_world_context,
     get_language = function() return get_translator().code end,
+    get_language_name = localization.language_name,
+    language_options = localization.language_options(),
+    translate = tr,
+    get_skill_name = skill_display_name,
     on_reset = reset_skill_diagnostics,
 })
 skill_hud:register_keybinds()
@@ -3706,6 +3731,7 @@ if rawget(_G, "__BOSS_DPS_TEST") == true then
         publish_progress = publish_progress,
         publish_current_skill_hud = publish_current_skill_hud,
         reset_skill_diagnostics = reset_skill_diagnostics,
+        skill_display_name = skill_display_name,
         skill_hud = skill_hud,
     }
 end

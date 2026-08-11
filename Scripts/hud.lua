@@ -31,13 +31,6 @@ local function module_directory()
     return string.match(source, "^(.*[\\/])") or "./"
 end
 
-local function bool_text(value, chinese)
-    if chinese then
-        return value and "開" or "關"
-    end
-    return value and "ON" or "OFF"
-end
-
 local function decimal(value)
     if value == nil then
         return "—"
@@ -56,11 +49,6 @@ local function integer(value)
         end
     end
     return formatted
-end
-
-local function chinese_language(code)
-    code = tostring(code or "")
-    return code == "zh-TW" or code == "zh-CN" or string.find(code, "zh", 1, true) == 1
 end
 
 local function ftext(value)
@@ -101,6 +89,10 @@ function hud.new(options)
         get_player_controller = options.get_player_controller,
         get_world_context = options.get_world_context,
         get_language = options.get_language,
+        get_language_name = options.get_language_name,
+        language_options = options.language_options or { "auto", "zh-TW", "en" },
+        translate = options.translate,
+        get_skill_name = options.get_skill_name,
         on_reset = options.on_reset,
         settings_path = module_directory() .. SETTINGS_FILE,
         settings_open = false,
@@ -119,6 +111,7 @@ function hud.new(options)
     }
 
     self.setting_keys = {
+        "Language",
         "EnableSkillDPSHUD",
         "IncludePlayerDamage",
         "HUDDetailMode",
@@ -131,6 +124,7 @@ function hud.new(options)
     }
 
     self.persisted_keys = {
+        "Language",
         "EnableSkillDPSHUD",
         "IncludePlayerDamage",
         "HUDDetailMode",
@@ -179,16 +173,49 @@ function hud.new(options)
     end
 
     function self:language_code()
-        if self.latest_snapshot ~= nil and self.latest_snapshot.language ~= nil then
-            return self.latest_snapshot.language
-        end
         if self.get_language ~= nil then
             local ok, value = pcall(self.get_language)
             if ok and value ~= nil then
                 return value
             end
         end
-        return self.config.Language == "auto" and "zh-TW" or self.config.Language
+        if self.latest_snapshot ~= nil and self.latest_snapshot.language ~= nil then
+            return self.latest_snapshot.language
+        end
+        return self.config.Language == "auto" and "en" or self.config.Language
+    end
+
+    function self:text(key, values)
+        if self.translate ~= nil then
+            local ok, value = pcall(self.translate, key, values)
+            if ok and value ~= nil then
+                return tostring(value)
+            end
+        end
+        return tostring(key)
+    end
+
+    function self:language_name(code)
+        if code == "auto" then
+            return self:text("hud_value_follow_game")
+        end
+        if self.get_language_name ~= nil then
+            local ok, value = pcall(self.get_language_name, code)
+            if ok and value ~= nil and value ~= "" then
+                return tostring(value)
+            end
+        end
+        return tostring(code or "")
+    end
+
+    function self:bool_text(value)
+        return self:text(value and "hud_value_on" or "hud_value_off")
+    end
+
+    function self:chat_mode_text(value)
+        if value == "full" then return self:text("hud_value_full") end
+        if value == "summary" then return self:text("hud_value_summary") end
+        return self:text("hud_value_off")
     end
 
     function self:apply_layout()
@@ -360,50 +387,36 @@ function hud.new(options)
     end
 
     function self:settings_lines()
-        local language = self:language_code()
-        local chinese = chinese_language(language)
-        local labels = chinese and {
-            EnableSkillDPSHUD = "顯示技能 DPS 面板",
-            IncludePlayerDamage = "納入人物／武器傷害",
-            HUDDetailMode = "資料密度",
-            HUDShowInternalSkillCode = "顯示內部英文代碼",
-            HUDAnchor = "面板位置",
-            HUDScale = "面板縮放",
-            HUDKeepFinalResults = "戰後保留結果",
-            SkillDiagnosticChatMode = "聊天輸出",
-            reset = "清除本場測試",
-        } or {
-            EnableSkillDPSHUD = "Show skill DPS panel",
-            IncludePlayerDamage = "Include player/weapon damage",
-            HUDDetailMode = "Detail mode",
-            HUDShowInternalSkillCode = "Show internal skill code",
-            HUDAnchor = "Panel position",
-            HUDScale = "Panel scale",
-            HUDKeepFinalResults = "Keep final result",
-            SkillDiagnosticChatMode = "Chat output",
-            reset = "Reset current test",
+        local labels = {
+            Language = self:text("hud_setting_language"),
+            EnableSkillDPSHUD = self:text("hud_setting_show"),
+            IncludePlayerDamage = self:text("hud_setting_player"),
+            HUDDetailMode = self:text("hud_setting_detail"),
+            HUDShowInternalSkillCode = self:text("hud_setting_internal"),
+            HUDAnchor = self:text("hud_setting_anchor"),
+            HUDScale = self:text("hud_setting_scale"),
+            HUDKeepFinalResults = self:text("hud_setting_keep"),
+            SkillDiagnosticChatMode = self:text("hud_setting_chat"),
+            reset = self:text("hud_setting_reset"),
         }
         local function value_text(key)
             local value = self.config[key]
-            if key == "EnableSkillDPSHUD" or key == "IncludePlayerDamage"
+            if key == "Language" then
+                return self:language_name(tostring(value or "auto"))
+            elseif key == "EnableSkillDPSHUD" or key == "IncludePlayerDamage"
                 or key == "HUDShowInternalSkillCode"
                 or key == "HUDKeepFinalResults" then
-                return bool_text(value == true, chinese)
+                return self:bool_text(value == true)
             elseif key == "HUDDetailMode" then
-                return chinese and (value == "compact" and "精簡" or "完整")
-                    or (value == "compact" and "COMPACT" or "FULL")
+                return self:text(value == "compact" and "hud_value_compact" or "hud_value_full")
             elseif key == "HUDAnchor" then
-                return chinese and (value == "top-left" and "左上" or "右上")
-                    or (value == "top-left" and "TOP LEFT" or "TOP RIGHT")
+                return self:text(value == "top-left" and "hud_value_top_left" or "hud_value_top_right")
             elseif key == "HUDScale" then
                 return string.format("%d%%", math.floor((tonumber(value) or 1) * 100 + 0.5))
             elseif key == "SkillDiagnosticChatMode" then
-                if chinese then
-                    return value == "full" and "完整" or value == "summary" and "摘要" or "關"
-                end
-                return string.upper(tostring(value or "off"))
+                return self:chat_mode_text(value)
             end
-            return chinese and "按 Enter" or "PRESS ENTER"
+            return self:text("hud_value_press_enter")
         end
         local lines = {}
         for index, key in ipairs(self.setting_keys) do
@@ -414,18 +427,16 @@ function hud.new(options)
                 value_text(key)
             )
         end
-        return lines, chinese
+        return lines
     end
 
     function self:render_settings()
-        local lines, chinese = self:settings_lines()
+        local lines = self:settings_lines()
         self:render_text(
-            chinese and "帕魯技能 DPS｜設定" or "PAL SKILL DPS | SETTINGS",
-            chinese and "設定會自動儲存；人物傷害切換從下一次命中開始生效。"
-                or "Settings save automatically. Player damage applies from the next hit.",
+            self:text("hud_settings_title"),
+            self:text("hud_settings_note"),
             table.concat(lines, "\n"),
-            chinese and ("↑↓ 選擇　←→／Enter 調整　" .. self.key_label .. " 關閉")
-                or ("UP/DOWN select  LEFT/RIGHT/ENTER change  " .. self.key_label .. " close")
+            self:text("hud_settings_footer", { key = self.key_label })
         )
     end
 
@@ -436,6 +447,14 @@ function hud.new(options)
                 self.on_reset()
             end
             return
+        elseif key == "Language" then
+            local current = tostring(self.config.Language or "auto")
+            local index = 1
+            for candidate_index, value in ipairs(self.language_options) do
+                if value == current then index = candidate_index end
+            end
+            index = ((index - 1 + direction) % #self.language_options) + 1
+            self.config.Language = self.language_options[index]
         elseif key == "EnableSkillDPSHUD" or key == "IncludePlayerDamage"
             or key == "HUDShowInternalSkillCode"
             or key == "HUDKeepFinalResults" then
@@ -548,79 +567,86 @@ function hud.new(options)
     end
 
     function self:format_snapshot(snapshot)
-        local chinese = chinese_language(snapshot.language)
         local final = snapshot.state == "finished"
-        local header = chinese and "帕魯技能 DPS｜傷害驗證" or "PAL SKILL DPS | DAMAGE LAB"
-        local state = final and (chinese and "完成" or "FINISHED") or (chinese and "記錄中" or "LIVE")
-        local summary = chinese
-            and string.format(
-                "%s｜%s｜%.1f秒｜總傷害 %s｜整場 DPS %s",
-                state, snapshot.boss, snapshot.duration, integer(snapshot.total_damage), decimal(snapshot.encounter_dps)
-            )
-            or string.format(
-                "%s | %s | %.1fs | damage %s | encounter DPS %s",
-                state, snapshot.boss, snapshot.duration, integer(snapshot.total_damage), decimal(snapshot.encounter_dps)
-            )
+        local header = self:text("hud_title")
+        local state = self:text(final and "hud_state_finished" or "hud_state_live")
+        local summary = self:text("hud_summary", {
+            state = state,
+            boss = snapshot.boss,
+            seconds = decimal(snapshot.duration),
+            damage = integer(snapshot.total_damage),
+            dps = decimal(snapshot.encounter_dps),
+        })
         local lines = {}
         local shown = 0
         local maximum = math.max(1, math.floor(tonumber(self.config.HUDMaxSkillRows) or 6))
         for _, source in ipairs(snapshot.sources or {}) do
             if shown >= maximum then break end
-            lines[#lines + 1] = chinese
-                and string.format("【%s】傷害 %s｜DPS %s｜命中 %d", source.name, integer(source.damage), decimal(source.dps), source.hits)
-                or string.format("[%s] damage %s | DPS %s | hits %d", source.name, integer(source.damage), decimal(source.dps), source.hits)
+            lines[#lines + 1] = self:text("hud_source", {
+                source = source.name,
+                damage = integer(source.damage),
+                dps = decimal(source.dps),
+                hits = source.hits,
+            })
             for _, skill in ipairs(source.skills or {}) do
                 if shown >= maximum then break end
                 shown = shown + 1
-                local skill_name = tostring(skill.name or skill.internal_code or "UNKNOWN")
                 local internal_code = tostring(skill.internal_code or "")
+                local skill_name = tostring(skill.name or internal_code or "UNKNOWN")
+                if self.get_skill_name ~= nil then
+                    local ok, localized = pcall(
+                        self.get_skill_name,
+                        internal_code,
+                        skill.runtime_name or skill.name
+                    )
+                    if ok and localized ~= nil and localized ~= "" then
+                        skill_name = tostring(localized)
+                    end
+                end
                 if self.config.HUDShowInternalSkillCode == true
                     and internal_code ~= "" and internal_code ~= skill_name then
-                    skill_name = chinese
-                        and (skill_name .. "（" .. internal_code .. "）")
-                        or (skill_name .. " (" .. internal_code .. ")")
+                    skill_name = skill_name .. " (" .. internal_code .. ")"
                 end
                 if self.config.HUDDetailMode == "compact" then
-                    lines[#lines + 1] = chinese
-                        and string.format("  %d. %s｜%s 傷害｜%s DPS｜%d次", shown, skill_name, integer(skill.damage), decimal(skill.encounter_dps), skill.casts)
-                        or string.format("  %d. %s | %s dmg | %s DPS | %d casts", shown, skill_name, integer(skill.damage), decimal(skill.encounter_dps), skill.casts)
-                elseif chinese then
-                    lines[#lines + 1] = string.format(
-                        "  %d. %s｜傷害 %s｜整場DPS %s｜命中 %d｜施放 %d",
-                        shown, skill_name, integer(skill.damage), decimal(skill.encounter_dps), skill.hits, skill.casts
-                    )
-                    lines[#lines + 1] = string.format(
-                        "     每次 %s｜動作 %s秒｜施放DPS %s｜完整計時 %d/%d",
-                        decimal(skill.damage_per_cast), decimal(skill.action_duration), decimal(skill.action_dps),
-                        skill.lifecycle_complete, skill.casts
-                    )
-                    lines[#lines + 1] = string.format(
-                        "     面板CD %s秒｜實際間隔 %s秒｜AI／再用空窗 %s秒",
-                        decimal(skill.panel_cd), decimal(skill.actual_interval), decimal(skill.reuse_gap)
-                    )
+                    lines[#lines + 1] = self:text("hud_skill_compact", {
+                        rank = shown,
+                        skill = skill_name,
+                        damage = integer(skill.damage),
+                        dps = decimal(skill.encounter_dps),
+                        casts = skill.casts,
+                    })
                 else
-                    lines[#lines + 1] = string.format(
-                        "  %d. %s | damage %s | encounter DPS %s | hits %d | casts %d",
-                        shown, skill_name, integer(skill.damage), decimal(skill.encounter_dps), skill.hits, skill.casts
-                    )
-                    lines[#lines + 1] = string.format(
-                        "     damage/cast %s | action %ss | cast DPS %s | timing %d/%d",
-                        decimal(skill.damage_per_cast), decimal(skill.action_duration), decimal(skill.action_dps),
-                        skill.lifecycle_complete, skill.casts
-                    )
-                    lines[#lines + 1] = string.format(
-                        "     panel CD %ss | actual interval %ss | AI/reuse gap %ss",
-                        decimal(skill.panel_cd), decimal(skill.actual_interval), decimal(skill.reuse_gap)
-                    )
+                    lines[#lines + 1] = self:text("hud_skill_primary", {
+                        rank = shown,
+                        skill = skill_name,
+                        damage = integer(skill.damage),
+                        dps = decimal(skill.encounter_dps),
+                        hits = skill.hits,
+                        casts = skill.casts,
+                    })
+                    lines[#lines + 1] = self:text("hud_skill_timing", {
+                        per_cast = decimal(skill.damage_per_cast),
+                        action = decimal(skill.action_duration),
+                        cast_dps = decimal(skill.action_dps),
+                        complete = skill.lifecycle_complete,
+                        casts = skill.casts,
+                    })
+                    lines[#lines + 1] = self:text("hud_skill_cooldown", {
+                        panel = decimal(skill.panel_cd),
+                        interval = decimal(skill.actual_interval),
+                        gap = decimal(skill.reuse_gap),
+                    })
                 end
             end
         end
         if shown == 0 then
-            lines[#lines + 1] = chinese and "等待帕魯技能命中 Boss…" or "Waiting for a Pal skill to hit the boss..."
+            lines[#lines + 1] = self:text("hud_waiting")
         end
-        local footer = chinese
-            and (self.key_label .. " 設定｜人物傷害 " .. bool_text(snapshot.include_player, true) .. "｜聊天 " .. tostring(self.config.SkillDiagnosticChatMode or "off"))
-            or (self.key_label .. " settings | player damage " .. bool_text(snapshot.include_player, false) .. " | chat " .. tostring(self.config.SkillDiagnosticChatMode or "off"))
+        local footer = self:text("hud_footer", {
+            key = self.key_label,
+            player = self:bool_text(snapshot.include_player),
+            chat = self:chat_mode_text(self.config.SkillDiagnosticChatMode),
+        })
         return header, summary, table.concat(lines, "\n"), footer
     end
 

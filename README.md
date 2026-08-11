@@ -1,4 +1,4 @@
-# PalSkillDPSAnalyzer v0.3.1-hud
+# PalSkillDPSAnalyzer v0.4.0-multilingual-hud
 
 Palworld 1.0 單機用 UE4SS Lua 傷害驗證 Mod。它不是玩家排行榜，目標是把一場 Boss 測試中的每隻帕魯視為獨立來源，依可讀到的技能、投射物或攻擊欄位分桶，輸出總傷害、整場 DPS、占比、命中、每次施放傷害、完整動作時間、單次施放 DPS、實際施放間隔與 AI／再用空窗。
 
@@ -6,10 +6,13 @@ Palworld 1.0 單機用 UE4SS Lua 傷害驗證 Mod。它不是玩家排行榜，�
 
 ## 獨立技能 DPS 面板
 
-第一次打中 Boss 後，畫面右上會開啟專用 HUD；聊天輸出預設關閉。每個技能會顯示總傷害、整場 DPS、命中、施放次數、每次傷害、完整動作時間、單次施放 DPS、面板 CD、實際開始間隔及 AI／再用空窗。技能預設只顯示遊戲目前語言的官方本地化文字，內部英文代碼保留在紀錄並可由 F1 選擇顯示。
+第一次打中 Boss 後，畫面右上會開啟專用 HUD；聊天輸出預設關閉。每個技能會顯示總傷害、整場 DPS、命中、施放次數、每次傷害、完整動作時間、單次施放 DPS、面板 CD、實際開始間隔及 AI／再用空窗。技能預設只顯示本地化名稱，內部英文代碼保留在紀錄並可由 F1 選擇顯示。
+
+F1 可選擇「跟隨遊戲」或 Palworld 的 17 種支援語言。切換後設定頁、DPS 面板與技能名稱會立即同步更新；即使 MOD 選擇的語言不同於遊戲介面，技能名稱仍會使用內建對照表切換。未收錄的新技能會先回退英文，再回退遊戲執行中讀到的名稱或內部代碼。
 
 按 `F1` 開啟設定面板，以方向鍵選擇、左右鍵或 Enter 調整：
 
+- 顯示語言（跟隨遊戲／17 種指定語言）
 - 技能 DPS 面板開關
 - 人物／武器傷害（預設關閉）
 - 完整／精簡資料密度
@@ -57,7 +60,7 @@ Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\
 powershell -ExecutionPolicy Bypass -File .\workshop\build_workshop.ps1
 ```
 
-輸出位於 `workshop/dist/PalSkillDPSAnalyzerSP-Workshop-v0.3.1.zip`。專案已保留獨立的 `Info.json`、PackageName 與空白 Workshop Published File ID，不會覆蓋上游 Mod。
+輸出位於 `workshop/dist/PalSkillDPSAnalyzerSP-Workshop-v0.4.0.zip`。專案已保留獨立的 `Info.json`、PackageName 與空白 Workshop Published File ID，不會覆蓋上游 Mod。
 
 ## 驗證流程
 
@@ -76,7 +79,7 @@ powershell -ExecutionPolicy Bypass -File .\workshop\build_workshop.ps1
 - 「面板 CD」來自遊戲技能資料庫；「實際開始間隔」是相鄰施放開始到開始，會包含 AI 選招、移動、距離與其他技能造成的等待，不等同純冷卻。
 - 「完整動作」只統計成功捕捉開始與結束的施放。報表的 `完整計時 n/m` 是覆蓋率；未完整捕捉時只保留首末命中窗，不把它冒充動作時間。
 - 診斷版強制使用 Lua 傷害事件，避免原生聚合器先丟失技能候選欄位。
-- 修改設定後必須完整重開 Palworld。
+- F1 的 HUD／語言／人物傷害等選項會即時保存；直接編輯 `config.lua` 時仍建議完整重開 Palworld。
 
 ## 測試
 
@@ -88,4 +91,4 @@ powershell -ExecutionPolicy Bypass -File .\tests\run_all.ps1
 
 ## 授權與來源
 
-MIT License。Boss 遭遇辨識、帕魯歸屬與安全訊息核心衍生自 [AsahiChan-Game/PalBossDPSBroadcast](https://github.com/AsahiChan-Game/PalBossDPSBroadcast)，詳細見 [NOTICE.md](NOTICE.md)。本專案為獨立 Mod，與 Pocketpair、Steam 或 UE4SS 無隸屬關係。
+MIT License。Boss 遭遇辨識、帕魯歸屬與安全訊息核心衍生自 [AsahiChan-Game/PalBossDPSBroadcast](https://github.com/AsahiChan-Game/PalBossDPSBroadcast)，詳細見 [NOTICE.md](NOTICE.md)。17 語言技能名稱表由 `tools/update_skill_names.ps1` 從 [PalDB Active Skills](https://paldb.cc/en/Active_Skills) 的遊戲本地化資料產生。本專案為獨立 Mod，與 Pocketpair、PalDB、Steam 或 UE4SS 無隸屬關係。

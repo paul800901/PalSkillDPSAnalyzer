@@ -4,9 +4,10 @@ local config = {}
 -- Changing this setting requires a server restart.
 config.EnableDPSRecording = true
 
--- Chat report language. "auto" follows Palworld's current language when it
--- can be detected. You may also use any supported code such as en, zh-CN,
--- zh-TW, ja, fr, it, de, es-ES, pt-BR, ru, ko, id, es-419, th, tr, vi or pl.
+-- HUD, settings, skill-name, and chat-report language. "auto" follows
+-- Palworld's current language when it can be detected. F1 can switch this at
+-- runtime, or use en, zh-CN, zh-TW, ja, fr, it, de, es-ES, pt-BR, ru, ko,
+-- id, es-419, th, tr, vi or pl here.
 config.Language = "auto"
 
 -- Prefer the optional C++ collector when it is installed and ABI-compatible.

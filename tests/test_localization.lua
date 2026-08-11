@@ -1,6 +1,8 @@
 package.path = "../Scripts/?.lua;" .. package.path
 
 local localization = require("./localization")
+local hud_strings = require("./hud_strings")
+local skill_names = require("./skill_names")
 local codes = {
     "en", "zh-CN", "zh-TW", "ja", "fr", "it", "de", "es-ES", "pt-BR",
     "ru", "ko", "id", "es-419", "th", "tr", "vi", "pl",
@@ -42,6 +44,15 @@ for _, code in ipairs(codes) do
     })
     assert(not string.find(rendered, "{", 1, true),
         code .. " left an unresolved placeholder")
+
+    local hud_locale = hud_strings.strings[code]
+    assert(type(hud_locale) == "table", code .. " is missing HUD translations")
+    for key in pairs(hud_strings.strings.en) do
+        assert(type(hud_locale[key]) == "string" and hud_locale[key] ~= "",
+            code .. " is missing HUD translation key " .. key)
+    end
+    assert((skill_names.coverage[code] or 0) >= 350,
+        code .. " has unexpectedly low bundled skill-name coverage")
 end
 
 assert(localization.new("schinese").code == "zh-CN")
@@ -51,5 +62,11 @@ assert(localization.new("latam").code == "es-419")
 assert(localization.new("auto", function() return "zh-Hant-TW" end).code == "zh-TW")
 assert(localization.new("auto", function() return "pt_BR" end).code == "pt-BR")
 assert(localization.new("unsupported").code == "en")
+assert(#localization.language_options() == 18, "language selector must include auto plus 17 languages")
+assert(localization.language_name("zh-TW") == "繁體中文")
+assert(skill_names.skill_count >= 380, "bundled skill-name table is incomplete")
+assert(skill_names.get("BeamSlicer", "zh-TW") == "切割龍息")
+assert(skill_names.get("BeamSlicer", "en") == "Beam Slicer")
+assert(skill_names.get("BeamSlicer", "ja") == "ビームスライサー")
 
 print("PalSkillDPSAnalyzer localization tests passed for 17 languages")

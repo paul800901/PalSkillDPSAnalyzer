@@ -1,4 +1,5 @@
 local M = {}
+local hud_strings = require("./hud_strings")
 
 local locale_modules = {
     ["en"] = "./locales/en",
@@ -112,6 +113,18 @@ function M.supported_languages()
     return result
 end
 
+function M.language_options()
+    local result = {}
+    for index, code in ipairs(hud_strings.language_options) do
+        result[index] = code
+    end
+    return result
+end
+
+function M.language_name(code)
+    return hud_strings.language_name(code)
+end
+
 function M.new(requested_language, detector)
     local code = normalize_language(requested_language)
     if code == nil and type(detector) == "function" then
@@ -131,6 +144,9 @@ function M.new(requested_language, detector)
 
     function translator:text(key, values)
         local template = locale and locale.strings[key] or nil
+        if template == nil then
+            template = hud_strings.get(translator.code, key)
+        end
         if template == nil and english ~= nil then
             template = english.strings[key]
         end

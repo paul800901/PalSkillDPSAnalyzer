@@ -7,6 +7,8 @@ $hudScript = Join-Path $projectDirectory "Scripts\hud.lua"
 $configScript = Join-Path $projectDirectory "Scripts\config.lua"
 $commentaryScript = Join-Path $projectDirectory "Scripts\commentary.lua"
 $localizationScript = Join-Path $projectDirectory "Scripts\localization.lua"
+$hudStringsScript = Join-Path $projectDirectory "Scripts\hud_strings.lua"
+$skillNamesScript = Join-Path $projectDirectory "Scripts\skill_names.lua"
 $localeDirectory = Join-Path $projectDirectory "Scripts\locales"
 $workshopDirectory = Join-Path $projectDirectory "workshop\content"
 $workshopScripts = Join-Path $workshopDirectory "Scripts"
@@ -26,6 +28,10 @@ if ($LASTEXITCODE -ne 0) { throw "config.lua parse failed" }
 if ($LASTEXITCODE -ne 0) { throw "commentary.lua parse failed" }
 & npx --yes --package=luaparse luaparse --quiet --file $localizationScript
 if ($LASTEXITCODE -ne 0) { throw "localization.lua parse failed" }
+& npx --yes --package=luaparse luaparse --quiet --file $hudStringsScript
+if ($LASTEXITCODE -ne 0) { throw "hud_strings.lua parse failed" }
+& npx --yes --package=luaparse luaparse --quiet --file $skillNamesScript
+if ($LASTEXITCODE -ne 0) { throw "skill_names.lua parse failed" }
 foreach ($localePath in Get-ChildItem -LiteralPath $localeDirectory -Filter "*.lua" -File) {
     & npx --yes --package=luaparse luaparse --quiet --file $localePath.FullName
     if ($LASTEXITCODE -ne 0) { throw "locale parse failed: $($localePath.Name)" }
@@ -50,6 +56,8 @@ foreach ($file in @(
     $configScript,
     $commentaryScript,
     $localizationScript,
+    $hudStringsScript,
+    $skillNamesScript,
     (Join-Path $testDirectory "test_main.lua"),
     (Join-Path $testDirectory "test_localization.lua"),
     (Join-Path $workshopDirectory "Info.json"),
@@ -61,7 +69,9 @@ foreach ($file in @(
     (Join-Path $workshopScripts "hud.lua"),
     (Join-Path $workshopScripts "config.lua"),
     (Join-Path $workshopScripts "commentary.lua"),
-    (Join-Path $workshopScripts "localization.lua")
+    (Join-Path $workshopScripts "localization.lua"),
+    (Join-Path $workshopScripts "hud_strings.lua"),
+    (Join-Path $workshopScripts "skill_names.lua")
 )) {
     [void]$utf8.GetString([System.IO.File]::ReadAllBytes($file))
 }
@@ -83,12 +93,12 @@ $expectedWorkshopTitle = -join @(
 )
 if ($workshopInfo.ModName -ne $expectedWorkshopTitle) { throw "unexpected Workshop ModName" }
 if ($workshopInfo.PackageName -ne "PalSkillDPSAnalyzerSP") { throw "unexpected Workshop PackageName" }
-if ($workshopInfo.Version -ne "0.3.1") { throw "unexpected Workshop version" }
+if ($workshopInfo.Version -ne "0.4.0") { throw "unexpected Workshop version" }
 if ($workshopInfo.Dependencies -notcontains "UE4SSExperimentalPW") { throw "Workshop UE4SS dependency missing" }
 if ($workshopInfo.InstallRule.Count -ne 1 -or $workshopInfo.InstallRule[0].Type -ne "Lua") {
     throw "Workshop Lua InstallRule missing"
 }
-foreach ($sharedName in @("main.lua", "hud.lua", "commentary.lua", "localization.lua")) {
+foreach ($sharedName in @("main.lua", "hud.lua", "commentary.lua", "localization.lua", "hud_strings.lua", "skill_names.lua")) {
     $sharedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $projectDirectory "Scripts\$sharedName")).Hash
     $workshopHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $workshopScripts $sharedName)).Hash
     if ($sharedHash -ne $workshopHash) { throw "Workshop $sharedName is not synchronized with shared core" }
@@ -150,6 +160,10 @@ if ($LASTEXITCODE -ne 0) { throw "Workshop config.lua parse failed" }
 if ($LASTEXITCODE -ne 0) { throw "Workshop commentary.lua parse failed" }
 & npx --yes --package=luaparse luaparse --quiet --file (Join-Path $workshopScripts "localization.lua")
 if ($LASTEXITCODE -ne 0) { throw "Workshop localization.lua parse failed" }
+& npx --yes --package=luaparse luaparse --quiet --file (Join-Path $workshopScripts "hud_strings.lua")
+if ($LASTEXITCODE -ne 0) { throw "Workshop hud_strings.lua parse failed" }
+& npx --yes --package=luaparse luaparse --quiet --file (Join-Path $workshopScripts "skill_names.lua")
+if ($LASTEXITCODE -ne 0) { throw "Workshop skill_names.lua parse failed" }
 
 Write-Host "[5/5] Running integration, thread-affinity, lifetime, and stress tests"
 Push-Location $testDirectory
@@ -157,7 +171,7 @@ try {
     $testOutput = & npx --yes --package=fengari-node-cli fengari test_main.lua 2>&1
     $testExitCode = $LASTEXITCODE
     $testOutput | Write-Host
-    if ($testExitCode -ne 0 -or -not ($testOutput -match "v0\.3\.1 HUD/diagnostic/source/thread/lifetime/stress tests passed")) {
+    if ($testExitCode -ne 0 -or -not ($testOutput -match "v0\.4\.0 multilingual HUD/diagnostic/source/thread/lifetime/stress tests passed")) {
         throw "Lua integration test failed or did not reach its completion marker"
     }
     $localeOutput = & npx --yes --package=fengari-node-cli fengari test_localization.lua 2>&1
