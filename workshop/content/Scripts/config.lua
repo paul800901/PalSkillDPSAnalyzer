@@ -34,6 +34,21 @@ config.DumpDamageSchema = false
 config.SkillDiagnosticMaxSamplesPerCandidate = 3
 config.SkillDiagnosticMaxSchemaFields = 128
 config.SkillDiagnosticChatMaxRows = 12
+config.SkillDiagnosticChatMode = "off"
+
+-- F1 opens the dedicated skill-DPS HUD settings. Results stay out of chat by
+-- default and remain visible after the fight for comparison.
+config.EnableSkillDPSHUD = true
+config.HUDRefreshMilliseconds = 500
+config.HUDDetailMode = "full"
+config.HUDAnchor = "top-right"
+config.HUDScale = 1.0
+config.HUDMaxSkillRows = 6
+config.HUDKeepFinalResults = true
+config.HUDUseScreenTextFallback = true
+config.SkillDiagnosticLogCasts = true
+config.SkillDiagnosticMaxCastLogRows = 128
+config.SkillActionMaxEntries = 4096
 -- A Pal Waza marker is emitted immediately before its damage info is built.
 -- Keep it briefly so delayed projectiles and multi-hit skills remain attributed.
 config.SkillMarkerTTLSeconds = 30

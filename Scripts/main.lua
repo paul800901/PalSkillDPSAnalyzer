@@ -3,6 +3,7 @@
 local config = require("./config")
 local battle_commentary = require("./commentary")
 local localization = require("./localization")
+local hud_module = require("./hud")
 
 local MOD = "[PalSkillDPSAnalyzer]"
 local unpack_args = table.unpack or unpack
@@ -31,6 +32,7 @@ local cached_waza_database = nil
 local cached_waza_metadata = {}
 local action_records = {}
 local action_record_order = {}
+local skill_hud = nil
 
 -- Native damage hooks may run in the middle of an Unreal call. They must not
 -- call UFunctions or retain references to the temporary event struct. The
@@ -490,7 +492,7 @@ local function player_uid(player_state)
     return ok and guid_key(uid) ~= nil and uid or nil
 end
 
-local function local_player_uid()
+local function get_local_player_controller()
     local world = find_world_context()
     local statics = get_gameplay_statics()
     if world == nil or statics == nil then
@@ -498,6 +500,14 @@ local function local_player_uid()
     end
     local controller_ok, controller = safe_call(statics, "GetPlayerController", world, 0)
     if not controller_ok or not is_valid(controller) then
+        return nil
+    end
+    return controller
+end
+
+local function local_player_uid()
+    local controller = get_local_player_controller()
+    if controller == nil then
         return nil
     end
     local state_ok, state = safe_property(controller, "PlayerState")
@@ -2002,6 +2012,60 @@ local function candidate_timing(session, source, candidate)
     return timing
 end
 
+local function diagnostic_snapshot(session, state, reason)
+    local finished_at = session.finished_game_at
+    local now = finished_at or game_time_seconds()
+    local duration = math.max(0.1, now - (session.started_game_at or now))
+    local translator_code = get_translator().code
+    local snapshot = {
+        state = state or "active",
+        reason = reason,
+        boss = session.name,
+        duration = duration,
+        total_damage = session.total_damage,
+        encounter_dps = session.total_damage / duration,
+        include_player = config.IncludePlayerDamage == true,
+        language = translator_code,
+        sources = {},
+    }
+    for _, source in ipairs(ranked_damage_entries(session.diagnostic_sources or {})) do
+        local source_row = {
+            kind = source.kind,
+            name = source.name,
+            damage = source.damage,
+            dps = source.damage / duration,
+            hits = source.hits or 0,
+            skills = {},
+        }
+        for _, candidate in ipairs(ranked_damage_entries(source.skill_candidates or {})) do
+            local timing = candidate_timing(session, source, candidate)
+            source_row.skills[#source_row.skills + 1] = {
+                name = skill_display_name(candidate, translator_code),
+                damage = candidate.damage,
+                encounter_dps = candidate.damage / duration,
+                hits = candidate.hits or 0,
+                casts = timing.cast_count,
+                damage_per_cast = timing.average_cast_damage,
+                panel_cd = timing.panel_cool_time,
+                actual_interval = timing.interval_stats and timing.interval_stats.average or nil,
+                action_duration = timing.action_stats and timing.action_stats.average or nil,
+                action_dps = timing.action_dps,
+                reuse_gap = timing.reuse_gap_stats and timing.reuse_gap_stats.average or nil,
+                lifecycle_complete = timing.action_stats and timing.action_stats.count or 0,
+            }
+        end
+        snapshot.sources[#snapshot.sources + 1] = source_row
+    end
+    return snapshot
+end
+
+local function publish_skill_hud(session, state, reason)
+    if skill_hud == nil or session == nil then
+        return
+    end
+    skill_hud:publish(diagnostic_snapshot(session, state, reason))
+end
+
 local function log_candidate_casts(session, source, candidate, timing)
     if config.SkillDiagnosticLogCasts ~= true then
         return
@@ -2035,6 +2099,7 @@ local function finish_skill_diagnostics(session, duration, reason, recipients)
     for _, source in pairs(session.diagnostic_sources or {}) do
         reconcile_signature_candidates(session, source)
     end
+    publish_skill_hud(session, "finished", reason)
     local sources = ranked_damage_entries(session.diagnostic_sources)
     local candidate_total = 0
     local translator_code = get_translator().code
@@ -2212,11 +2277,16 @@ local function finish_skill_diagnostics(session, duration, reason, recipients)
             candidate_total
         )
     end
-    local messages = { message }
-    for _, row in ipairs(chat_rows) do
-        messages[#messages + 1] = row
+    local chat_mode = tostring(config.SkillDiagnosticChatMode or "off")
+    if chat_mode == "summary" then
+        queue_messages({ message }, recipients)
+    elseif chat_mode == "full" then
+        local messages = { message }
+        for _, row in ipairs(chat_rows) do
+            messages[#messages + 1] = row
+        end
+        queue_messages(messages, recipients)
     end
-    queue_messages(messages, recipients)
 end
 
 local function bind_session_actor(session, boss_info)
@@ -2618,7 +2688,9 @@ local function record_damage(
 
     if session.start_announced ~= true then
         session.start_announced = true
-        if config.BroadcastStart ~= false then
+        local diagnostics_chat_enabled = config.SkillDiagnosticsOnly ~= true
+            or tostring(config.SkillDiagnosticChatMode or "off") ~= "off"
+        if config.BroadcastStart ~= false and diagnostics_chat_enabled then
             local start_message = tr("start", { boss = session.name })
             if config.SkillDiagnosticsOnly == true then
                 local code = get_translator().code
@@ -3224,6 +3296,48 @@ local function cleanup_sessions()
     end
 end
 
+local function reset_skill_diagnostics()
+    local count = 0
+    for key, session in pairs(sessions) do
+        count = count + 1
+        session.finished = true
+        sessions[key] = nil
+        for address in pairs(session.actor_addresses or {}) do
+            session_addresses[address] = nil
+        end
+        for actor_key in pairs(session.actor_keys or {}) do
+            session_actor_keys[actor_key] = nil
+        end
+        for target_key in pairs(session.native_target_keys or {}) do
+            classify_native_target(target_key, "unknown")
+        end
+    end
+    recent_waza_by_pair = {}
+    recent_waza_by_attacker = {}
+    action_records = {}
+    action_record_order = {}
+    if skill_hud ~= nil then
+        skill_hud:clear()
+    end
+    log("diagnostic reset active_sessions=" .. tostring(count))
+end
+
+local function publish_current_skill_hud()
+    if skill_hud == nil or config.EnableSkillDiagnostics ~= true then
+        return
+    end
+    local latest = nil
+    for _, session in pairs(sessions) do
+        if session.finished ~= true and session.total_damage > 0
+            and (latest == nil or session.started_at > latest.started_at) then
+            latest = session
+        end
+    end
+    if latest ~= nil then
+        publish_skill_hud(latest, "active")
+    end
+end
+
 local function schedule_cleanup()
     local seconds = math.max(5, math.floor(to_number(config.CleanupIntervalSeconds)))
     local ok, err = pcall(function()
@@ -3258,6 +3372,26 @@ local function schedule_progress()
     if not ok then
         metrics.errors = metrics.errors + 1
         log("progress scheduling failed: " .. tostring(err))
+    end
+end
+
+local function schedule_skill_hud()
+    if config.EnableSkillDiagnostics ~= true then
+        return
+    end
+    local milliseconds = math.max(100, math.floor(to_number(config.HUDRefreshMilliseconds)))
+    local ok, err = pcall(function()
+        LoopInGameThreadWithDelay(milliseconds, function()
+            local published, publish_err = pcall(publish_current_skill_hud)
+            if not published then
+                metrics.errors = metrics.errors + 1
+                log("HUD publishing error: " .. tostring(publish_err))
+            end
+        end)
+    end)
+    if not ok then
+        metrics.errors = metrics.errors + 1
+        log("HUD scheduling failed: " .. tostring(err))
     end
 end
 
@@ -3519,12 +3653,13 @@ local function register_hooks()
 
     if hooks.damage and hooks.death then
         log(string.format(
-            "loaded v0.2.0-diagnostic; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s waza_hook=%s action_hooks=%s/%s local_only=%s; captured_hooks=%d",
+            "loaded v0.3.0-hud; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s chat_mode=%s waza_hook=%s action_hooks=%s/%s local_only=%s; captured_hooks=%d",
             hooks.damage_mode,
             tostring(config.EnableDPSRecording ~= false),
             tostring(config.EnableSkillDiagnostics == true),
             tostring(config.SkillDiagnosticsOnly == true),
             tostring(config.IncludePlayerDamage == true),
+            tostring(config.SkillDiagnosticChatMode or "off"),
             tostring(hooks.waza == true),
             tostring(hooks.action_begin == true),
             tostring(hooks.action_end == true),
@@ -3536,12 +3671,23 @@ local function register_hooks()
     end
 end
 
+skill_hud = hud_module.new({
+    config = config,
+    log = log,
+    get_player_controller = get_local_player_controller,
+    get_world_context = find_world_context,
+    get_language = function() return get_translator().code end,
+    on_reset = reset_skill_diagnostics,
+})
+skill_hud:register_keybinds()
+
 register_hooks()
 if hooks.damage and hooks.death then
     schedule_damage_schema_dump()
     schedule_native_drain()
     schedule_cleanup()
     schedule_progress()
+    schedule_skill_hud()
 end
 
 if rawget(_G, "__BOSS_DPS_TEST") == true then
@@ -3555,5 +3701,8 @@ if rawget(_G, "__BOSS_DPS_TEST") == true then
         drain_native_damage = drain_native_damage,
         cleanup_sessions = cleanup_sessions,
         publish_progress = publish_progress,
+        publish_current_skill_hud = publish_current_skill_hud,
+        reset_skill_diagnostics = reset_skill_diagnostics,
+        skill_hud = skill_hud,
     }
 end

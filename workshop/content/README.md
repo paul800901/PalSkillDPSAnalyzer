@@ -1,15 +1,16 @@
 # 帕魯技能 DPS 分析器
 
-Palworld 1.0 單人世界傷害驗證 Mod。預設只計算帕魯，依技能 ID、投射物或傷害來源建立診斷候選；結算時會在遊戲聊天欄列出逐技能傷害、施放次數、每次傷害、面板 CD、實際間隔、完整動作、單次施放 DPS 與再用空窗。不進行玩家排名。
+Palworld 1.0 單人世界傷害驗證 Mod。預設只計算帕魯，依技能 ID、投射物或傷害來源建立診斷候選；獨立 HUD 會即時列出逐技能傷害、施放次數、每次傷害、面板 CD、實際間隔、完整動作、單次施放 DPS 與再用空窗。聊天輸出預設關閉，不進行玩家排名。
 
 ## 使用方法
 
 1. 訂閱並啟用本 Mod 與 `UE4SS Experimental (Palworld)`。
-2. 進入單人世界，使用一隻帕魯攻擊 Boss。
-3. 擊殺、捕捉或停止造成傷害 60 秒後完成結算。
-4. 保留 `Palworld\Mods\NativeMods\UE4SS\UE4SS.log`。
+2. 進入單人世界後按 F1 開啟設定面板；方向鍵上下選擇，左右或 Enter 調整。
+3. 使用一隻帕魯攻擊 Boss；右上專用面板會即時更新。
+4. 擊殺、捕捉或停止造成傷害 60 秒後完成結算。
+5. 保留 `Palworld\Mods\NativeMods\UE4SS\UE4SS.log`。
 
-人物傷害預設關閉。要測試武器時，修改：
+人物傷害預設關閉。要測試武器時，可直接在 F1 面板開啟，或修改：
 
 ```lua
 config.IncludePlayerDamage = true
@@ -23,7 +24,7 @@ config.IncludePlayerDamage = true
 Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\config.lua
 ```
 
-這是 v0.2.0 診斷版。技能優先顯示遊戲官方本地化名稱與英文代碼；同一技能不同次施放會合併，同時保留逐次動作計時。實際開始間隔包含戰鬥 AI、移動與選招等待，不等同面板 CD；完整計時覆蓋率會直接列出。
+這是 v0.3.0 HUD 版。技能優先顯示遊戲官方本地化名稱與英文代碼；同一技能不同次施放會合併，同時保留逐次動作計時。實際開始間隔包含戰鬥 AI、移動與選招等待，不等同面板 CD；完整計時覆蓋率會直接列出。只需要 UE4SS Experimental；PalSchema 不是必要依賴。
 
 專案：https://github.com/paul800901/PalSkillDPSAnalyzer
 

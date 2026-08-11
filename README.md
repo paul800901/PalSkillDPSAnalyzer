@@ -1,12 +1,24 @@
-# PalSkillDPSAnalyzer v0.2.0-diagnostic
+# PalSkillDPSAnalyzer v0.3.0-hud
 
 Palworld 1.0 單機用 UE4SS Lua 傷害驗證 Mod。它不是玩家排行榜，目標是把一場 Boss 測試中的每隻帕魯視為獨立來源，依可讀到的技能、投射物或攻擊欄位分桶，輸出總傷害、整場 DPS、占比、命中、每次施放傷害、完整動作時間、單次施放 DPS、實際施放間隔與 AI／再用空窗。
 
 人物傷害預設關閉。需要測試武器時，可在另一場戰鬥中開啟人物來源；能辨識武器／投射物就分桶，不能辨識時保留為未知人物武器，不猜名稱。
 
-## 診斷版輸出
+## 獨立技能 DPS 面板
 
-第一次打中 Boss 後，聊天欄會顯示開始提示。擊殺、捕捉或 60 秒無傷害後，每個技能會輸出三列：基本傷害、面板 CD／實際開始間隔，以及完整動作／單次施放 DPS／再用空窗。技能名稱優先使用遊戲目前語言的官方本地化文字，並保留內部英文代碼；完整逐次施放證據也會寫入 `UE4SS.log`：
+第一次打中 Boss 後，畫面右上會開啟專用 HUD；聊天輸出預設關閉。每個技能會顯示總傷害、整場 DPS、命中、施放次數、每次傷害、完整動作時間、單次施放 DPS、面板 CD、實際開始間隔及 AI／再用空窗。技能名稱優先使用遊戲目前語言的官方本地化文字，並保留內部英文代碼。
+
+按 `F1` 開啟設定面板，以方向鍵選擇、左右鍵或 Enter 調整：
+
+- 技能 DPS 面板開關
+- 人物／武器傷害（預設關閉）
+- 完整／精簡資料密度
+- 左上／右上位置與 80%／100%／120% 縮放
+- 戰後是否保留結果
+- 聊天輸出關閉／摘要／完整
+- 清除本場測試
+
+設定會寫入 `Scripts/user_settings.lua`，下次啟動沿用。若 F1 已被其他 UE4SS 模組占用，會自動改用 `Ctrl+F1`。完整逐次施放證據仍會寫入 `UE4SS.log`：
 
 ```text
 [PalSkillDPSAnalyzer] diagnostic-source boss=... source_kind=pal source=... damage=... dps=... hits=... candidates=...
@@ -22,6 +34,8 @@ Palworld 1.0 單機用 UE4SS Lua 傷害驗證 Mod。它不是玩家排行榜，�
 config.EnableSkillDiagnostics = true
 config.SkillDiagnosticsOnly = true
 config.IncludePlayerDamage = false
+config.SkillDiagnosticChatMode = "off"
+config.EnableSkillDPSHUD = true
 config.DumpDamageSchema = false
 config.SkillDiagnosticLogCasts = true
 ```
@@ -30,7 +44,7 @@ config.SkillDiagnosticLogCasts = true
 
 ## Steam 創意工坊單機安裝
 
-診斷包需要 `UE4SS Experimental (Palworld)`。Palworld Mod 管理器會把 Lua 腳本安裝到：
+診斷包只需要 `UE4SS Experimental (Palworld)`。PalSchema 是許多資料型 Mod 的常見前置，但本 Mod 不修改資料表，因此不是必要依賴。Palworld Mod 管理器會把 Lua 腳本安裝到：
 
 ```text
 Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\
@@ -42,15 +56,16 @@ Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\
 powershell -ExecutionPolicy Bypass -File .\workshop\build_workshop.ps1
 ```
 
-輸出位於 `workshop/dist/PalSkillDPSAnalyzerSP-Workshop-v0.2.0.zip`。專案已保留獨立的 `Info.json`、PackageName 與空白 Workshop Published File ID，不會覆蓋上游 Mod。
+輸出位於 `workshop/dist/PalSkillDPSAnalyzerSP-Workshop-v0.3.0.zip`。專案已保留獨立的 `Info.json`、PackageName 與空白 Workshop Published File ID，不會覆蓋上游 Mod。
 
 ## 驗證流程
 
 1. 啟用本 Mod 與 UE4SS Experimental。
-2. 預設先只帶一隻帕魯，使用已知的 2–3 個技能攻擊 Boss。
-3. 結束戰鬥後保留 `UE4SS.log`。
-4. 以 `Waza attribution hook`、`action_hooks=true/true`、`diagnostic-candidate` 和 `diagnostic-cast` 行確認技能代號、官方名稱與動作計時。
-5. 如需測武器，另開一場、開啟 `IncludePlayerDamage`，全程只使用同一武器。
+2. 進入世界後按 F1，確認專用面板與設定可開啟。
+3. 預設先只帶一隻帕魯，使用已知的 2–3 個技能攻擊 Boss。
+4. 結束戰鬥後保留 `UE4SS.log`。
+5. 以 `HUD backend=umg`、`Waza attribution hook`、`action_hooks=true/true`、`diagnostic-candidate` 和 `diagnostic-cast` 行確認 UI、技能代號、官方名稱與動作計時。
+6. 如需測武器，在 F1 面板開啟人物傷害，另開一場全程只使用同一武器。
 
 ## 適用邊界
 

@@ -294,6 +294,26 @@ end
 
 EGameThreadMethod = { EngineTick = 1, ProcessEvent = 2 }
 EngineTickAvailable = true
+Key = {
+    F1 = "F1",
+    UP_ARROW = "UP",
+    DOWN_ARROW = "DOWN",
+    LEFT_ARROW = "LEFT",
+    RIGHT_ARROW = "RIGHT",
+    RETURN = "RETURN",
+}
+ModifierKey = { CONTROL = "CONTROL" }
+key_callbacks = {}
+
+function IsKeyBindRegistered(_, _)
+    return false
+end
+
+function RegisterKeyBindAsync(key, modifiers, callback)
+    assert(phase == "bootstrap", "keybinds must be registered during bootstrap")
+    assert(type(modifiers) == "table", "async keybind registration requires a modifier table")
+    key_callbacks[key] = callback
+end
 
 function ExecuteInGameThread(callback, method)
     assert(phase == "hook" or phase == "game", "unexpected game-thread scheduling phase")
@@ -424,11 +444,66 @@ assert(runtime_config.LocalOnlyMessages == false, "server package should not def
 assert(runtime_config.EnableSkillDiagnostics == true, "skill diagnostics should default to enabled")
 assert(runtime_config.SkillDiagnosticsOnly == true, "diagnostic-only output should default to enabled")
 assert(runtime_config.IncludePlayerDamage == false, "player damage should default to disabled")
+assert(runtime_config.SkillDiagnosticChatMode == "off", "diagnostic chat should default to disabled")
+assert(runtime_config.EnableSkillDPSHUD == true, "skill DPS HUD should default to enabled")
+assert(runtime_config.HUDDetailMode == "full", "HUD should default to full timing details")
 assert(runtime_config.DumpDamageSchema == false, "schema dump should default to disabled after field discovery")
 assert(runtime_config.SkillDiagnosticLogCasts == true,
     "per-cast diagnostic log should default to enabled")
 assert(runtime_config.SkillActionMaxEntries >= 128,
     "action lifecycle cache must be bounded")
+assert(type(key_callbacks[Key.F1]) == "function", "F1 HUD settings key was not registered")
+assert(type(key_callbacks[Key.UP_ARROW]) == "function"
+    and type(key_callbacks[Key.DOWN_ARROW]) == "function"
+    and type(key_callbacks[Key.RETURN]) == "function",
+    "HUD settings navigation keys were not registered")
+
+do
+    local hud_header, hud_summary, hud_body, hud_footer =
+        BossDPSBroadcastTestApi.skill_hud:format_snapshot({
+        state = "active",
+        boss = "測試 Boss",
+        duration = 20,
+        total_damage = 2000,
+        encounter_dps = 100,
+        include_player = false,
+        language = "zh-TW",
+        sources = {
+            {
+                name = "測試帕魯",
+                damage = 2000,
+                dps = 100,
+                hits = 4,
+                skills = {
+                    {
+                        name = "切割龍息（BeamSlicer）",
+                        damage = 2000,
+                        encounter_dps = 100,
+                        hits = 4,
+                        casts = 2,
+                        damage_per_cast = 1000,
+                        panel_cd = 16,
+                        actual_interval = 20.5,
+                        action_duration = 2.5,
+                        action_dps = 400,
+                        reuse_gap = 18,
+                        lifecycle_complete = 2,
+                    },
+                },
+            },
+        },
+        })
+    assert(string.find(hud_header, "帕魯技能 DPS", 1, true) ~= nil, "HUD title missing")
+    assert(string.find(hud_summary, "總傷害 2,000", 1, true) ~= nil, "HUD encounter summary missing")
+    assert(string.find(hud_body, "切割龍息（BeamSlicer）", 1, true) ~= nil,
+        "HUD localized skill name missing")
+    assert(string.find(hud_body, "施放DPS 400.0", 1, true) ~= nil,
+        "HUD action DPS missing")
+    assert(string.find(hud_body, "實際間隔 20.5秒", 1, true) ~= nil,
+        "HUD observed interval missing")
+    assert(string.find(hud_footer, "人物傷害 關", 1, true) ~= nil,
+        "HUD player-damage state missing")
+end
 -- Most existing scenarios also exercise the enabled commentary branches.
 -- They verify the inherited BossDPS core, so opt back into legacy output for
 -- those scenarios. Dedicated diagnostics cases below test the new defaults.
@@ -501,9 +576,13 @@ assert(callbacks["/Script/Pal.PalActionBase:OnBeginAction"] ~= nil
     "action lifecycle hooks were not registered")
 assert(death_hook ~= nil, "death hook was not registered")
 assert(captured_hook ~= nil, "capture hook was not registered")
-assert(#loop_tasks == 2, "cleanup and progress loops were not configured")
-local loop_delays = { [loop_tasks[1].delay] = true, [loop_tasks[2].delay] = true }
-assert(loop_tasks[1].delay == 10000 and loop_tasks[2].delay == 10000, "unexpected loop delays")
+assert(#loop_tasks == 3, "cleanup, progress, and HUD loops were not configured")
+local loop_delays = {
+    [loop_tasks[1].delay] = true,
+    [loop_tasks[2].delay] = true,
+    [loop_tasks[3].delay] = true,
+}
+assert(loop_delays[10000] and loop_delays[500], "unexpected loop delays")
 
 -- The master DPS switch must suppress event capture, sessions, and messages.
 local disabled_boss = boss_actor("BP_RaidBoss_Disabled_C_30")
@@ -680,6 +759,7 @@ assert(string.find(mounted_joined, "击杀播报：Bob 击败了 RaidBoss_Mounte
 runtime_config.SkillDiagnosticsOnly = true
 runtime_config.IncludePlayerDamage = false
 runtime_config.BroadcastStart = false
+runtime_config.SkillDiagnosticChatMode = "full"
 local diagnostic_boss = boss_actor("BP_RaidBoss_Diagnostic_C_180")
 local poison_projectile = actor("BP_PoisonFogProjectile_C_181", { Owner = player_two_pal })
 local rifle_projectile = actor("BP_AssaultRifleBullet_C_182", { Owner = player_one })
@@ -1341,4 +1421,4 @@ assert(#delivered_by_uid[test_guid_key(uid_spectator)] == 0, "spectator received
 
 assert(#BossDPSBroadcastTestApi.sessions == 0, "sessions table must be map-like")
 assert(original_os_time ~= nil)
-print("PalSkillDPSAnalyzer v0.2.0 diagnostic/source/thread/lifetime/stress tests passed")
+print("PalSkillDPSAnalyzer v0.3.0 HUD/diagnostic/source/thread/lifetime/stress tests passed")

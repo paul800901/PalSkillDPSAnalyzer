@@ -3,6 +3,7 @@ $ErrorActionPreference = "Stop"
 $testDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectDirectory = Split-Path -Parent $testDirectory
 $mainScript = Join-Path $projectDirectory "Scripts\main.lua"
+$hudScript = Join-Path $projectDirectory "Scripts\hud.lua"
 $configScript = Join-Path $projectDirectory "Scripts\config.lua"
 $commentaryScript = Join-Path $projectDirectory "Scripts\commentary.lua"
 $localizationScript = Join-Path $projectDirectory "Scripts\localization.lua"
@@ -17,6 +18,8 @@ $workshopLocalizationValidator = Join-Path $projectDirectory "workshop\validate_
 Write-Host "[1/5] Parsing Lua sources"
 & npx --yes --package=luaparse luaparse --quiet --file $mainScript
 if ($LASTEXITCODE -ne 0) { throw "main.lua parse failed" }
+& npx --yes --package=luaparse luaparse --quiet --file $hudScript
+if ($LASTEXITCODE -ne 0) { throw "hud.lua parse failed" }
 & npx --yes --package=luaparse luaparse --quiet --file $configScript
 if ($LASTEXITCODE -ne 0) { throw "config.lua parse failed" }
 & npx --yes --package=luaparse luaparse --quiet --file $commentaryScript
@@ -43,6 +46,7 @@ Write-Host "[3/5] Validating strict UTF-8"
 $utf8 = [System.Text.UTF8Encoding]::new($false, $true)
 foreach ($file in @(
     $mainScript,
+    $hudScript,
     $configScript,
     $commentaryScript,
     $localizationScript,
@@ -54,6 +58,7 @@ foreach ($file in @(
     $workshopLocalizationManifest,
     $workshopLocalizationValidator,
     (Join-Path $workshopScripts "main.lua"),
+    (Join-Path $workshopScripts "hud.lua"),
     (Join-Path $workshopScripts "config.lua"),
     (Join-Path $workshopScripts "commentary.lua"),
     (Join-Path $workshopScripts "localization.lua")
@@ -78,12 +83,12 @@ $expectedWorkshopTitle = -join @(
 )
 if ($workshopInfo.ModName -ne $expectedWorkshopTitle) { throw "unexpected Workshop ModName" }
 if ($workshopInfo.PackageName -ne "PalSkillDPSAnalyzerSP") { throw "unexpected Workshop PackageName" }
-if ($workshopInfo.Version -ne "0.2.0") { throw "unexpected Workshop version" }
+if ($workshopInfo.Version -ne "0.3.0") { throw "unexpected Workshop version" }
 if ($workshopInfo.Dependencies -notcontains "UE4SSExperimentalPW") { throw "Workshop UE4SS dependency missing" }
 if ($workshopInfo.InstallRule.Count -ne 1 -or $workshopInfo.InstallRule[0].Type -ne "Lua") {
     throw "Workshop Lua InstallRule missing"
 }
-foreach ($sharedName in @("main.lua", "commentary.lua", "localization.lua")) {
+foreach ($sharedName in @("main.lua", "hud.lua", "commentary.lua", "localization.lua")) {
     $sharedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $projectDirectory "Scripts\$sharedName")).Hash
     $workshopHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $workshopScripts $sharedName)).Hash
     if ($sharedHash -ne $workshopHash) { throw "Workshop $sharedName is not synchronized with shared core" }
@@ -107,6 +112,8 @@ foreach ($requiredSetting in @(
     "config.EnableSkillDiagnostics = true",
     "config.SkillDiagnosticsOnly = true",
     "config.IncludePlayerDamage = false",
+    'config.SkillDiagnosticChatMode = "off"',
+    "config.EnableSkillDPSHUD = true",
     "config.PreferNativeCollector = false"
 )) {
     if (-not $workshopConfig.Contains($requiredSetting)) { throw "Workshop config missing: $requiredSetting" }
@@ -134,6 +141,8 @@ if ($LASTEXITCODE -ne 0) { throw "Workshop localization validation failed" }
 [void][scriptblock]::Create($uploadScriptText)
 & npx --yes --package=luaparse luaparse --quiet --file (Join-Path $workshopScripts "main.lua")
 if ($LASTEXITCODE -ne 0) { throw "Workshop main.lua parse failed" }
+& npx --yes --package=luaparse luaparse --quiet --file (Join-Path $workshopScripts "hud.lua")
+if ($LASTEXITCODE -ne 0) { throw "Workshop hud.lua parse failed" }
 & npx --yes --package=luaparse luaparse --quiet --file (Join-Path $workshopScripts "config.lua")
 if ($LASTEXITCODE -ne 0) { throw "Workshop config.lua parse failed" }
 & npx --yes --package=luaparse luaparse --quiet --file (Join-Path $workshopScripts "commentary.lua")
@@ -147,7 +156,7 @@ try {
     $testOutput = & npx --yes --package=fengari-node-cli fengari test_main.lua 2>&1
     $testExitCode = $LASTEXITCODE
     $testOutput | Write-Host
-    if ($testExitCode -ne 0 -or -not ($testOutput -match "v0\.2\.0 diagnostic/source/thread/lifetime/stress tests passed")) {
+    if ($testExitCode -ne 0 -or -not ($testOutput -match "v0\.3\.0 HUD/diagnostic/source/thread/lifetime/stress tests passed")) {
         throw "Lua integration test failed or did not reach its completion marker"
     }
     $localeOutput = & npx --yes --package=fengari-node-cli fengari test_localization.lua 2>&1

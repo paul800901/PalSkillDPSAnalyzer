@@ -6,7 +6,7 @@
 Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\config.lua
 ```
 
-修改後必須完整重開 Palworld。
+大部分顯示設定可直接在遊戲內按 F1 調整並自動保存；手動修改後需完整重開 Palworld。
 
 ## 診斷模式
 
@@ -19,11 +19,27 @@ Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\config.lua
 | `DumpDamageSchema` | `false` | 選用：啟動後反射傷害事件欄位一次；目前 UE4SS 巢狀反射可能失敗 |
 | `SkillDiagnosticMaxSamplesPerCandidate` | `3` | 每個候選最多保留幾筆逐擊樣本 |
 | `SkillDiagnosticMaxSchemaFields` | `128` | 反射欄位數上限 |
-| `SkillDiagnosticChatMaxRows` | `12` | 結算時在遊戲聊天欄顯示的技能／武器明細上限 |
+| `SkillDiagnosticChatMode` | `"off"` | `off` 不使用聊天框；`summary` 只顯示完成摘要；`full` 顯示完整舊式報表 |
+| `SkillDiagnosticChatMaxRows` | `12` | `full` 模式的技能／武器明細上限 |
 | `SkillMarkerTTLSeconds` | `30` | 延遲投射物可沿用 Waza 技能代號的時間 |
 | `SkillMarkerMaxEntries` | `2048` | Waza 關聯快取的有界上限 |
 
 帕魯測試請保持 `IncludePlayerDamage = false`。測試人物武器時改為 `true`，並建議每場只使用一種武器。
+
+## F1 技能 DPS 面板
+
+| 設定 | 預設 | 用途 |
+|---|---:|---|
+| `EnableSkillDPSHUD` | `true` | 顯示獨立技能 DPS 面板 |
+| `HUDRefreshMilliseconds` | `500` | 即時面板更新間隔 |
+| `HUDDetailMode` | `"full"` | `full` 顯示所有計時；`compact` 每招一列 |
+| `HUDAnchor` | `"top-right"` | `top-right` 或 `top-left` |
+| `HUDScale` | `1.0` | F1 可選 0.8、1.0、1.2 |
+| `HUDMaxSkillRows` | `6` | 面板最多顯示幾個技能候選 |
+| `HUDKeepFinalResults` | `true` | 戰鬥結束後保留面板，方便抄錄與比較 |
+| `HUDUseScreenTextFallback` | `true` | UMG 因遊戲版本不相容時，改用螢幕文字且不使用聊天框 |
+
+F1 已被其他 UE4SS 模組註冊時，本 Mod 會改用 `Ctrl+F1`。方向鍵上下選擇，左右鍵或 Enter 調整。使用者設定保存在 `Scripts/user_settings.lua`；「清除本場測試」不會修改歷史檔案，只會清空目前記憶中的遭遇。
 
 ## 結算口徑
 

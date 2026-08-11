@@ -40,6 +40,23 @@ config.DumpDamageSchema = false
 config.SkillDiagnosticMaxSamplesPerCandidate = 3
 config.SkillDiagnosticMaxSchemaFields = 128
 config.SkillDiagnosticChatMaxRows = 12
+-- Diagnostic results use a dedicated in-game HUD by default. Chat output is
+-- retained only as an optional compatibility mode: "off", "summary", or
+-- "full". The F1 panel can change this without editing the file.
+config.SkillDiagnosticChatMode = "off"
+
+-- Dedicated skill-DPS HUD. F1 opens the settings panel; arrow keys and Enter
+-- change values. User choices are persisted beside these scripts.
+config.EnableSkillDPSHUD = true
+config.HUDRefreshMilliseconds = 500
+config.HUDDetailMode = "full"
+config.HUDAnchor = "top-right"
+config.HUDScale = 1.0
+config.HUDMaxSkillRows = 6
+config.HUDKeepFinalResults = true
+-- A version-incompatible UMG layer falls back to keyed on-screen text rather
+-- than silently losing the diagnostic result. It never uses the chat feed.
+config.HUDUseScreenTextFallback = true
 -- The chat shows aggregate timing for every displayed skill. UE4SS.log can
 -- additionally keep one row per observed cast for later comparison.
 config.SkillDiagnosticLogCasts = true
