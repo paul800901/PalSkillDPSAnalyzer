@@ -1,16 +1,17 @@
-# PalSkillDPSAnalyzer v0.1.2-diagnostic
+# PalSkillDPSAnalyzer v0.2.0-diagnostic
 
-Palworld 1.0 單機用 UE4SS Lua 傷害驗證 Mod。它不是玩家排行榜，目標是把一場 Boss 測試中的每隻帕魯視為獨立來源，依可讀到的技能、投射物或攻擊欄位分桶，輸出總傷害、整場 DPS、占比、命中數與平均每擊傷害。
+Palworld 1.0 單機用 UE4SS Lua 傷害驗證 Mod。它不是玩家排行榜，目標是把一場 Boss 測試中的每隻帕魯視為獨立來源，依可讀到的技能、投射物或攻擊欄位分桶，輸出總傷害、整場 DPS、占比、命中、每次施放傷害、完整動作時間、單次施放 DPS、實際施放間隔與 AI／再用空窗。
 
 人物傷害預設關閉。需要測試武器時，可在另一場戰鬥中開啟人物來源；能辨識武器／投射物就分桶，不能辨識時保留為未知人物武器，不猜名稱。
 
 ## 診斷版輸出
 
-第一次打中 Boss 後，聊天欄會顯示開始提示。擊殺、捕捉或 60 秒無傷害後，聊天欄會列出每個技能候選的傷害、占比、整場 DPS、命中與平均每擊；完整原始證據也會寫入 `UE4SS.log`：
+第一次打中 Boss 後，聊天欄會顯示開始提示。擊殺、捕捉或 60 秒無傷害後，每個技能會輸出三列：基本傷害、面板 CD／實際開始間隔，以及完整動作／單次施放 DPS／再用空窗。技能名稱優先使用遊戲目前語言的官方本地化文字，並保留內部英文代碼；完整逐次施放證據也會寫入 `UE4SS.log`：
 
 ```text
 [PalSkillDPSAnalyzer] diagnostic-source boss=... source_kind=pal source=... damage=... dps=... hits=... candidates=...
-[PalSkillDPSAnalyzer] diagnostic-candidate boss=... candidate=... damage=... share=... dps=... hits=... avg_hit=... causer=... fields=...
+[PalSkillDPSAnalyzer] diagnostic-candidate boss=... candidate=... localized=... damage=... encounter_dps=... casts=... panel_cd=... actual_interval=... action_duration=... action_dps=... reuse_gap=... lifecycle_coverage=...
+[PalSkillDPSAnalyzer] diagnostic-cast boss=... candidate=... cast=... damage=... hits=... action_duration=... cast_dps=... hit_window=... lifecycle=...
 ```
 
 帕魯攻擊會優先讀取 Palworld 建立傷害資料時帶入的 `EPalWazaID`；實機沒有 Waza 訊號時，改用穩定化後的動作類別，例如 `BeamSlicer`、`FlareTornado`。每次施放產生的 UObject 編號不會再把同一技能拆成多列。泛用持續傷害只有在 `BasePower + AttackElementType` 能唯一對應到一招時才合併，否則保留未解析候選，不會硬猜名稱。
@@ -22,6 +23,7 @@ config.EnableSkillDiagnostics = true
 config.SkillDiagnosticsOnly = true
 config.IncludePlayerDamage = false
 config.DumpDamageSchema = false
+config.SkillDiagnosticLogCasts = true
 ```
 
 要另外測試人物武器，將 `IncludePlayerDamage` 設為 `true`，完整重開遊戲，再以一場只使用一種武器的 Boss 戰進行測試。
@@ -40,14 +42,14 @@ Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\
 powershell -ExecutionPolicy Bypass -File .\workshop\build_workshop.ps1
 ```
 
-輸出位於 `workshop/dist/PalSkillDPSAnalyzerSP-Workshop-v0.1.2.zip`。專案已保留獨立的 `Info.json`、PackageName 與空白 Workshop Published File ID，不會覆蓋上游 Mod。
+輸出位於 `workshop/dist/PalSkillDPSAnalyzerSP-Workshop-v0.2.0.zip`。專案已保留獨立的 `Info.json`、PackageName 與空白 Workshop Published File ID，不會覆蓋上游 Mod。
 
 ## 驗證流程
 
 1. 啟用本 Mod 與 UE4SS Experimental。
 2. 預設先只帶一隻帕魯，使用已知的 2–3 個技能攻擊 Boss。
 3. 結束戰鬥後保留 `UE4SS.log`。
-4. 以 `Waza attribution hook`、`damage-sample` 和 `diagnostic-candidate` 行確認技能代號與傷害映射。
+4. 以 `Waza attribution hook`、`action_hooks=true/true`、`diagnostic-candidate` 和 `diagnostic-cast` 行確認技能代號、官方名稱與動作計時。
 5. 如需測武器，另開一場、開啟 `IncludePlayerDamage`，全程只使用同一武器。
 
 ## 適用邊界
@@ -55,6 +57,8 @@ powershell -ExecutionPolicy Bypass -File .\workshop\build_workshop.ps1
 - 正式目標：Palworld 1.0 Windows 單人世界。
 - Boss 房間、塔主、野外 Boss 與召喚 Boss 可用；PvP 不是目前目標。
 - 持續傷害、燃燒、中毒、同一泛用投射物承載多種技能等情況，可能先進入未知或合併候選。
+- 「面板 CD」來自遊戲技能資料庫；「實際開始間隔」是相鄰施放開始到開始，會包含 AI 選招、移動、距離與其他技能造成的等待，不等同純冷卻。
+- 「完整動作」只統計成功捕捉開始與結束的施放。報表的 `完整計時 n/m` 是覆蓋率；未完整捕捉時只保留首末命中窗，不把它冒充動作時間。
 - 診斷版強制使用 Lua 傷害事件，避免原生聚合器先丟失技能候選欄位。
 - 修改設定後必須完整重開 Palworld。
 

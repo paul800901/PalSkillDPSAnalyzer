@@ -12,6 +12,7 @@ local object_accesses = 0
 local localized_name_calls = 0
 local nickname_calls = 0
 local fake_time = 1000
+fake_game_time = 1000
 
 local original_os_time = os.time
 os.time = function()
@@ -137,6 +138,10 @@ local gameplay_statics = object({}, {
         assert(index == 0, "local player must use controller index zero")
         return local_player_controller
     end,
+    GetTimeSeconds = function(_, context)
+        assert(context == world, "unexpected game-time world context")
+        return fake_game_time
+    end,
 })
 
 local trainer_by_actor = {}
@@ -154,6 +159,31 @@ local character_database = object({}, {
             out_text.OutText = "捣蛋猫"
         elseif string.find(id, "YakushimaBoss002", 1, true) ~= nil then
             out_text.OutText = "月亮领主"
+        end
+    end,
+})
+
+waza_metadata = {
+    [501] = { localized = "暗黑球", cooldown = 4 },
+    [502] = { localized = "毒雾", cooldown = 30 },
+    [601] = { localized = "切割龙息", cooldown = 16 },
+}
+waza_database = object({}, {
+    FindWazaForBP = function(_, waza_id, out_data)
+        local metadata = waza_metadata[waza_id]
+        if metadata == nil then
+            return false
+        end
+        out_data.CoolTime = metadata.cooldown
+        return true
+    end,
+})
+pal_ui_utility = object({}, {
+    GetWazaName = function(_, context, waza_id, out_name)
+        assert(context == world, "unexpected Waza localization world context")
+        local metadata = waza_metadata[waza_id]
+        if metadata ~= nil then
+            out_name.outName = metadata.localized
         end
     end,
 })
@@ -176,6 +206,10 @@ local utility = object({}, {
     GetDatabaseCharacterParameter = function(_, context)
         assert(context == world, "unexpected localization world context")
         return character_database
+    end,
+    GetWazaDatabase = function(_, context)
+        assert(context == world, "unexpected Waza database world context")
+        return waza_database
     end,
     SendSystemToPlayerChat = function(_, context, message, receiver_uids)
         assert(context == world, "unexpected world context")
@@ -207,6 +241,7 @@ local internationalization_library = object({}, {
 local waza_names = {
     [501] = "EPalWazaID::DarkBall",
     [502] = "EPalWazaID::PoisonFog",
+    [601] = "EPalWazaID::BeamSlicer",
 }
 local waza_enum = object({}, {
     GetNameByValue = function(_, value)
@@ -218,6 +253,9 @@ function StaticFindObject(path)
     require_game_thread("StaticFindObject")
     if path == "/Script/Pal.Default__PalUtility" then
         return utility
+    end
+    if path == "/Script/Pal.Default__PalUIUtility" then
+        return pal_ui_utility
     end
     if path == "/Script/Engine.Default__GameplayStatics" then
         return gameplay_statics
@@ -243,6 +281,8 @@ function RegisterHook(path, callback)
     local allowed = {
         ["/Script/Pal.PalEventNotify_Character:OnCharacterDamaged_ServerInternal"] = true,
         ["/Script/Pal.PalUtility:MakeDamageInfoByWazaType"] = true,
+        ["/Script/Pal.PalActionBase:OnBeginAction"] = true,
+        ["/Script/Pal.PalActionBase:OnEndAction"] = true,
         ["/Script/Pal.PalEventNotify_Character:OnCharacterDead_ServerInternal"] = true,
         ["/Script/Pal.PalUtility:PalCaptureSuccess"] = true,
     }
@@ -339,6 +379,18 @@ local function waza(attacker, defender, waza_id)
     phase = "idle"
 end
 
+function action_begin(action)
+    phase = "hook"
+    callbacks["/Script/Pal.PalActionBase:OnBeginAction"](hook_param(action))
+    phase = "idle"
+end
+
+function action_end(action)
+    phase = "hook"
+    callbacks["/Script/Pal.PalActionBase:OnEndAction"](hook_param(action))
+    phase = "idle"
+end
+
 local function death(dead_actor)
     phase = "hook"
     callbacks["/Script/Pal.PalEventNotify_Character:OnCharacterDead_ServerInternal"](nil, hook_param({
@@ -373,6 +425,10 @@ assert(runtime_config.EnableSkillDiagnostics == true, "skill diagnostics should 
 assert(runtime_config.SkillDiagnosticsOnly == true, "diagnostic-only output should default to enabled")
 assert(runtime_config.IncludePlayerDamage == false, "player damage should default to disabled")
 assert(runtime_config.DumpDamageSchema == false, "schema dump should default to disabled after field discovery")
+assert(runtime_config.SkillDiagnosticLogCasts == true,
+    "per-cast diagnostic log should default to enabled")
+assert(runtime_config.SkillActionMaxEntries >= 128,
+    "action lifecycle cache must be bounded")
 -- Most existing scenarios also exercise the enabled commentary branches.
 -- They verify the inherited BossDPS core, so opt back into legacy output for
 -- those scenarios. Dedicated diagnostics cases below test the new defaults.
@@ -440,6 +496,9 @@ local death_hook = callbacks["/Script/Pal.PalEventNotify_Character:OnCharacterDe
 local captured_hook = callbacks["/Script/Pal.PalUtility:PalCaptureSuccess"]
 assert(damage_hook ~= nil, "damage hook was not registered")
 assert(waza_hook ~= nil, "Waza attribution hook was not registered")
+assert(callbacks["/Script/Pal.PalActionBase:OnBeginAction"] ~= nil
+    and callbacks["/Script/Pal.PalActionBase:OnEndAction"] ~= nil,
+    "action lifecycle hooks were not registered")
 assert(death_hook ~= nil, "death hook was not registered")
 assert(captured_hook ~= nil, "capture hook was not registered")
 assert(#loop_tasks == 2, "cleanup and progress loops were not configured")
@@ -692,7 +751,7 @@ end
 local diagnostic_joined = table.concat(diagnostic_messages, "\n")
 assert(string.find(diagnostic_joined, "伤害验证完成", 1, true) ~= nil,
     "diagnostic completion message missing")
-assert(string.find(diagnostic_joined, "DarkBall｜伤害 600｜占比 60.0%｜整场DPS 19", 1, true) ~= nil,
+assert(string.find(diagnostic_joined, "暗黑球（DarkBall）｜伤害 600｜占比 60.0%｜整场DPS 19", 1, true) ~= nil,
     "per-skill chat result missing")
 assert(string.find(diagnostic_joined, "MVP", 1, true) == nil,
     "diagnostic-only mode emitted a player ranking")
@@ -715,11 +774,32 @@ trainer_by_actor[action_pal] = player_two
 local action_boss = boss_actor("BP_RaidBoss_ActionDiagnostic_C_185")
 local action_before = #bob_inbox
 
-current_action = actor("BP_ActionBeamSlicer_C_2147000001")
+fake_game_time = 2000
+current_action = actor("BP_ActionBeamSlicer_C_2147000001", {
+    GetWazaID = function() return 601 end,
+    GetActionCharacter = function() return action_pal end,
+})
+action_begin(current_action)
+run_game_tasks()
+fake_game_time = 2001
 damage(action_pal, action_boss, 300, { BasePower = 350, AttackElementType = 9 })
 run_game_tasks()
-current_action = actor("BP_ActionBeamSlicer_C_2147000002")
+fake_game_time = 2002
+action_end(current_action)
+run_game_tasks()
+
+fake_game_time = 2020
+current_action = actor("BP_ActionBeamSlicer_C_2147000002", {
+    GetWazaID = function() return 601 end,
+    GetActionCharacter = function() return action_pal end,
+})
+action_begin(current_action)
+run_game_tasks()
+fake_game_time = 2021
 damage(action_pal, action_boss, 200, { BasePower = 350, AttackElementType = 9 })
+run_game_tasks()
+fake_game_time = 2022
+action_end(current_action)
 run_game_tasks()
 current_action = actor("BP_ActionFlareTornado_C_2147000003")
 damage(action_pal, action_boss, 100, { BasePower = 200, AttackElementType = 2 })
@@ -765,8 +845,14 @@ for index = action_before + 1, #bob_inbox do
     action_messages[#action_messages + 1] = bob_inbox[index]
 end
 local action_joined = table.concat(action_messages, "\n")
-assert(string.find(action_joined, "BeamSlicer｜伤害 500", 1, true) ~= nil,
+assert(string.find(action_joined, "切割龙息（BeamSlicer）｜伤害 500", 1, true) ~= nil,
     "stable action skill total missing")
+assert(string.find(action_joined,
+    "观测施放 2次（命中2）｜每次伤害 250.0｜面板CD 16.0秒｜实际开始间隔 20.0秒｜较面板 +4.0秒",
+    1, true) ~= nil, "actual cast interval and panel cooldown comparison missing")
+assert(string.find(action_joined,
+    "完整动作 2.0秒｜单次施放DPS 125.0｜再用空窗 18.0秒｜首末命中窗 0.0秒｜完整计时 2/2",
+    1, true) ~= nil, "full action timing report missing")
 assert(string.find(action_joined, "FlareTornado｜伤害 150", 1, true) ~= nil,
     "uniquely identified generic damage was not reconciled")
 assert(string.find(action_joined, "UNRESOLVED_PAL_ATTACK_BP_200_ELEMENT_9｜伤害 25", 1, true) ~= nil,
@@ -1255,4 +1341,4 @@ assert(#delivered_by_uid[test_guid_key(uid_spectator)] == 0, "spectator received
 
 assert(#BossDPSBroadcastTestApi.sessions == 0, "sessions table must be map-like")
 assert(original_os_time ~= nil)
-print("PalSkillDPSAnalyzer v0.1.2 diagnostic/source/thread/lifetime/stress tests passed")
+print("PalSkillDPSAnalyzer v0.2.0 diagnostic/source/thread/lifetime/stress tests passed")

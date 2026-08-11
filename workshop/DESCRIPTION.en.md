@@ -1,15 +1,17 @@
 [h1]Pal Skill DPS Analyzer[/h1]
 [b]A single-player damage verification tool for Palworld 1.0.[/b]
 
-This is not a player ranking meter. Each Pal is treated as an independent test source. Damage is grouped by evidence available in Palworld's damage event, such as a skill ID, projectile, or damage causer. The log reports total damage, encounter DPS, share, hit count, and average damage per hit.
+This is not a player ranking meter. Each Pal is an independent test source. Damage and action-lifecycle evidence are grouped per skill. Reports include total damage, encounter DPS, share, hits, observed casts, damage per cast, full action duration, cast DPS, actual start interval, and reuse gap.
 
 [h2]Diagnostic release[/h2]
 [list]
 [*]Pal damage enabled by default; player/weapon damage disabled by default
 [*]Optional one-weapon-per-fight player verification mode
 [*]Evidence-backed candidates; unknown damage is never assigned a guessed skill name
-[*]Per-skill damage, share, encounter DPS, hits, and average hit shown in game chat at completion
-[*]Bounded per-hit samples and skill-attribution evidence in UE4SS.log
+[*]Official in-game localized skill names shown together with internal English codes
+[*]Panel cooldown compared with observed cast-start intervals affected by combat AI, movement, and skill selection
+[*]Damage per cast, full action duration, cast DPS, reuse gap, and timing coverage shown at completion
+[*]Bounded per-hit and per-cast evidence in UE4SS.log
 [*]Boss defeat, capture, and inactivity completion paths
 [/list]
 
@@ -27,7 +29,7 @@ Set [code]config.IncludePlayerDamage = true[/code], fully restart Palworld, and 
 [h2]Scope[/h2]
 [list]
 [*][b]Target:[/b] Windows single-player worlds
-[*][b]Current status:[/b] v0.1.2 diagnostic; repeated casts of one skill are merged into one row
+[*][b]Current status:[/b] v0.2.0 diagnostic with localized names, panel/observed cooldown comparison, and full-action DPS
 [*][b]Not a goal:[/b] comparing players or producing a competitive DPS leaderboard
 [/list]
 

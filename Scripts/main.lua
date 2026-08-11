@@ -13,6 +13,8 @@ local hooks = {
     damage = false,
     damage_mode = "none",
     waza = false,
+    action_begin = false,
+    action_end = false,
     death = false,
     captured = false,
     captured_count = 0,
@@ -24,6 +26,11 @@ local non_boss_addresses = {}
 local recent_waza_by_pair = {}
 local recent_waza_by_attacker = {}
 local cached_waza_enum = nil
+local cached_pal_ui_utility = nil
+local cached_waza_database = nil
+local cached_waza_metadata = {}
+local action_records = {}
+local action_record_order = {}
 
 -- Native damage hooks may run in the middle of an Unreal call. They must not
 -- call UFunctions or retain references to the temporary event struct. The
@@ -54,6 +61,8 @@ local metrics = {
     waza_matches = 0,
     skill_candidates = 0,
     skill_samples = 0,
+    action_begins = 0,
+    action_ends = 0,
 }
 
 local function log(message)
@@ -411,6 +420,16 @@ local function guid_key(value)
         return nil
     end
     return table.concat({ tostring(guid.A), tostring(guid.B), tostring(guid.C), tostring(guid.D) }, ":")
+end
+
+local function action_instance_key(action)
+    local id_ok, action_id = safe_call(action, "GetActionID")
+    local id = id_ok and guid_key(action_id) or nil
+    if id ~= nil then
+        return "guid:" .. id
+    end
+    local identity = actor_address(action) or actor_full_name(action)
+    return identity ~= nil and identity ~= "" and ("object:" .. tostring(identity)) or nil
 end
 
 local function copy_guid(value)
@@ -1056,6 +1075,102 @@ local function waza_name_from_id(waza_id)
     return "WAZA_ID_" .. tostring(waza_id)
 end
 
+local function out_parameter_value(container, names)
+    if container == nil then
+        return nil
+    end
+    for _, name in ipairs(names) do
+        local ok, value = safe_property(container, name)
+        if ok and value ~= nil then
+            return value
+        end
+    end
+    return nil
+end
+
+local function get_pal_ui_utility()
+    if cached_pal_ui_utility ~= nil then
+        return cached_pal_ui_utility ~= false and cached_pal_ui_utility or nil
+    end
+    local ok, utility = pcall(StaticFindObject, "/Script/Pal.Default__PalUIUtility")
+    if ok and is_valid(utility) then
+        cached_pal_ui_utility = utility
+        return utility
+    end
+    cached_pal_ui_utility = false
+    return nil
+end
+
+local function get_waza_database()
+    if cached_waza_database ~= nil then
+        return cached_waza_database ~= false and cached_waza_database or nil
+    end
+    local utility = get_pal_utility()
+    local world = find_world_context()
+    local ok, database = safe_call(utility, "GetWazaDatabase", world)
+    if ok and is_valid(database) then
+        cached_waza_database = database
+        return database
+    end
+    cached_waza_database = false
+    return nil
+end
+
+local function resolve_waza_metadata(waza_id, internal_name)
+    waza_id = math.floor(to_number(waza_id))
+    local cache_key = waza_id > 0 and tostring(waza_id) or tostring(internal_name or "")
+    local cached = cached_waza_metadata[cache_key]
+    if cached ~= nil then
+        return cached
+    end
+
+    local code = waza_id > 0 and waza_name_from_id(waza_id) or tostring(internal_name or "")
+    local localized_name = ""
+    local panel_cool_time = nil
+    if waza_id > 0 then
+        local ui_utility = get_pal_ui_utility()
+        local world = find_world_context()
+        if ui_utility ~= nil and world ~= nil then
+            local out_name = {}
+            safe_call(ui_utility, "GetWazaName", world, waza_id, out_name)
+            localized_name = text_value(out_parameter_value(out_name, {
+                "outName", "OutName", "OutText", "ReturnValue",
+            }))
+        end
+
+        local database = get_waza_database()
+        if database ~= nil then
+            local out_data = {}
+            safe_call(database, "FindWazaForBP", waza_id, out_data)
+            local raw = out_parameter_value(out_data, { "OutData", "outData", "ReturnValue" })
+                or out_data
+            panel_cool_time = finite_positive_number(
+                out_parameter_value(raw, { "CoolTime", "coolTime" })
+            )
+        end
+    end
+
+    local fallback = config.SkillMetadataFallbacks
+        and config.SkillMetadataFallbacks[code]
+        or nil
+    if localized_name == "" and fallback ~= nil then
+        localized_name = localized_override(fallback.Name or fallback.name)
+    end
+    if panel_cool_time == nil and fallback ~= nil then
+        panel_cool_time = finite_positive_number(
+            fallback.PanelCoolTime or fallback.panel_cool_time
+        )
+    end
+    cached = {
+        id = waza_id > 0 and waza_id or nil,
+        code = code,
+        localized_name = localized_name,
+        panel_cool_time = panel_cool_time,
+    }
+    cached_waza_metadata[cache_key] = cached
+    return cached
+end
+
 local function waza_pair_key(attacker, defender)
     local attacker_key = diagnostic_actor_key(attacker)
     local defender_key = diagnostic_actor_key(defender)
@@ -1101,9 +1216,12 @@ local function process_waza_marker(event)
     if attacker_key == nil or attacker_key == "" then
         return
     end
+    local metadata = resolve_waza_metadata(waza_id)
     local marker = {
         id = waza_id,
-        name = waza_name_from_id(waza_id),
+        name = metadata.code,
+        localized_name = metadata.localized_name,
+        panel_cool_time = metadata.panel_cool_time,
         at = event.captured_at or os.time(),
     }
     if pair_key ~= nil then
@@ -1128,8 +1246,9 @@ local function attach_runtime_skill_evidence(event, source_actor, source_kind)
     if marker ~= nil and os.time() - marker.at <= ttl then
         event.diagnostic_fields["waza.ID"] = marker.id
         event.diagnostic_fields["waza.Name"] = marker.name
+        event.diagnostic_fields["waza.LocalizedName"] = marker.localized_name
+        event.diagnostic_fields["waza.PanelCoolTime"] = marker.panel_cool_time
         metrics.waza_matches = metrics.waza_matches + 1
-        return
     end
 
     if source_kind ~= "pal" or not is_valid(source_actor) then
@@ -1155,6 +1274,17 @@ local function attach_runtime_skill_evidence(event, source_actor, source_kind)
     if action_info.short_name ~= "" then
         event.diagnostic_fields["action.Class"] = action_info.short_name
     end
+    event.cast_key = action_instance_key(action)
+    event.source_actor_key = diagnostic_actor_key(source_actor)
+    local waza_ok, action_waza_id = safe_call(action, "GetWazaID")
+    action_waza_id = waza_ok and math.floor(to_number(action_waza_id)) or 0
+    if action_waza_id > 0 then
+        local metadata = resolve_waza_metadata(action_waza_id)
+        event.diagnostic_fields["waza.ID"] = action_waza_id
+        event.diagnostic_fields["waza.Name"] = metadata.code
+        event.diagnostic_fields["waza.LocalizedName"] = metadata.localized_name
+        event.diagnostic_fields["waza.PanelCoolTime"] = metadata.panel_cool_time
+    end
 end
 
 local function first_diagnostic_field(fields, names)
@@ -1164,6 +1294,22 @@ local function first_diagnostic_field(fields, names)
         end
     end
     return nil
+end
+
+local function game_time_seconds()
+    local world = find_world_context()
+    local statics = get_gameplay_statics()
+    if world ~= nil and statics ~= nil then
+        local ok, value = safe_call(statics, "GetTimeSeconds", world)
+        value = ok and finite_positive_number(value) or nil
+        if value ~= nil then
+            return value
+        end
+    end
+    -- This fallback is only used when the world is not ready. It keeps the
+    -- diagnostic usable, while timing coverage in the report makes clear
+    -- whether full action lifecycle observations were available.
+    return os.clock()
 end
 
 local function canonical_skill_name(value)
@@ -1187,6 +1333,85 @@ local function action_skill_name(value)
     end
     name = string.gsub(name, "^Action_?", "")
     return name ~= "" and canonical_skill_name(name) or nil
+end
+
+local function action_lifecycle_details(action)
+    if not is_valid(action) then
+        return nil
+    end
+    local action_info = diagnostic_object_info(action)
+    local key = action_instance_key(action)
+    if key == nil or key == "" then
+        return nil
+    end
+    local owner_ok, owner = safe_call(action, "GetActionCharacter")
+    local owner_key = owner_ok and is_valid(owner) and diagnostic_actor_key(owner) or nil
+    local waza_ok, waza_id = safe_call(action, "GetWazaID")
+    waza_id = waza_ok and math.floor(to_number(waza_id)) or 0
+    if waza_id <= 0 then
+        return nil
+    end
+    local metadata = resolve_waza_metadata(waza_id, action_info.short_name)
+    local code = metadata.code
+    if code == nil or code == "" then
+        return nil
+    end
+    return {
+        key = tostring(key),
+        actor_key = owner_key,
+        waza_id = waza_id > 0 and waza_id or nil,
+        code = canonical_skill_name(code),
+        localized_name = metadata.localized_name,
+        panel_cool_time = metadata.panel_cool_time,
+    }
+end
+
+local function prune_action_records()
+    local maximum = math.max(128, math.floor(to_number(config.SkillActionMaxEntries)))
+    while #action_record_order > maximum do
+        local oldest = table.remove(action_record_order, 1)
+        if action_records[oldest.key] == oldest.record then
+            action_records[oldest.key] = nil
+        end
+    end
+end
+
+local function process_action_lifecycle_event(event)
+    local details = action_lifecycle_details(event.action)
+    if details == nil then
+        return
+    end
+    local now = game_time_seconds()
+    local record = action_records[details.key]
+    if event.kind == "action_begin" or record == nil then
+        record = {
+            key = details.key,
+            actor_key = details.actor_key,
+            waza_id = details.waza_id,
+            code = details.code,
+            localized_name = details.localized_name,
+            panel_cool_time = details.panel_cool_time,
+            started_at = event.kind == "action_begin" and now or nil,
+            ended_at = nil,
+        }
+        action_records[details.key] = record
+        action_record_order[#action_record_order + 1] = { key = details.key, record = record }
+        prune_action_records()
+    else
+        record.actor_key = record.actor_key or details.actor_key
+        record.waza_id = record.waza_id or details.waza_id
+        record.code = record.code or details.code
+        record.localized_name = (record.localized_name ~= nil and record.localized_name ~= "")
+            and record.localized_name or details.localized_name
+        record.panel_cool_time = record.panel_cool_time or details.panel_cool_time
+    end
+    if event.kind == "action_begin" then
+        record.started_at = now
+        metrics.action_begins = metrics.action_begins + 1
+    else
+        record.ended_at = now
+        metrics.action_ends = metrics.action_ends + 1
+    end
 end
 
 local function attack_signature(diagnostic_fields)
@@ -1214,6 +1439,8 @@ local function skill_candidate_from_event(event, source_actor, source_kind)
 
     local waza_name = first_diagnostic_field(diagnostic_fields, { "waza.Name" })
     local waza_id = first_diagnostic_field(diagnostic_fields, { "waza.ID" })
+    local localized_name = first_diagnostic_field(diagnostic_fields, { "waza.LocalizedName" })
+    local panel_cool_time = first_diagnostic_field(diagnostic_fields, { "waza.PanelCoolTime" })
     local explicit_skill = first_diagnostic_field(diagnostic_fields, {
         "result.SkillName", "info.SkillName",
         "result.SkillID", "info.SkillID",
@@ -1269,6 +1496,11 @@ local function skill_candidate_from_event(event, source_actor, source_kind)
         -- it as identity split every repeated cast into a different skill.
         key = tostring(identity),
         name = tostring(label),
+        localized_name = text_value(localized_name),
+        panel_cool_time = finite_positive_number(panel_cool_time),
+        waza_id = math.floor(to_number(waza_id)) > 0 and math.floor(to_number(waza_id)) or nil,
+        cast_key = concrete and event and event.cast_key or nil,
+        observed_at = event and event.observed_at or nil,
         fields = fields,
         signature = signature,
         concrete = concrete,
@@ -1298,6 +1530,9 @@ local function record_skill_candidate(session, source, event, source_actor, dama
     if candidate == nil then
         candidate = {
             name = evidence.name,
+            localized_name = evidence.localized_name,
+            panel_cool_time = evidence.panel_cool_time,
+            waza_id = evidence.waza_id,
             evidence_key = evidence.key,
             fields = evidence.fields,
             causer_full_name = evidence.causer_full_name,
@@ -1307,6 +1542,7 @@ local function record_skill_candidate(session, source, event, source_actor, dama
             damage = 0,
             hits = 0,
             samples = 0,
+            casts = {},
         }
         source.skill_candidates[evidence.key] = candidate
         session.skill_candidate_count = (session.skill_candidate_count or 0) + 1
@@ -1315,6 +1551,36 @@ local function record_skill_candidate(session, source, event, source_actor, dama
 
     candidate.damage = candidate.damage + damage
     candidate.hits = candidate.hits + hit_count
+    if (candidate.localized_name == nil or candidate.localized_name == "")
+        and evidence.localized_name ~= "" then
+        candidate.localized_name = evidence.localized_name
+    end
+    candidate.panel_cool_time = candidate.panel_cool_time or evidence.panel_cool_time
+    candidate.waza_id = candidate.waza_id or evidence.waza_id
+    if evidence.cast_key ~= nil and tostring(evidence.cast_key) ~= "" then
+        local cast_key = tostring(evidence.cast_key)
+        local cast = candidate.casts[cast_key]
+        if cast == nil then
+            cast = {
+                key = cast_key,
+                damage = 0,
+                hits = 0,
+                first_hit_at = evidence.observed_at,
+                last_hit_at = evidence.observed_at,
+            }
+            candidate.casts[cast_key] = cast
+        end
+        cast.damage = cast.damage + damage
+        cast.hits = cast.hits + hit_count
+        if evidence.observed_at ~= nil then
+            cast.first_hit_at = cast.first_hit_at == nil
+                and evidence.observed_at
+                or math.min(cast.first_hit_at, evidence.observed_at)
+            cast.last_hit_at = cast.last_hit_at == nil
+                and evidence.observed_at
+                or math.max(cast.last_hit_at, evidence.observed_at)
+        end
+    end
     local sample_limit = math.max(
         0,
         math.floor(to_number(config.SkillDiagnosticMaxSamplesPerCandidate))
@@ -1372,6 +1638,26 @@ local function reconcile_signature_candidates(session, source)
             concrete.damage = concrete.damage + unresolved.damage
             concrete.hits = concrete.hits + unresolved.hits
             concrete.samples = concrete.samples + unresolved.samples
+            concrete.casts = concrete.casts or {}
+            for cast_key, unresolved_cast in pairs(unresolved.casts or {}) do
+                local cast = concrete.casts[cast_key]
+                if cast == nil then
+                    concrete.casts[cast_key] = unresolved_cast
+                else
+                    cast.damage = cast.damage + unresolved_cast.damage
+                    cast.hits = cast.hits + unresolved_cast.hits
+                    if unresolved_cast.first_hit_at ~= nil then
+                        cast.first_hit_at = cast.first_hit_at == nil
+                            and unresolved_cast.first_hit_at
+                            or math.min(cast.first_hit_at, unresolved_cast.first_hit_at)
+                    end
+                    if unresolved_cast.last_hit_at ~= nil then
+                        cast.last_hit_at = cast.last_hit_at == nil
+                            and unresolved_cast.last_hit_at
+                            or math.max(cast.last_hit_at, unresolved_cast.last_hit_at)
+                    end
+                end
+            end
             source.skill_candidates[merge.unresolved_key] = nil
             session.skill_candidate_count = math.max(0, (session.skill_candidate_count or 1) - 1)
             log(string.format(
@@ -1553,6 +1839,198 @@ local function queue_team_details(session, duration)
     end
 end
 
+local function decimal(value)
+    return value ~= nil and string.format("%.1f", value) or "—"
+end
+
+local function number_stats(values)
+    if #values == 0 then
+        return nil
+    end
+    local total = 0
+    local minimum = values[1]
+    local maximum = values[1]
+    for _, value in ipairs(values) do
+        total = total + value
+        minimum = math.min(minimum, value)
+        maximum = math.max(maximum, value)
+    end
+    return {
+        count = #values,
+        average = total / #values,
+        minimum = minimum,
+        maximum = maximum,
+        total = total,
+    }
+end
+
+local function stats_text(stats, translator_code)
+    if stats == nil then
+        return "—"
+    end
+    local chinese = translator_code == "zh-TW" or translator_code == "zh-CN"
+    if stats.count <= 1 or math.abs(stats.maximum - stats.minimum) < 0.05 then
+        return decimal(stats.average) .. (chinese and "秒" or "s")
+    end
+    if chinese then
+        return string.format(
+            "%.1f秒（%.1f–%.1f）",
+            stats.average, stats.minimum, stats.maximum
+        )
+    end
+    return string.format("%.1fs (%.1f–%.1f)", stats.average, stats.minimum, stats.maximum)
+end
+
+local function skill_display_name(candidate, translator_code)
+    local code = tostring(candidate.name or "UNKNOWN")
+    local localized = tostring(candidate.localized_name or "")
+    if localized ~= "" and localized ~= code then
+        if translator_code == "zh-TW" or translator_code == "zh-CN" then
+            return localized .. "（" .. code .. "）"
+        end
+        return localized .. " (" .. code .. ")"
+    end
+    return code
+end
+
+local function candidate_timing(session, source, candidate)
+    candidate.casts = candidate.casts or {}
+    local canonical_name = canonical_skill_name(candidate.name)
+    for action_key, record in pairs(action_records) do
+        local actor_matches = record.actor_key ~= nil
+            and source.runtime_actor_keys ~= nil
+            and source.runtime_actor_keys[record.actor_key] == true
+        local skill_matches = canonical_skill_name(record.code) == canonical_name
+        local started_before_finish = record.started_at == nil
+            or record.started_at <= (session.finished_game_at or math.huge)
+        local ended_after_start = record.ended_at == nil
+            or record.ended_at >= (session.started_game_at or 0)
+        if actor_matches and skill_matches and started_before_finish and ended_after_start then
+            local cast = candidate.casts[action_key]
+            if cast == nil then
+                cast = { key = action_key, damage = 0, hits = 0 }
+                candidate.casts[action_key] = cast
+            end
+        end
+    end
+
+    local casts = {}
+    for action_key, cast in pairs(candidate.casts) do
+        local record = action_records[action_key]
+        if record ~= nil then
+            cast.started_at = record.started_at
+            cast.ended_at = record.ended_at
+            candidate.localized_name = (candidate.localized_name ~= nil
+                and candidate.localized_name ~= "")
+                and candidate.localized_name or record.localized_name
+            candidate.panel_cool_time = candidate.panel_cool_time
+                or record.panel_cool_time
+        end
+        casts[#casts + 1] = cast
+    end
+    table.sort(casts, function(a, b)
+        local left = a.started_at or a.first_hit_at or a.ended_at or math.huge
+        local right = b.started_at or b.first_hit_at or b.ended_at or math.huge
+        if left == right then
+            return tostring(a.key) < tostring(b.key)
+        end
+        return left < right
+    end)
+
+    local action_durations = {}
+    local action_damage = 0
+    local hit_windows = {}
+    local intervals = {}
+    local full_start_intervals = 0
+    local reuse_gaps = {}
+    local hit_cast_count = 0
+    for index, cast in ipairs(casts) do
+        if (cast.hits or 0) > 0 then
+            hit_cast_count = hit_cast_count + 1
+            local hit_window = math.max(
+                0,
+                (cast.last_hit_at or cast.first_hit_at or 0)
+                    - (cast.first_hit_at or cast.last_hit_at or 0)
+            )
+            hit_windows[#hit_windows + 1] = hit_window
+        end
+        if cast.started_at ~= nil and cast.ended_at ~= nil
+            and cast.ended_at > cast.started_at then
+            cast.action_duration = cast.ended_at - cast.started_at
+            action_durations[#action_durations + 1] = cast.action_duration
+            action_damage = action_damage + (cast.damage or 0)
+        end
+        if index > 1 then
+            local previous = casts[index - 1]
+            local previous_start = previous.started_at or previous.first_hit_at
+            local current_start = cast.started_at or cast.first_hit_at
+            if previous_start ~= nil and current_start ~= nil
+                and current_start > previous_start then
+                intervals[#intervals + 1] = current_start - previous_start
+                if previous.started_at ~= nil and cast.started_at ~= nil then
+                    full_start_intervals = full_start_intervals + 1
+                end
+            end
+            if previous.ended_at ~= nil and cast.started_at ~= nil
+                and cast.started_at >= previous.ended_at then
+                reuse_gaps[#reuse_gaps + 1] = cast.started_at - previous.ended_at
+            end
+        end
+    end
+
+    local action_stats = number_stats(action_durations)
+    local interval_stats = number_stats(intervals)
+    local panel_cd = finite_positive_number(candidate.panel_cool_time)
+    local timing = {
+        casts = casts,
+        cast_count = #casts,
+        hit_cast_count = hit_cast_count,
+        average_cast_damage = #casts > 0 and candidate.damage / #casts or nil,
+        action_stats = action_stats,
+        action_dps = action_stats ~= nil and action_stats.total > 0
+            and action_damage / action_stats.total
+            or nil,
+        hit_window_stats = number_stats(hit_windows),
+        interval_stats = interval_stats,
+        full_start_intervals = full_start_intervals,
+        reuse_gap_stats = number_stats(reuse_gaps),
+        panel_cool_time = panel_cd,
+        panel_delta = interval_stats ~= nil and panel_cd ~= nil
+            and interval_stats.average - panel_cd
+            or nil,
+    }
+    return timing
+end
+
+local function log_candidate_casts(session, source, candidate, timing)
+    if config.SkillDiagnosticLogCasts ~= true then
+        return
+    end
+    local maximum = math.max(0, math.floor(to_number(config.SkillDiagnosticMaxCastLogRows)))
+    for index = 1, math.min(maximum, #timing.casts) do
+        local cast = timing.casts[index]
+        local hit_window = cast.first_hit_at ~= nil and cast.last_hit_at ~= nil
+            and math.max(0, cast.last_hit_at - cast.first_hit_at)
+            or nil
+        local cast_dps = cast.action_duration ~= nil and cast.action_duration > 0
+            and cast.damage / cast.action_duration
+            or nil
+        log(string.format(
+            "diagnostic-cast boss=%s source=%s candidate=%s cast=%d damage=%s hits=%d action_duration=%s cast_dps=%s hit_window=%s lifecycle=%s",
+            session.name,
+            source.name,
+            candidate.name,
+            index,
+            format_integer(cast.damage or 0),
+            cast.hits or 0,
+            decimal(cast.action_duration),
+            decimal(cast_dps),
+            decimal(hit_window),
+            cast.started_at ~= nil and cast.ended_at ~= nil and "complete" or "partial"
+        ))
+    end
+end
+
 local function finish_skill_diagnostics(session, duration, reason, recipients)
     for _, source in pairs(session.diagnostic_sources or {}) do
         reconcile_signature_candidates(session, source)
@@ -1561,6 +2039,7 @@ local function finish_skill_diagnostics(session, duration, reason, recipients)
     local candidate_total = 0
     local translator_code = get_translator().code
     local chat_rows = {}
+    local chat_candidate_count = 0
     local chat_maximum = math.max(0, math.floor(to_number(config.SkillDiagnosticChatMaxRows)))
     log(string.format(
         "diagnostic-summary-begin boss=%s reason=%s duration=%d damage=%s sources=%d include_player=%s",
@@ -1589,47 +2068,112 @@ local function finish_skill_diagnostics(session, duration, reason, recipients)
         for rank, candidate in ipairs(candidates) do
             local share = source.damage > 0 and candidate.damage * 100 / source.damage or 0
             local average = candidate.hits > 0 and candidate.damage / candidate.hits or 0
+            local timing = candidate_timing(session, source, candidate)
+            local display_name = skill_display_name(candidate, translator_code)
             log(string.format(
-                "diagnostic-candidate boss=%s source_kind=%s source=%s rank=%d candidate=%s damage=%s share=%.1f dps=%s hits=%d avg_hit=%s causer=%s class=%s fields=%s actor=%s",
+                "diagnostic-candidate boss=%s source_kind=%s source=%s rank=%d candidate=%s localized=%s damage=%s share=%.1f encounter_dps=%s hits=%d avg_hit=%s casts=%d hit_casts=%d avg_cast_damage=%s panel_cd=%s actual_interval=%s interval_min=%s interval_max=%s panel_delta=%s action_duration=%s action_duration_min=%s action_duration_max=%s action_dps=%s reuse_gap=%s hit_window=%s lifecycle_coverage=%d/%d causer=%s class=%s fields=%s actor=%s",
                 session.name,
                 tostring(source.kind),
                 source.name,
                 rank,
                 candidate.name,
+                candidate.localized_name ~= "" and candidate.localized_name or "none",
                 format_integer(candidate.damage),
                 share,
                 format_integer(candidate.damage / duration),
                 candidate.hits,
                 format_integer(average),
+                timing.cast_count,
+                timing.hit_cast_count,
+                decimal(timing.average_cast_damage),
+                decimal(timing.panel_cool_time),
+                decimal(timing.interval_stats and timing.interval_stats.average),
+                decimal(timing.interval_stats and timing.interval_stats.minimum),
+                decimal(timing.interval_stats and timing.interval_stats.maximum),
+                decimal(timing.panel_delta),
+                decimal(timing.action_stats and timing.action_stats.average),
+                decimal(timing.action_stats and timing.action_stats.minimum),
+                decimal(timing.action_stats and timing.action_stats.maximum),
+                decimal(timing.action_dps),
+                decimal(timing.reuse_gap_stats and timing.reuse_gap_stats.average),
+                decimal(timing.hit_window_stats and timing.hit_window_stats.average),
+                timing.action_stats and timing.action_stats.count or 0,
+                timing.cast_count,
                 candidate.causer_full_name,
                 candidate.causer_class_name,
                 candidate.fields,
                 candidate.source_full_name
             ))
-            if #chat_rows < chat_maximum then
+            log_candidate_casts(session, source, candidate, timing)
+            if chat_candidate_count < chat_maximum then
+                chat_candidate_count = chat_candidate_count + 1
                 if translator_code == "zh-TW" then
                     chat_rows[#chat_rows + 1] = string.format(
                         "%s｜技能 #%d %s｜傷害 %s｜占比 %.1f%%｜整場DPS %s｜命中 %d｜平均每擊 %s",
-                        source.name, rank, candidate.name,
+                        source.name, rank, display_name,
                         format_integer(candidate.damage), share,
                         format_integer(candidate.damage / duration),
                         candidate.hits, format_integer(average)
+                    )
+                    chat_rows[#chat_rows + 1] = string.format(
+                        "↳ 觀測施放 %d次（命中%d）｜每次傷害 %s｜面板CD %s秒｜實際開始間隔 %s｜較面板 %s秒",
+                        timing.cast_count, timing.hit_cast_count,
+                        decimal(timing.average_cast_damage), decimal(timing.panel_cool_time),
+                        stats_text(timing.interval_stats, translator_code),
+                        timing.panel_delta ~= nil and string.format("%+.1f", timing.panel_delta) or "—"
+                    )
+                    chat_rows[#chat_rows + 1] = string.format(
+                        "↳ 完整動作 %s｜單次施放DPS %s｜再用空窗 %s｜首末命中窗 %s｜完整計時 %d/%d",
+                        stats_text(timing.action_stats, translator_code), decimal(timing.action_dps),
+                        stats_text(timing.reuse_gap_stats, translator_code),
+                        stats_text(timing.hit_window_stats, translator_code),
+                        timing.action_stats and timing.action_stats.count or 0,
+                        timing.cast_count
                     )
                 elseif translator_code == "zh-CN" then
                     chat_rows[#chat_rows + 1] = string.format(
                         "%s｜技能 #%d %s｜伤害 %s｜占比 %.1f%%｜整场DPS %s｜命中 %d｜平均每击 %s",
-                        source.name, rank, candidate.name,
+                        source.name, rank, display_name,
                         format_integer(candidate.damage), share,
                         format_integer(candidate.damage / duration),
                         candidate.hits, format_integer(average)
                     )
+                    chat_rows[#chat_rows + 1] = string.format(
+                        "↳ 观测施放 %d次（命中%d）｜每次伤害 %s｜面板CD %s秒｜实际开始间隔 %s｜较面板 %s秒",
+                        timing.cast_count, timing.hit_cast_count,
+                        decimal(timing.average_cast_damage), decimal(timing.panel_cool_time),
+                        stats_text(timing.interval_stats, translator_code),
+                        timing.panel_delta ~= nil and string.format("%+.1f", timing.panel_delta) or "—"
+                    )
+                    chat_rows[#chat_rows + 1] = string.format(
+                        "↳ 完整动作 %s｜单次施放DPS %s｜再用空窗 %s｜首末命中窗 %s｜完整计时 %d/%d",
+                        stats_text(timing.action_stats, translator_code), decimal(timing.action_dps),
+                        stats_text(timing.reuse_gap_stats, translator_code),
+                        stats_text(timing.hit_window_stats, translator_code),
+                        timing.action_stats and timing.action_stats.count or 0,
+                        timing.cast_count
+                    )
                 else
                     chat_rows[#chat_rows + 1] = string.format(
                         "%s | skill #%d %s | damage %s | share %.1f%% | encounter DPS %s | hits %d | avg %s",
-                        source.name, rank, candidate.name,
+                        source.name, rank, display_name,
                         format_integer(candidate.damage), share,
                         format_integer(candidate.damage / duration),
                         candidate.hits, format_integer(average)
+                    )
+                    chat_rows[#chat_rows + 1] = string.format(
+                        "↳ observed casts %d (hit %d) | damage/cast %s | panel CD %ss | actual start interval %s | delta %ss",
+                        timing.cast_count, timing.hit_cast_count,
+                        decimal(timing.average_cast_damage), decimal(timing.panel_cool_time),
+                        stats_text(timing.interval_stats, translator_code), decimal(timing.panel_delta)
+                    )
+                    chat_rows[#chat_rows + 1] = string.format(
+                        "↳ full action %s | cast DPS %s | reuse gap %s | hit window %s | timing coverage %d/%d",
+                        stats_text(timing.action_stats, translator_code), decimal(timing.action_dps),
+                        stats_text(timing.reuse_gap_stats, translator_code),
+                        stats_text(timing.hit_window_stats, translator_code),
+                        timing.action_stats and timing.action_stats.count or 0,
+                        timing.cast_count
                     )
                 end
             end
@@ -1758,6 +2302,7 @@ local function finish_session(session, reason)
         return
     end
     session.finished = true
+    session.finished_game_at = game_time_seconds()
     sessions[session.key] = nil
     for address in pairs(session.actor_addresses or {}) do
         session_addresses[address] = nil
@@ -1916,6 +2461,7 @@ local function start_session(boss_info)
         actor_parts_by_address = {},
         actor_parts_by_key = {},
         started_at = now,
+        started_game_at = game_time_seconds(),
         last_damage_at = now,
         last_progress_at = now,
         total_damage = 0,
@@ -2022,6 +2568,7 @@ local function record_damage(
                 damage = 0,
                 hits = 0,
                 skill_candidates = {},
+                runtime_actor_keys = {},
             }
             session.pal_sources[source_key] = pal
         end
@@ -2030,6 +2577,10 @@ local function record_damage(
         pal.team_key = entry.team_key
         pal.damage = pal.damage + damage
         pal.hits = pal.hits + hit_count
+        local runtime_actor_key = diagnostic_actor_key(source_actor)
+        if runtime_actor_key ~= nil and runtime_actor_key ~= "" then
+            pal.runtime_actor_keys[runtime_actor_key] = true
+        end
         session.diagnostic_sources["pal:" .. tostring(source_key)] = pal
         record_skill_candidate(session, pal, event, source_actor, damage, hit_count)
         session.last_hitter_label = tr("pal_killer", {
@@ -2050,11 +2601,16 @@ local function record_damage(
                 damage = 0,
                 hits = 0,
                 skill_candidates = {},
+                runtime_actor_keys = {},
             }
             session.player_sources[key] = player_source
         end
         player_source.damage = player_source.damage + damage
         player_source.hits = player_source.hits + hit_count
+        local runtime_actor_key = diagnostic_actor_key(source_actor)
+        if runtime_actor_key ~= nil and runtime_actor_key ~= "" then
+            player_source.runtime_actor_keys[runtime_actor_key] = true
+        end
         session.diagnostic_sources["player:" .. tostring(key)] = player_source
         record_skill_candidate(session, player_source, event, source_actor, damage, hit_count)
         session.last_hitter_label = entry.name
@@ -2279,6 +2835,7 @@ local function process_damage_event(event)
         )
         return
     end
+    event.observed_at = game_time_seconds()
     attach_runtime_skill_evidence(event, source_actor or event.attacker, source_kind)
     record_damage(
         session,
@@ -2422,6 +2979,8 @@ local function drain_events()
             ok, err = pcall(process_damage_event, event)
         elseif event.kind == "waza" then
             ok, err = pcall(process_waza_marker, event)
+        elseif event.kind == "action_begin" or event.kind == "action_end" then
+            ok, err = pcall(process_action_lifecycle_event, event)
         else
             ok, err = pcall(process_finish_event, event)
         end
@@ -2456,7 +3015,9 @@ end
 
 local function enqueue_event(event)
     local max_pending = math.max(64, math.floor(to_number(config.MaxPendingEvents)))
-    if (event.kind == "damage" or event.kind == "waza") and queue_size() >= max_pending then
+    if (event.kind == "damage" or event.kind == "waza"
+        or event.kind == "action_begin" or event.kind == "action_end")
+        and queue_size() >= max_pending then
         metrics.dropped = metrics.dropped + 1
         return
     end
@@ -2555,6 +3116,17 @@ local function capture_waza_marker(attacker_param, defender_param, waza_param)
         waza_id = waza_id,
         captured_at = os.time(),
     })
+end
+
+local function capture_action_lifecycle(kind, action_param)
+    if config.EnableDPSRecording == false or config.EnableSkillDiagnostics ~= true then
+        return
+    end
+    local action = unwrap(action_param)
+    if action == nil then
+        return
+    end
+    enqueue_event({ kind = kind, action = action })
 end
 
 activate_lua_damage_fallback = function(reason)
@@ -2842,6 +3414,34 @@ local function register_hooks()
     end
 
     if config.EnableSkillDiagnostics == true then
+        local action_begin_ok, action_begin_err = pcall(function()
+            RegisterHook("/Script/Pal.PalActionBase:OnBeginAction", function(action)
+                local ok, err = pcall(capture_action_lifecycle, "action_begin", action)
+                if not ok then
+                    metrics.errors = metrics.errors + 1
+                    log("action begin capture error: " .. tostring(err))
+                end
+            end)
+        end)
+        hooks.action_begin = action_begin_ok
+        if not action_begin_ok then
+            log("action begin hook unavailable; using hit-window timing: " .. tostring(action_begin_err))
+        end
+
+        local action_end_ok, action_end_err = pcall(function()
+            RegisterHook("/Script/Pal.PalActionBase:OnEndAction", function(action)
+                local ok, err = pcall(capture_action_lifecycle, "action_end", action)
+                if not ok then
+                    metrics.errors = metrics.errors + 1
+                    log("action end capture error: " .. tostring(err))
+                end
+            end)
+        end)
+        hooks.action_end = action_end_ok
+        if not action_end_ok then
+            log("action end hook unavailable; using hit-window timing: " .. tostring(action_end_err))
+        end
+
         local waza_ok, waza_err = pcall(function()
             RegisterHook("/Script/Pal.PalUtility:MakeDamageInfoByWazaType", function(
                 _, attacker, defender, attacker_hit_component,
@@ -2919,13 +3519,15 @@ local function register_hooks()
 
     if hooks.damage and hooks.death then
         log(string.format(
-            "loaded v0.1.2-diagnostic; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s waza_hook=%s local_only=%s; captured_hooks=%d",
+            "loaded v0.2.0-diagnostic; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s waza_hook=%s action_hooks=%s/%s local_only=%s; captured_hooks=%d",
             hooks.damage_mode,
             tostring(config.EnableDPSRecording ~= false),
             tostring(config.EnableSkillDiagnostics == true),
             tostring(config.SkillDiagnosticsOnly == true),
             tostring(config.IncludePlayerDamage == true),
             tostring(hooks.waza == true),
+            tostring(hooks.action_begin == true),
+            tostring(hooks.action_end == true),
             tostring(config.LocalOnlyMessages == true),
             hooks.captured_count
         ))

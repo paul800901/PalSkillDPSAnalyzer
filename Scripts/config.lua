@@ -40,10 +40,37 @@ config.DumpDamageSchema = false
 config.SkillDiagnosticMaxSamplesPerCandidate = 3
 config.SkillDiagnosticMaxSchemaFields = 128
 config.SkillDiagnosticChatMaxRows = 12
+-- The chat shows aggregate timing for every displayed skill. UE4SS.log can
+-- additionally keep one row per observed cast for later comparison.
+config.SkillDiagnosticLogCasts = true
+config.SkillDiagnosticMaxCastLogRows = 128
+config.SkillActionMaxEntries = 4096
 -- A Pal Waza marker is emitted immediately before its damage info is built.
 -- Keep it briefly so delayed projectiles and multi-hit skills remain attributed.
 config.SkillMarkerTTLSeconds = 30
 config.SkillMarkerMaxEntries = 2048
+
+-- Runtime metadata always takes priority: the analyzer asks Palworld for its
+-- current localized Waza name and database cooldown. These entries only cover
+-- known test skills when a particular game build does not expose that lookup.
+config.SkillMetadataFallbacks = {
+    BeamSlicer = {
+        Name = { en = "Beam Slicer", ["zh-CN"] = "切割龙息", ["zh-TW"] = "切割龍息" },
+        PanelCoolTime = 16,
+    },
+    ChargeCanon = {
+        Name = { en = "Charge Cannon", ["zh-CN"] = "龙息炮", ["zh-TW"] = "龍息炮" },
+        PanelCoolTime = 20,
+    },
+    BlastCanon = {
+        Name = { en = "Blast Cannon", ["zh-CN"] = "绽裂龙息", ["zh-TW"] = "綻裂龍息" },
+        PanelCoolTime = 12,
+    },
+    GravityShot = {
+        Name = { en = "Dark Shot", ["zh-CN"] = "暗能弹", ["zh-TW"] = "暗能彈" },
+        PanelCoolTime = 2,
+    },
+}
 
 -- Optional components. Compact, low-noise output is the public default.
 -- Change a switch, then restart the server once to apply it.
