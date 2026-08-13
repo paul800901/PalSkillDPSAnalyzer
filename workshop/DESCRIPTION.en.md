@@ -34,7 +34,7 @@ Enable player damage in config.lua, restart the game, and use one weapon for the
 [h2]Scope[/h2]
 [list]
 [*][b]Target:[/b] Windows single-player worlds
-[*][b]Current status:[/b] v0.5.11 Dark attribution hotfix; Dark Laser, Dark Whisp and Poison Blast use current-loadout signatures, 40/Dark remains the basic Dark Shot, old external F1 settings disabled, safe F2 reset
+[*][b]Current status:[/b] v0.5.12 exact source-chain diagnostic; casts, skill effects, AttackFilter.Waza, Blueprint OnAttack and final hits are linked, unknown sources are not guessed, old external F1 settings disabled, safe F2 reset
 [*][b]Required dependency:[/b] UE4SS Experimental; PalSchema is not required
 [*][b]Not a goal:[/b] comparing players or producing a competitive DPS leaderboard
 [/list]

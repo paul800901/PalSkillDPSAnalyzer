@@ -58,7 +58,7 @@ $vdf = @(
     ('    "visibility" "{0}"' -f $Visibility)
     ('    "title" "{0}"' -f (ConvertTo-VdfValue $workshopTitle))
     ('    "description" "{0}"' -f (ConvertTo-VdfValue $description))
-    '    "changenote" "v0.5.11: maps Dark Laser, Dark Whisp and Poison Blast through current-loadout signatures; 40/Dark remains basic Dark Shot; F1 external settings remain disabled; F2 resets."'
+    '    "changenote" "v0.5.12: adds exact cast-to-effect-to-OnAttack source attribution; weak timing and BasePower guesses now fail closed; F1 external settings remain disabled; F2 resets."'
     '}'
 ) -join "`r`n"
 [System.IO.File]::WriteAllText($vdfPath, $vdf, [System.Text.UTF8Encoding]::new($false))
@@ -76,8 +76,8 @@ if (-not $match.Success -or $match.Groups[1].Value -eq "0") {
 }
 
 $metadata.publishedfileid = $match.Groups[1].Value
-$metadata.changenote = "v0.5.11: maps Dark Laser, Dark Whisp and Poison Blast through current-loadout signatures; 40/Dark remains basic Dark Shot; F1 external settings remain disabled; F2 resets."
-$metadata.last_published_version = "0.5.11"
+$metadata.changenote = "v0.5.12: adds exact cast-to-effect-to-OnAttack source attribution; weak timing and BasePower guesses now fail closed; F1 external settings remain disabled; F2 resets."
+$metadata.last_published_version = "0.5.12"
 $metadataJson = $metadata | ConvertTo-Json -Depth 4
 [System.IO.File]::WriteAllText($metadataPath, $metadataJson + "`r`n", [System.Text.UTF8Encoding]::new($false))
 

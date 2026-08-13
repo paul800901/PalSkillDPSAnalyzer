@@ -1,5 +1,14 @@
 # 更新日志
 
+## 0.5.12-exact-source-chain — 精確施放／效果來源鏈
+
+- 移除 BasePower＋元素、目前動作、最近施放與短時間窗對正式技能桶的決定權；缺乏強來源時一律保留「未辨識傷害」。
+- 每次 action begin 建立獨立 cast，並沿 `PalSkillEffectBase:OnInitialize`、`PalAttackFilter:BindPrimitiveComponent`、效果 `AttackFilter.Waza`、Blueprint OnAttack 與最終 OnDamage 傳遞來源。
+- Blueprint OnAttack 改用 UE4SS `RegisterCustomEvent`；`RegisterHook` 官方不支援 delegate，因此不再把成功註冊誤當成成功收到命中。
+- 支援 action 事件尚在佇列、effect 已同步建立的順序：以捕捉時間與 actor＋Waza 回補該 cast，不靠命中倍率猜技能。
+- 新增交錯延遲技能、同倍率同屬性、DamageInfo wrapper copy、OnAttack／OnDamage 巢狀命中、一次性 token 與重設清理回歸。
+- 狀態：離線全套驗證通過；Palworld 實機需確認 effect-init、effect-attack、effect-hit-match 三段日誌後才算 live 完成。
+
 ## 0.5.11-dark-attribution-hotfix — 暗系長戰固定簽名
 
 - 從世界樹之龍 10 分 48 秒長戰日誌確認夜幕魔蝠三格為暗黑雷射／黑暗之擁／劇毒射擊，加入 450／闇、600／闇、30／闇的三格裝備限定簽名。

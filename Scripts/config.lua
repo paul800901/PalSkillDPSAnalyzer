@@ -33,6 +33,11 @@ config.MessagePrefix = "[PalSkillDPS]"
 -- release records evidence-backed candidates and never invents a name.
 config.EnableSkillDiagnostics = true
 config.SkillDiagnosticsOnly = true
+-- Exact source-chain attribution. Each cast, spawned PalSkillEffect, bound
+-- OnAttack callback and final OnDamage hit is linked by runtime object/call
+-- identity. Disable only for compatibility diagnosis; without it, any final
+-- hit lacking direct Waza/DamageCauser evidence stays unresolved.
+config.EnableSkillSourceChain = true
 -- A damage lab is more useful when the operator controls the sampling window.
 -- "manual" keeps one test open across many targets until F1 -> Start new test;
 -- "target" automatically creates a separate test for each damaged target.
@@ -90,16 +95,14 @@ config.HUDUseScreenTextFallback = false
 config.SkillDiagnosticLogCasts = true
 config.SkillDiagnosticMaxCastLogRows = 128
 config.SkillActionMaxEntries = 4096
--- Rain, projectiles, explosions and ground fields may start dealing damage
--- after their PalAction has ended. Keep recent casts long enough to match the
--- first delayed hit, then retain a short per-signature effect burst. Timing
--- conflicts remain explicitly unattributed rather than being guessed.
+-- Legacy timing values are retained for trace comparison only. They never
+-- populate a confirmed skill bucket; effect/cast identity is required.
 config.SkillActionPostHitSeconds = 10
 config.SkillActionConflictSeconds = 1.25
 config.SkillEffectHitGapSeconds = 3
 config.SkillEffectMaxLifetimeSeconds = 45
--- A Pal Waza marker is emitted immediately before its damage info is built.
--- Keep it briefly so delayed projectiles and multi-hit skills remain attributed.
+-- A Pal Waza marker is emitted on some damage paths. Only an exact matching
+-- DamageInfo identity may use it for confirmed attribution.
 config.SkillMarkerTTLSeconds = 30
 config.SkillMarkerMaxEntries = 2048
 -- The three equipped Waza slots can change while a manual test is open. Every

@@ -23,7 +23,7 @@ config.IncludePlayerDamage = true
 Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\config.lua
 ```
 
-這是 v0.5.11 暗系長戰歸因熱修版。它保留固定 HUD 與三格裝備唯一 BasePower＋屬性簽名，並新增暗黑雷射、黑暗之擁、劇毒射擊的闇屬性簽名；40／闇仍獨立顯示為普攻「暗能彈」。預設採手動測試區間並接受所有野生帕魯；按 F2 可隨時歸零。灼燒與中毒狀態傷害尚未宣稱支援。即時儀表是固定尺寸、不可點擊的純顯示層；舊 F1 外部設定窗仍停用，等待遊戲內原生 CommonUI。只需要 UE4SS Experimental；PalSchema 不是必要依賴。
+這是 v0.5.12 精確來源鏈診斷版。它不再用 BasePower＋元素、目前動作或最近施放替未知命中猜技能；每次施放會沿技能效果、AttackFilter.Waza、Blueprint OnAttack 與最終 OnDamage 傳遞來源。沒有強證據時保留「未辨識傷害」。預設採手動測試區間並接受所有野生帕魯；按 F2 可隨時歸零。灼燒與中毒若沒有施加來源仍不會冒充某個技能。即時儀表是固定尺寸、不可點擊的純顯示層；舊 F1 外部設定窗仍停用。只需要 UE4SS Experimental；PalSchema 不是必要依賴。
 
 專案：https://github.com/paul800901/PalSkillDPSAnalyzer
 

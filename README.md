@@ -1,4 +1,4 @@
-# PalSkillDPSAnalyzer v0.5.11-dark-attribution-hotfix
+# PalSkillDPSAnalyzer v0.5.12-exact-source-chain
 
 Palworld 1.0 單機用 UE4SS Lua 傷害驗證 Mod。它不是玩家排行榜，而是可由使用者控制開始點的傷害實驗室：同一個測試區間可跨 Boss、野外頭目、一般野生帕魯及多個目標，並把坐騎、隊伍帕魯、跟隨出戰帕魯與基地帕魯依實際個體分組，再把每隻帕魯的技能分桶。輸出包含總傷害、整場 DPS、占比、命中、每次施放傷害、完整動作時間、單次施放 DPS、實際施放間隔與 AI／再用空窗。
 
@@ -12,7 +12,7 @@ Palworld 1.0 單機用 UE4SS Lua 傷害驗證 Mod。它不是玩家排行榜，�
 
 實機已確認目前 Palworld／UE4SS 會在 Lua 動態 UMG 與 `PrintString` 路徑造成 GameThread 存取違規。顯示層因此隔離成隨附的 Windows WPF 程序：Lua 只寫入本機 UTF-8 結構化狀態檔，不再從傷害回呼呼叫 Unreal UI。面板只在 Palworld 位於前景時顯示，遊戲關閉後約 10 秒自行退出。
 
-目前 `v0.5.11` 已加入 2026-08-13 火系與暗系實機熱修：烈焰球、流火、烈焰風暴，以及暗黑雷射、黑暗之擁、劇毒射擊，會以當下三格裝備技能內唯一的 BasePower＋屬性簽名回收多段命中；暗能彈的 40／闇命中不再被上一個技能搶走。離線回歸已通過，仍需完整重開 Palworld 後再做同配裝實測。灼燒與中毒是獨立狀態傷害；現行 final-damage 日誌沒有帶入可歸屬狀態事件，因此尚未宣稱支援。跨行程 WPF 設定窗無法可靠取得 Palworld 的游標與輸入焦點；為避免鎖住滑鼠與點擊漏回遊戲，F1 外部互動設定仍暫停。暫時使用 `F2` 隨時開始新測試（傷害歸零），其他選項直接修改 `Scripts/config.lua` 後完整重開遊戲：
+目前 `v0.5.12` 已移除會把同倍率／同屬性、當下動作或最近施放當成確定來源的弱推測。新來源鏈由每次施放建立獨立 cast，再沿技能效果實例的 `AttackFilter.Waza`、Blueprint OnAttack 事件與最終 OnDamage 命中傳遞；晶鑽之雨的落下／爆炸、啟示錄、毒雨等延遲或持續效果不再因下一招開始而改名。沒有這條強證據時保留「未辨識傷害」，不再為了畫面乾淨而亂併。離線回歸已通過，仍需完整重開 Palworld 做實機回讀。灼燒與中毒若遊戲沒有保留施加來源，仍不會假裝屬於某個技能。F1 外部互動設定維持暫停；使用 `F2` 隨時開始新測試（傷害歸零），其他選項修改 `Scripts/config.lua` 後完整重開遊戲：
 
 - 顯示語言（跟隨遊戲／17 種指定語言）
 - 技能 DPS 面板開關
@@ -34,7 +34,7 @@ Palworld 1.0 單機用 UE4SS Lua 傷害驗證 Mod。它不是玩家排行榜，�
 [PalSkillDPSAnalyzer] diagnostic-cast boss=... candidate=... cast=... damage=... hits=... action_duration=... cast_dps=... hit_window=... lifecycle=...
 ```
 
-帕魯攻擊會優先讀取 Palworld 建立傷害資料時帶入的 `EPalWazaID`，並以該帕魯當下 `EquipWaza` 的三個裝備技能判定分類；未在三格內、但由遊戲冷卻補招機制產生的攻擊會顯示為「普攻｜技能名稱」。實機沒有 Waza 訊號時，改用穩定化後的動作類別，例如 `BeamSlicer`、`FlareTornado`。每次施放產生的 UObject 編號不會再把同一技能拆成多列。同一技能的直擊、延遲彈、落地爆炸、冰雨或持續地板命中會依傷害效果資產、Waza、動作實例、最近完成施放與短期命中特徵合併；資產已證實的規則優先於目前動作，因此同時有別招命中也不會覆蓋。現已收錄晶鑽之雨的「冰塊落下命中＋落地爆炸」兩段效果，兩者都合併至晶鑽之雨。兩次施放在時間上同樣可能且沒有資產證據時顯示為「未歸屬傷害」，預設不露出內部英文識別碼，也不會把無法證明的傷害誤稱為燃燒或狀態傷害。解包證據與收錄門檻見 `docs/SKILL_EFFECT_ATTRIBUTION.md`。
+帕魯攻擊優先使用每次施放、技能效果實例、`AttackFilter.Waza`、OnAttack 與最終 OnDamage 的精確來源鏈；同一技能的直擊、延遲彈、落地爆炸、冰雨或持續地板命中會保留建立它們的 cast。`BasePower`、元素、當下動作與最近完成施放只寫入診斷欄位，不會建立確定技能列。未在三格內、但由遊戲冷卻補招機制產生且有直接 Waza／效果證據的攻擊，仍顯示為「普攻｜技能名稱」。沒有直接來源時顯示「未辨識傷害」，預設不露出內部英文識別碼，也不會把無法證明的傷害誤稱為燃燒或狀態傷害。解包證據與來源鏈計畫見 `docs/SKILL_EFFECT_ATTRIBUTION.md` 與 `docs/ATTRIBUTION_HOOK_PROBE_PLAN.md`。
 
 ## 預設測試模式
 
@@ -68,7 +68,7 @@ Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\
 powershell -ExecutionPolicy Bypass -File .\workshop\build_workshop.ps1
 ```
 
-輸出位於 `workshop/dist/PalSkillDPSAnalyzerSP-Workshop-v0.5.11.zip`。專案已保留獨立的 `Info.json`、PackageName 與空白 Workshop Published File ID，不會覆蓋上游 Mod。
+輸出位於 `workshop/dist/PalSkillDPSAnalyzerSP-Workshop-v0.5.12.zip`。專案已保留獨立的 `Info.json`、PackageName 與空白 Workshop Published File ID，不會覆蓋上游 Mod。
 
 ## 驗證流程
 
@@ -87,7 +87,7 @@ powershell -ExecutionPolicy Bypass -File .\workshop\build_workshop.ps1
 - 「面板 CD」來自遊戲技能資料庫；「實際開始間隔」是相鄰施放開始到開始，會包含 AI 選招、移動、距離與其他技能造成的等待，不等同純冷卻。
 - 「完整動作」只統計成功捕捉開始與結束的施放。報表的 `完整計時 n/m` 是覆蓋率；未完整捕捉時只保留首末命中窗，不把它冒充動作時間。
 - 診斷版強制使用 Lua 傷害事件，避免原生聚合器先丟失技能候選欄位。
-- v0.5.11 暫不提供 F1 互動設定；HUD／語言／人物傷害等選項需編輯 `config.lua` 並完整重開 Palworld。
+- v0.5.12 暫不提供 F1 互動設定；HUD／語言／人物傷害等選項需編輯 `config.lua` 並完整重開 Palworld。
 - 外部 HUD 會以本機心跳自我檢查並在中止後重新啟動；例外記錄位於 `Scripts/skill_dps_hud_overlay.log`。
 - 外部 HUD 需要 Windows PowerShell 5.1 與 WPF（Windows 10／11 內建）；若安全軟體阻擋 PowerShell，統計核心與 `UE4SS.log` 仍可運作，但畫面面板不會出現。
 

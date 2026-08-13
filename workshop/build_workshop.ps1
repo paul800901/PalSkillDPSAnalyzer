@@ -16,6 +16,8 @@ Copy-Item -LiteralPath (Join-Path $projectDirectory "Scripts\localization.lua") 
 Copy-Item -LiteralPath (Join-Path $projectDirectory "Scripts\hud_strings.lua") -Destination (Join-Path $contentScripts "hud_strings.lua") -Force
 Copy-Item -LiteralPath (Join-Path $projectDirectory "Scripts\skill_names.lua") -Destination (Join-Path $contentScripts "skill_names.lua") -Force
 Copy-Item -LiteralPath (Join-Path $projectDirectory "Scripts\skill_effect_attribution.lua") -Destination (Join-Path $contentScripts "skill_effect_attribution.lua") -Force
+Copy-Item -LiteralPath (Join-Path $projectDirectory "Scripts\cast_effect_attribution.lua") -Destination (Join-Path $contentScripts "cast_effect_attribution.lua") -Force
+Copy-Item -LiteralPath (Join-Path $projectDirectory "Scripts\runtime_source_chain.lua") -Destination (Join-Path $contentScripts "runtime_source_chain.lua") -Force
 Copy-Item -LiteralPath (Join-Path $projectDirectory "Scripts\skill_dps_overlay.ps1") -Destination (Join-Path $contentScripts "skill_dps_overlay.ps1") -Force
 Copy-Item -LiteralPath (Join-Path $projectDirectory "Scripts\skill_dps_overlay_launcher.vbs") -Destination (Join-Path $contentScripts "skill_dps_overlay_launcher.vbs") -Force
 Copy-Item -Path (Join-Path $projectDirectory "Scripts\locales\*.lua") -Destination $contentLocales -Force
@@ -29,7 +31,7 @@ $expectedWorkshopTitle = -join @(
 )
 if ($info.ModName -ne $expectedWorkshopTitle) { throw "Unexpected Workshop ModName" }
 if ($info.PackageName -ne "PalSkillDPSAnalyzerSP") { throw "Unexpected Workshop PackageName" }
-if ($info.Version -ne "0.5.11") { throw "Unexpected Workshop version" }
+if ($info.Version -ne "0.5.12") { throw "Unexpected Workshop version" }
 if ($info.Dependencies -notcontains "UE4SSExperimentalPW") { throw "UE4SS dependency missing" }
 if ($info.InstallRule.Count -ne 1 -or $info.InstallRule[0].Type -ne "Lua") { throw "Lua InstallRule missing" }
 
@@ -39,6 +41,7 @@ foreach ($requiredSetting in @(
     "config.LocalOnlyMessages = true",
     "config.EnableSkillDiagnostics = true",
     "config.SkillDiagnosticsOnly = true",
+    "config.EnableSkillSourceChain = true",
     "config.IncludePlayerDamage = false",
     'config.SkillDiagnosticChatMode = "off"',
     "config.EnableSkillDPSHUD = true",
@@ -79,6 +82,10 @@ if ($LASTEXITCODE -ne 0) { throw "Workshop hud_strings.lua parse failed" }
 if ($LASTEXITCODE -ne 0) { throw "Workshop skill_names.lua parse failed" }
 & npx --yes --package=luaparse luaparse --quiet --file (Join-Path $contentScripts "skill_effect_attribution.lua")
 if ($LASTEXITCODE -ne 0) { throw "Workshop skill_effect_attribution.lua parse failed" }
+& npx --yes --package=luaparse luaparse --quiet --file (Join-Path $contentScripts "cast_effect_attribution.lua")
+if ($LASTEXITCODE -ne 0) { throw "Workshop cast_effect_attribution.lua parse failed" }
+& npx --yes --package=luaparse luaparse --quiet --file (Join-Path $contentScripts "runtime_source_chain.lua")
+if ($LASTEXITCODE -ne 0) { throw "Workshop runtime_source_chain.lua parse failed" }
 $overlayTokens = $null
 $overlayErrors = $null
 [void][System.Management.Automation.Language.Parser]::ParseFile(
@@ -96,7 +103,7 @@ foreach ($localePath in Get-ChildItem -LiteralPath $contentLocales -Filter "*.lu
 }
 
 New-Item -ItemType Directory -Path $distDirectory -Force | Out-Null
-$zipPath = Join-Path $distDirectory "PalSkillDPSAnalyzerSP-Workshop-v0.5.11.zip"
+$zipPath = Join-Path $distDirectory "PalSkillDPSAnalyzerSP-Workshop-v0.5.12.zip"
 Compress-Archive -Path (Join-Path $contentDirectory "*") -DestinationPath $zipPath -CompressionLevel Optimal -Force
 
 Write-Host "Workshop package ready: $zipPath"

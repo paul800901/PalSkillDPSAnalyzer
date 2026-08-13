@@ -10,6 +10,8 @@ $localizationScript = Join-Path $projectDirectory "Scripts\localization.lua"
 $hudStringsScript = Join-Path $projectDirectory "Scripts\hud_strings.lua"
 $skillNamesScript = Join-Path $projectDirectory "Scripts\skill_names.lua"
 $skillEffectAttributionScript = Join-Path $projectDirectory "Scripts\skill_effect_attribution.lua"
+$castEffectAttributionScript = Join-Path $projectDirectory "Scripts\cast_effect_attribution.lua"
+$runtimeSourceChainScript = Join-Path $projectDirectory "Scripts\runtime_source_chain.lua"
 $overlayScript = Join-Path $projectDirectory "Scripts\skill_dps_overlay.ps1"
 $overlayLauncher = Join-Path $projectDirectory "Scripts\skill_dps_overlay_launcher.vbs"
 $hudV1Fixture = Join-Path $testDirectory "fixtures\hud_v1_state.txt"
@@ -41,6 +43,16 @@ if ($LASTEXITCODE -ne 0) { throw "hud_strings.lua parse failed" }
 if ($LASTEXITCODE -ne 0) { throw "skill_names.lua parse failed" }
 & npx --yes --package=luaparse luaparse --quiet --file $skillEffectAttributionScript
 if ($LASTEXITCODE -ne 0) { throw "skill_effect_attribution.lua parse failed" }
+& npx --yes --package=luaparse luaparse --quiet --file $castEffectAttributionScript
+if ($LASTEXITCODE -ne 0) { throw "cast_effect_attribution.lua parse failed" }
+& npx --yes --package=luaparse luaparse --quiet --file $runtimeSourceChainScript
+if ($LASTEXITCODE -ne 0) { throw "runtime_source_chain.lua parse failed" }
+& npx --yes --package=luaparse luaparse --quiet --file (Join-Path $testDirectory "test_cast_effect_attribution.lua")
+if ($LASTEXITCODE -ne 0) { throw "test_cast_effect_attribution.lua parse failed" }
+& npx --yes --package=luaparse luaparse --quiet --file (Join-Path $testDirectory "test_runtime_source_chain.lua")
+if ($LASTEXITCODE -ne 0) { throw "test_runtime_source_chain.lua parse failed" }
+& npx --yes --package=luaparse luaparse --quiet --file (Join-Path $testDirectory "fixtures\cast_effect_overlap.lua")
+if ($LASTEXITCODE -ne 0) { throw "cast_effect_overlap.lua parse failed" }
 foreach ($localePath in Get-ChildItem -LiteralPath $localeDirectory -Filter "*.lua" -File) {
     & npx --yes --package=luaparse luaparse --quiet --file $localePath.FullName
     if ($LASTEXITCODE -ne 0) { throw "locale parse failed: $($localePath.Name)" }
@@ -134,6 +146,8 @@ foreach ($file in @(
     $hudStringsScript,
     $skillNamesScript,
     $skillEffectAttributionScript,
+    $castEffectAttributionScript,
+    $runtimeSourceChainScript,
     $overlayScript,
     $overlayLauncher,
     $hudV1Fixture,
@@ -142,6 +156,9 @@ foreach ($file in @(
     $hudV2SettingsEmptyFixture,
     (Join-Path $testDirectory "test_main.lua"),
     (Join-Path $testDirectory "test_localization.lua"),
+    (Join-Path $testDirectory "test_cast_effect_attribution.lua"),
+    (Join-Path $testDirectory "test_runtime_source_chain.lua"),
+    (Join-Path $testDirectory "fixtures\cast_effect_overlap.lua"),
     (Join-Path $workshopDirectory "Info.json"),
     (Join-Path $workshopDirectory "README.md"),
     $workshopDescription,
@@ -155,6 +172,8 @@ foreach ($file in @(
     (Join-Path $workshopScripts "hud_strings.lua"),
     (Join-Path $workshopScripts "skill_names.lua")
     ,(Join-Path $workshopScripts "skill_effect_attribution.lua")
+    ,(Join-Path $workshopScripts "cast_effect_attribution.lua")
+    ,(Join-Path $workshopScripts "runtime_source_chain.lua")
     ,(Join-Path $workshopScripts "skill_dps_overlay.ps1")
     ,(Join-Path $workshopScripts "skill_dps_overlay_launcher.vbs")
 )) {
@@ -178,12 +197,12 @@ $expectedWorkshopTitle = -join @(
 )
 if ($workshopInfo.ModName -ne $expectedWorkshopTitle) { throw "unexpected Workshop ModName" }
 if ($workshopInfo.PackageName -ne "PalSkillDPSAnalyzerSP") { throw "unexpected Workshop PackageName" }
-if ($workshopInfo.Version -ne "0.5.11") { throw "unexpected Workshop version" }
+if ($workshopInfo.Version -ne "0.5.12") { throw "unexpected Workshop version" }
 if ($workshopInfo.Dependencies -notcontains "UE4SSExperimentalPW") { throw "Workshop UE4SS dependency missing" }
 if ($workshopInfo.InstallRule.Count -ne 1 -or $workshopInfo.InstallRule[0].Type -ne "Lua") {
     throw "Workshop Lua InstallRule missing"
 }
-foreach ($sharedName in @("main.lua", "hud.lua", "commentary.lua", "localization.lua", "hud_strings.lua", "skill_names.lua", "skill_effect_attribution.lua")) {
+foreach ($sharedName in @("main.lua", "hud.lua", "commentary.lua", "localization.lua", "hud_strings.lua", "skill_names.lua", "skill_effect_attribution.lua", "cast_effect_attribution.lua", "runtime_source_chain.lua")) {
     $sharedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $projectDirectory "Scripts\$sharedName")).Hash
     $workshopHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $workshopScripts $sharedName)).Hash
     if ($sharedHash -ne $workshopHash) { throw "Workshop $sharedName is not synchronized with shared core" }
@@ -215,6 +234,7 @@ foreach ($requiredSetting in @(
     "config.LocalOnlyMessages = true",
     "config.EnableSkillDiagnostics = true",
     "config.SkillDiagnosticsOnly = true",
+    "config.EnableSkillSourceChain = true",
     "config.IncludePlayerDamage = false",
     'config.SkillDiagnosticChatMode = "off"',
     "config.EnableSkillDPSHUD = true",
@@ -271,6 +291,10 @@ if ($LASTEXITCODE -ne 0) { throw "Workshop hud_strings.lua parse failed" }
 if ($LASTEXITCODE -ne 0) { throw "Workshop skill_names.lua parse failed" }
 & npx --yes --package=luaparse luaparse --quiet --file (Join-Path $workshopScripts "skill_effect_attribution.lua")
 if ($LASTEXITCODE -ne 0) { throw "Workshop skill_effect_attribution.lua parse failed" }
+& npx --yes --package=luaparse luaparse --quiet --file (Join-Path $workshopScripts "cast_effect_attribution.lua")
+if ($LASTEXITCODE -ne 0) { throw "Workshop cast_effect_attribution.lua parse failed" }
+& npx --yes --package=luaparse luaparse --quiet --file (Join-Path $workshopScripts "runtime_source_chain.lua")
+if ($LASTEXITCODE -ne 0) { throw "Workshop runtime_source_chain.lua parse failed" }
 $overlayTokens = $null
 $overlayErrors = $null
 [void][System.Management.Automation.Language.Parser]::ParseFile(
@@ -316,10 +340,22 @@ if ([string]::IsNullOrWhiteSpace($settingsSize) -or $settingsSize -ne $emptySett
 Write-Host "[5/5] Running integration, thread-affinity, lifetime, and stress tests"
 Push-Location $testDirectory
 try {
+    $castEffectOutput = & npx --yes --package=fengari-node-cli fengari test_cast_effect_attribution.lua 2>&1
+    $castEffectExitCode = $LASTEXITCODE
+    $castEffectOutput | Write-Host
+    if ($castEffectExitCode -ne 0 -or -not ($castEffectOutput -match "cast/effect attribution regression tests passed")) {
+        throw "cast/effect attribution regression test failed or did not reach its completion marker"
+    }
+    $sourceChainOutput = & npx --yes --package=fengari-node-cli fengari test_runtime_source_chain.lua 2>&1
+    $sourceChainExitCode = $LASTEXITCODE
+    $sourceChainOutput | Write-Host
+    if ($sourceChainExitCode -ne 0 -or -not ($sourceChainOutput -match "runtime source-chain hook regression tests passed")) {
+        throw "runtime source-chain hook regression test failed or did not reach its completion marker"
+    }
     $testOutput = & npx --yes --package=fengari-node-cli fengari test_main.lua 2>&1
     $testExitCode = $LASTEXITCODE
     $testOutput | Write-Host
-    if ($testExitCode -ne 0 -or -not ($testOutput -match "v0\.5\.11 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed")) {
+    if ($testExitCode -ne 0 -or -not ($testOutput -match "v0\.5\.12 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed")) {
         throw "Lua integration test failed or did not reach its completion marker"
     }
     $localeOutput = & npx --yes --package=fengari-node-cli fengari test_localization.lua 2>&1
