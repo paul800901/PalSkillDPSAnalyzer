@@ -1234,19 +1234,25 @@ for _, source in pairs(action_session.diagnostic_sources) do
     action_source = source
 end
 local action_candidate_count = 0
-local unresolved_beam_candidate
+local inferred_beam_candidate
 for _, candidate in pairs(action_source.skill_candidates) do
     action_candidate_count = action_candidate_count + 1
-    if candidate.name == "UNRESOLVED_PAL_ATTACK_BP_350_ELEMENT_9" then
-        unresolved_beam_candidate = candidate
+    if candidate.name == "BeamSlicer" then
+        inferred_beam_candidate = candidate
     end
 end
-assert(action_candidate_count == 3,
-    "weak action evidence did not aggregate by unresolved signature")
-assert(unresolved_beam_candidate ~= nil
-        and unresolved_beam_candidate.damage == 525
-        and unresolved_beam_candidate.hits == 3,
-    "current/recent action inference entered a confirmed skill bucket")
+assert(action_candidate_count == 4,
+    "bounded action evidence produced an unexpected candidate count")
+assert(inferred_beam_candidate ~= nil
+        and inferred_beam_candidate.damage == 500
+        and inferred_beam_candidate.hits == 2
+        and inferred_beam_candidate.confidence == "inferred"
+        and inferred_beam_candidate.exact_damage == 0
+        and inferred_beam_candidate.inferred_damage == 500,
+    "active equipped casts were not kept in one inferred skill bucket")
+assert(action_source.skill_candidates["UNRESOLVED_PAL_ATTACK_BP_350_ELEMENT_9"] ~= nil
+        and action_source.skill_candidates["UNRESOLVED_PAL_ATTACK_BP_350_ELEMENT_9"].damage == 25,
+    "an out-of-window hit was guessed from stale action timing")
 
 do
     phase = "game"
@@ -1255,11 +1261,8 @@ do
     local live_action_state = BossDPSBroadcastTestApi.skill_hud.last_external_state
     assert(live_action_state ~= nil and live_action_state.text ~= nil,
         "live HUD state was not published")
-    assert(string.find(live_action_state.text,
-            "\t未归属伤害\tUNRESOLVED_PAL_ATTACK_BP_350_ELEMENT_9\t", 1, true) ~= nil,
-        "live HUD did not keep weak action evidence unresolved")
-    assert(string.find(live_action_state.text, "切割龙息", 1, true) == nil,
-        "live HUD presented current/recent action inference as confirmed")
+    assert(string.find(live_action_state.text, "切割龙息", 1, true) ~= nil,
+        "live HUD did not show the inferred active equipped skill")
     assert(string.find(live_action_state.text,
         "\t未归属伤害\tUNRESOLVED_PAL_ATTACK_BP_200_ELEMENT_9\t", 1, true) ~= nil,
         "ambiguous damage did not hide its internal identifier from the visible label")
@@ -1274,17 +1277,18 @@ for index = action_before + 1, #bob_inbox do
 end
 local action_joined = table.concat(action_messages, "\n")
 assert(string.find(action_joined,
-        "UNRESOLVED_PAL_ATTACK_BP_350_ELEMENT_9｜伤害 525", 1, true) ~= nil,
-    "current/recent action damage did not remain unresolved")
-assert(string.find(action_joined, "切割龙息（BeamSlicer）", 1, true) == nil,
-    "action timing inference leaked into a confirmed skill report")
+        "切割龙息（BeamSlicer）｜伤害 500", 1, true) ~= nil,
+    "bounded active-action result is missing from the report")
+assert(string.find(action_joined,
+        "UNRESOLVED_PAL_ATTACK_BP_350_ELEMENT_9｜伤害 25", 1, true) ~= nil,
+    "stale action timing did not remain unresolved")
 assert(string.find(action_joined,
         "UNRESOLVED_PAL_ATTACK_BP_200_ELEMENT_2｜伤害 150", 1, true) ~= nil,
     "same-signature weak action damage did not remain unresolved")
 assert(string.find(action_joined, "UNRESOLVED_PAL_ATTACK_BP_200_ELEMENT_9｜伤害 25", 1, true) ~= nil,
     "ambiguous generic damage was assigned without proof")
-assert(string.find(action_joined, "技能/武器候选 3个", 1, true) ~= nil,
-    "fail-closed candidate count is incorrect")
+assert(string.find(action_joined, "技能/武器候选 4个", 1, true) ~= nil,
+    "bounded candidate count is incorrect")
 
 -- Many Pal skills deal their first damage only after the action has ended.
 -- Action timing alone is diagnostic context and must fail closed; only the
@@ -1336,12 +1340,9 @@ do
     BossDPSBroadcastTestApi.publish_current_skill_hud()
     phase = "idle"
     local delayed_state = BossDPSBroadcastTestApi.skill_hud.last_external_state
-    assert(string.find(delayed_state.text,
-            "\t未归属伤害\tUNRESOLVED_PAL_ATTACK_BP_600_ELEMENT_6\t", 1, true) ~= nil
+    assert(string.find(delayed_state.text, "晶钻之雨", 1, true) ~= nil
         and string.find(delayed_state.text, "76.0000", 1, true) ~= nil,
-        "post-action timing inference did not fail closed")
-    assert(string.find(delayed_state.text, "晶钻之雨", 1, true) == nil,
-        "recent/delayed action inference entered a confirmed skill bucket")
+        "unique equipped signature did not recover delayed DiamondFall hits")
     assert(string.find(delayed_state.text, "AnimationStep", 1, true) == nil,
         "a movement action was exposed as a damage skill")
 
@@ -1402,7 +1403,7 @@ do
     phase = "idle"
     local asset_state = BossDPSBroadcastTestApi.skill_hud.last_external_state.text
     assert(string.find(asset_state, "晶钻之雨", 1, true) ~= nil
-        and string.find(asset_state, "60.0000", 1, true) ~= nil,
+        and string.find(asset_state, "136.0000", 1, true) ~= nil,
         "asset-backed DiamondFall phases did not share one confirmed skill bucket")
     assert(string.find(asset_state, "SkillEffect_DiamondFall", 1, true) == nil,
         "DiamondFall phases leaked into separate visible skill rows")
@@ -1411,8 +1412,8 @@ do
     run_delayed_tasks()
 end
 
--- Fire regression: equipped signatures and current actions are weak evidence.
--- Without a direct Waza/effect/DamageInfo source all four signatures fail closed.
+-- Fire regression: verified signatures unique among the live three slots are
+-- useful bounded evidence, while the non-equipped filler becomes a basic hit.
 do
     local fire_parameter = object({
         SaveParameter = { EquipWaza = { 42, 54, 46 } },
@@ -1479,14 +1480,15 @@ do
     local fire_source = fire_session.diagnostic_sources["pal:9401"]
     assert(fire_source ~= nil, "fire signature Pal source missing")
     for signature, expected in pairs({
-        ["UNRESOLVED_PAL_ATTACK_BP_600_ELEMENT_2"] = 600,
-        ["UNRESOLVED_PAL_ATTACK_BP_300_ELEMENT_2"] = 300,
-        ["UNRESOLVED_PAL_ATTACK_BP_200_ELEMENT_2"] = 200,
-        ["UNRESOLVED_PAL_ATTACK_BP_40_ELEMENT_8"] = 40,
+        ["skill:FireBall"] = 600,
+        ["skill:FlameFunnel"] = 300,
+        ["skill:FlareTornado"] = 200,
+        ["skill:GravityShot"] = 40,
     }) do
         assert(fire_source.skill_candidates[signature] ~= nil
-            and fire_source.skill_candidates[signature].damage == expected,
-            "weak fire/current-action evidence entered a confirmed bucket: " .. signature)
+            and fire_source.skill_candidates[signature].damage == expected
+            and fire_source.skill_candidates[signature].confidence == "inferred",
+            "bounded fire/current-action inference failed: " .. signature)
     end
     death(fire_boss)
     run_game_tasks()
@@ -1494,7 +1496,8 @@ do
     fire_current_action = nil
 end
 
--- Dark regression: fixed BasePower/element and current actions are not proof.
+-- Dark regression: each equipped skill has a distinct verified signature;
+-- GravityShot remains a non-equipped basic attack.
 do
     local dark_parameter = object({
         SaveParameter = { EquipWaza = { 131, 161, 135 } },
@@ -1555,14 +1558,15 @@ do
     local dark_source = dark_session.diagnostic_sources["pal:9501"]
     assert(dark_source ~= nil, "dark signature Pal source missing")
     for signature, expected in pairs({
-        ["UNRESOLVED_PAL_ATTACK_BP_450_ELEMENT_8"] = 450,
-        ["UNRESOLVED_PAL_ATTACK_BP_600_ELEMENT_8"] = 600,
-        ["UNRESOLVED_PAL_ATTACK_BP_30_ELEMENT_8"] = 30,
-        ["UNRESOLVED_PAL_ATTACK_BP_40_ELEMENT_8"] = 40,
+        ["skill:DarkLaser"] = 450,
+        ["skill:DarkLegion"] = 600,
+        ["skill:PoisonShot"] = 30,
+        ["skill:GravityShot"] = 40,
     }) do
         assert(dark_source.skill_candidates[signature] ~= nil
-            and dark_source.skill_candidates[signature].damage == expected,
-            "weak dark/current-action evidence entered a confirmed bucket: " .. signature)
+            and dark_source.skill_candidates[signature].damage == expected
+            and dark_source.skill_candidates[signature].confidence == "inferred",
+            "bounded dark/current-action inference failed: " .. signature)
     end
     death(dark_boss)
     run_game_tasks()
@@ -1591,9 +1595,9 @@ do
     BossDPSBroadcastTestApi.publish_current_skill_hud()
     phase = "idle"
     local basic_state = BossDPSBroadcastTestApi.skill_hud.last_external_state
-    assert(string.find(basic_state.text,
-            "\t未归属伤害\tUNRESOLVED_PAL_ATTACK_BP_40_ELEMENT_8\t", 1, true) ~= nil,
-        "current filler action was presented as a confirmed basic attack")
+    assert(string.find(basic_state.text, "普攻", 1, true) ~= nil
+            and string.find(basic_state.text, "暗能弹", 1, true) ~= nil,
+        "non-equipped GravityShot was not presented as a basic attack")
     death(basic_boss)
     run_game_tasks()
     run_delayed_tasks()
@@ -1668,11 +1672,10 @@ do
     BossDPSBroadcastTestApi.publish_current_skill_hud()
     phase = "idle"
     local swap_state = BossDPSBroadcastTestApi.skill_hud.last_external_state
-    assert(string.find(swap_state.text, "晶钻之雨", 1, true) == nil,
-        "current action exposed the swapped-in DiamondFall as confirmed")
-    assert(string.find(swap_state.text,
-            "\t未归属伤害\tUNRESOLVED_PAL_ATTACK_BP_150_ELEMENT_1\t", 1, true) ~= nil,
-        "swapped loadout/current action evidence did not fail closed")
+    assert(string.find(swap_state.text, "晶钻之雨", 1, true) ~= nil,
+        "swapped-in DiamondFall was not detected from the refreshed loadout")
+    assert(string.find(swap_state.text, "切割龙息", 1, true) ~= nil,
+        "pre-swap BeamSlicer result disappeared after the loadout changed")
 
     -- Loadout and action signatures remain diagnostic only; neither cast may
     -- seed an authoritative signature mapping.
@@ -1763,11 +1766,10 @@ do
     assert(weak_session ~= nil, "weak-signature session missing")
     local weak_source = weak_session.diagnostic_sources["pal:9601"]
     assert(weak_source ~= nil, "weak-signature pal source missing")
-    assert(weak_source.skill_candidates["skill:DiamondFall"] == nil,
-        "unique equipped/timing inference entered a confirmed skill bucket")
-    assert(weak_source.skill_candidates ~= nil
-        and weak_source.skill_candidates["UNRESOLVED_PAL_ATTACK_BP_600_ELEMENT_6"] ~= nil,
-        "weak equipped/timing evidence did not fail closed")
+    assert(weak_source.skill_candidates["skill:DiamondFall"] ~= nil
+            and weak_source.skill_candidates["skill:DiamondFall"].damage == 50
+            and weak_source.skill_candidates["skill:DiamondFall"].confidence == "inferred",
+        "unique equipped signature did not recover delayed DiamondFall damage")
 
     -- Record one genuinely unknown signature, then begin another action. The
     -- old implementation deleted this bucket on every action begin, so source
@@ -2554,4 +2556,4 @@ assert(#delivered_by_uid[test_guid_key(uid_spectator)] == 0, "spectator received
 
 assert(#BossDPSBroadcastTestApi.sessions == 0, "sessions table must be map-like")
 assert(original_os_time ~= nil)
-print("PalSkillDPSAnalyzer v0.5.12 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed")
+print("PalSkillDPSAnalyzer v0.5.13 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed")

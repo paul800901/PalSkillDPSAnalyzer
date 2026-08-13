@@ -7,7 +7,7 @@ This is not a player ranking meter. Reset and start a test at any time; timing b
 [list]
 [*]Pal damage enabled by default; player/weapon damage disabled by default
 [*]Optional one-weapon-per-fight player verification mode
-[*]Evidence-backed candidates; unknown damage is never assigned a guessed skill name
+[*]Exact sources first; when absent, bounded inference uses the live three-slot loadout, action lifecycle, and a unique equipped-skill signature
 [*]Official in-game localized skill names shown by default; internal codes remain in the log
 [*]Panel cooldown compared with observed cast-start intervals affected by combat AI, movement, and skill selection
 [*]Damage per cast, full action duration, cast DPS, reuse gap, and timing coverage shown at completion
@@ -34,7 +34,7 @@ Enable player damage in config.lua, restart the game, and use one weapon for the
 [h2]Scope[/h2]
 [list]
 [*][b]Target:[/b] Windows single-player worlds
-[*][b]Current status:[/b] v0.5.12 exact source-chain diagnostic; casts, skill effects, AttackFilter.Waza, Blueprint OnAttack and final hits are linked, unknown sources are not guessed, old external F1 settings disabled, safe F2 reset
+[*][b]Current status:[/b] v0.5.13 hybrid attribution diagnostic; exact sources win, otherwise the live three-slot loadout and action lifecycle provide bounded inference, ambiguous overlaps remain unresolved, old external F1 settings disabled, safe F2 reset
 [*][b]Required dependency:[/b] UE4SS Experimental; PalSchema is not required
 [*][b]Not a goal:[/b] comparing players or producing a competitive DPS leaderboard
 [/list]

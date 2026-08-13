@@ -1320,6 +1320,7 @@ local function refresh_equipped_waza(source, source_actor, force)
 
     local ids = {}
     local codes = {}
+    local ids_by_code = {}
     local code_list = {}
     local count = 0
     local iterated = for_each_unreal_array(equip_waza, function(_, raw_value)
@@ -1330,6 +1331,7 @@ local function refresh_equipped_waza(source, source_actor, force)
             local code = canonical_skill_name(metadata and metadata.code or "")
             if code ~= "" then
                 codes[code] = true
+                ids_by_code[code] = numeric
                 code_list[#code_list + 1] = code
             end
             count = count + 1
@@ -1349,6 +1351,7 @@ local function refresh_equipped_waza(source, source_actor, force)
     source.equipped_waza_fingerprint = equipped_fingerprint
     source.equipped_waza_ids = ids
     source.equipped_waza_codes = codes
+    source.equipped_waza_ids_by_code = ids_by_code
     source.equipped_waza_count = count
     -- Equipped metadata is diagnostic context only. It may describe which
     -- skills could have produced a signature, but cannot identify this hit.
@@ -1632,10 +1635,9 @@ local function apply_waza_marker(event, marker, source_label)
     return true
 end
 
--- Pair/attacker marker queues, equipped signatures, and action timing are
--- useful diagnostics, but they do not identify the cast that produced a hit.
--- Keep their guess visible in the trace without populating the authoritative
--- waza fields consumed by the damage buckets.
+-- Pair/attacker marker queues remain trace-only because two simultaneous
+-- skills can emit indistinguishable markers. Bounded loadout/action inference
+-- below is deliberately separate and explicitly labelled as inferred.
 local function apply_inferred_waza(event, marker, source_label)
     if marker == nil then return false end
     event.diagnostic_fields["inference.WazaID"] = marker.id
@@ -1712,6 +1714,49 @@ local function apply_action_record(event, record, source_label)
     return true
 end
 
+local function promote_inferred_waza(event, metadata, waza_id, source_label, cast_key)
+    if config.EnableBoundedSkillInference ~= true or metadata == nil then
+        return false
+    end
+    local fields = event.diagnostic_fields or {}
+    if fields["waza.ID"] ~= nil or fields["waza.Name"] ~= nil then
+        return false
+    end
+    local code = canonical_skill_name(metadata.code or "")
+    if code == "" then return false end
+    waza_id = math.floor(to_number(waza_id or metadata.id))
+    fields["waza.ID"] = waza_id > 0 and waza_id or nil
+    fields["waza.Name"] = code
+    fields["waza.LocalizedName"] = metadata.localized_name
+    fields["waza.PanelCoolTime"] = metadata.panel_cool_time
+    fields["attribution.Source"] = source_label
+    fields["attribution.Confidence"] = "inferred"
+    fields["inference.WazaID"] = fields["waza.ID"]
+    fields["inference.WazaName"] = code
+    fields["inference.Source"] = source_label
+    if cast_key ~= nil and tostring(cast_key) ~= "" then
+        fields["inference.CastKey"] = tostring(cast_key)
+        event.cast_key = tostring(cast_key)
+    end
+    trace_skill_event(string.format(
+        "bounded-inference source=%s id=%s code=%s cast=%s",
+        tostring(source_label), tostring(fields["waza.ID"] or "none"),
+        tostring(code), tostring(event.cast_key or "none")
+    ))
+    return true
+end
+
+local function promote_action_record(event, record, source_label)
+    if record == nil or record.waza_id == nil then return false end
+    return promote_inferred_waza(
+        event,
+        resolve_waza_metadata(record.waza_id, record.code),
+        record.waza_id,
+        source_label,
+        record.cast_id or record.key
+    )
+end
+
 -- A completed equipped cast may still own a delayed shard, explosion or
 -- ground field after the Pal has started its filler attack. However, when the
 -- final damage signature exactly matches that filler attack, the current
@@ -1765,12 +1810,16 @@ local function apply_unique_equipped_signature(event, source_profile)
         count = count + 1
     end
     if count ~= 1 then return false end
-    local metadata = resolve_waza_metadata(0, code)
-    fields["inference.WazaName"] = code
-    fields["inference.WazaLocalizedName"] = metadata.localized_name
-    fields["inference.WazaPanelCoolTime"] = metadata.panel_cool_time
-    fields["inference.Source"] = "unique_equipped_signature"
-    return true
+    local waza_id = source_profile.equipped_waza_ids_by_code
+        and source_profile.equipped_waza_ids_by_code[code]
+        or nil
+    return promote_inferred_waza(
+        event,
+        resolve_waza_metadata(waza_id or 0, code),
+        waza_id,
+        "inferred_unique_equipped_signature",
+        nil
+    )
 end
 
 local function attach_runtime_skill_evidence(event, source_actor, source_kind, source_profile)
@@ -1867,16 +1916,19 @@ local function attach_runtime_skill_evidence(event, source_actor, source_kind, s
         event.diagnostic_fields["inference.Source"] = "waza_marker_conflict"
     end
 
-    -- A unique equipped signature is useful for diagnostics, but is not proof
-    -- that this hit came from that skill. Keep it outside authoritative fields.
-    apply_unique_equipped_signature(event, source_profile)
-
     -- Two unconsumed Waza construction events for the same attacker/target
     -- are stronger evidence of concurrency than whatever action happens to be
     -- current when the final damage callback runs. Never guess through it.
     if marker_conflict then
         return
     end
+
+    -- A signature verified from game metadata and unique among the Pal's live
+    -- three equipped slots is a bounded inference. It may populate a visible
+    -- skill bucket, but remains marked inferred and never seeds the exact
+    -- signature-learning table. Marker concurrency is checked first so a
+    -- signature never guesses through two known simultaneous Waza events.
+    apply_unique_equipped_signature(event, source_profile)
 
     if source_kind ~= "pal" or not is_valid(source_actor) then
         return
@@ -1941,12 +1993,34 @@ local function attach_runtime_skill_evidence(event, source_actor, source_kind, s
                 or (action_waza_name ~= ""
                     and source_profile.equipped_waza_codes[action_waza_name] == true)
         end
+        local tracked_action = action_records[action_cast_key]
+        local tracked_action_active = tracked_action ~= nil
+            and tracked_action.ended_at == nil
+            and tracked_action.actor_key == source_actor_key
+        if tracked_action ~= nil and tracked_action.ended_at ~= nil then
+            -- GetCurrentAction can keep returning the completed UObject. Its
+            -- lifecycle record is authoritative for whether it is still live.
+            may_use_recent_action = true
+        end
         local recent_code = canonical_skill_name(recent_record and recent_record.code or "")
         local recent_differs = recent_record ~= nil and recent_code ~= ""
             and recent_code ~= action_waza_name
         local current_action_matches_damage = action_matches_damage_signature(
             action_metadata, event.diagnostic_fields)
         if existing_waza_id <= 0 and existing_waza_name == ""
+            and tracked_action_active then
+            -- This is the central practical fallback: the game has confirmed
+            -- both the live three-slot loadout and the exact action instance
+            -- currently executing. Equipped actions become skills; actions
+            -- outside those slots (such as GravityShot) become basic attacks.
+            promote_action_record(
+                event,
+                tracked_action,
+                current_action_is_equipped
+                    and "inferred_active_equipped_action"
+                    or "inferred_active_basic_action"
+            )
+        elseif existing_waza_id <= 0 and existing_waza_name == ""
             and action_waza_id > 0 and equipped_known
             and recent_record ~= nil and not current_action_is_equipped
             and not current_action_matches_damage then
@@ -1969,12 +2043,24 @@ local function attach_runtime_skill_evidence(event, source_actor, source_kind, s
             event.diagnostic_fields["action.SimpleName"] = nil
         elseif action_waza_id > 0 and existing_waza_id <= 0
             and existing_waza_name == "" then
-            event.diagnostic_fields["inference.WazaID"] = action_waza_id
-            event.diagnostic_fields["inference.WazaName"] = action_metadata.code
-            event.diagnostic_fields["inference.WazaLocalizedName"] = action_metadata.localized_name
-            event.diagnostic_fields["inference.WazaPanelCoolTime"] = action_metadata.panel_cool_time
-            event.diagnostic_fields["inference.Source"] = "current_action"
-            event.diagnostic_fields["inference.CastKey"] = action_cast_key
+            if equipped_known and (current_action_matches_damage or recent_record == nil) then
+                promote_inferred_waza(
+                    event,
+                    action_metadata,
+                    action_waza_id,
+                    current_action_is_equipped
+                        and "inferred_current_equipped_action"
+                        or "inferred_current_basic_action",
+                    action_cast_key
+                )
+            else
+                event.diagnostic_fields["inference.WazaID"] = action_waza_id
+                event.diagnostic_fields["inference.WazaName"] = action_metadata.code
+                event.diagnostic_fields["inference.WazaLocalizedName"] = action_metadata.localized_name
+                event.diagnostic_fields["inference.WazaPanelCoolTime"] = action_metadata.panel_cool_time
+                event.diagnostic_fields["inference.Source"] = "current_action"
+                event.diagnostic_fields["inference.CastKey"] = action_cast_key
+            end
         elseif has_current_skill_action and (action_waza_id <= 0 or action_waza_id == existing_waza_id
             or (existing_waza_name ~= "" and existing_waza_name == action_waza_name)) then
             event.diagnostic_fields["inference.CastKey"] = action_cast_key
@@ -1990,7 +2076,10 @@ local function attach_runtime_skill_evidence(event, source_actor, source_kind, s
         if recent_conflict then
             event.diagnostic_fields["inference.Source"] = "recent_action_conflict"
         else
-            apply_action_record(event, recent_record, "recent_completed_action")
+            if not promote_action_record(
+                event, recent_record, "inferred_recent_completed_action") then
+                apply_action_record(event, recent_record, "recent_completed_action")
+            end
         end
     end
 end
@@ -2280,6 +2369,9 @@ local function skill_candidate_from_event(event, source_actor, source_kind)
         fields = fields,
         signature = signature,
         concrete = concrete,
+        attribution_source = tostring(diagnostic_fields["attribution.Source"] or ""),
+        confidence = tostring(diagnostic_fields["attribution.Confidence"]
+            or (concrete and "exact" or "unresolved")),
         unresolved_signature = not concrete and signature or nil,
         causer_full_name = causer.full_name ~= "" and causer.full_name or "none",
         causer_class_name = causer.class_name ~= "" and causer.class_name or "none",
@@ -2335,6 +2427,10 @@ local function record_skill_candidate(session, source, event, source_actor, dama
             causer_class_name = evidence.causer_class_name,
             source_full_name = evidence.source_full_name,
             unresolved_signature = evidence.unresolved_signature,
+            confidence = evidence.confidence,
+            attribution_sources = {},
+            exact_damage = 0,
+            inferred_damage = 0,
             damage = 0,
             hits = 0,
             samples = 0,
@@ -2347,6 +2443,15 @@ local function record_skill_candidate(session, source, event, source_actor, dama
 
     candidate.damage = candidate.damage + damage
     candidate.hits = candidate.hits + hit_count
+    if evidence.attribution_source ~= "" then
+        candidate.attribution_sources[evidence.attribution_source] = true
+    end
+    if evidence.confidence == "inferred" then
+        candidate.inferred_damage = candidate.inferred_damage + damage
+    elseif evidence.concrete then
+        candidate.exact_damage = candidate.exact_damage + damage
+        candidate.confidence = "exact"
+    end
     if (candidate.localized_name == nil or candidate.localized_name == "")
         and evidence.localized_name ~= "" then
         candidate.localized_name = evidence.localized_name
@@ -4672,7 +4777,7 @@ local function register_hooks()
 
     if hooks.damage and hooks.death then
         log(string.format(
-            "loaded v0.5.12-source-chain; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s chat_mode=%s waza_hook=%s action_hooks=%s/%s effect_hook=%s filter_hook=%s effect_attack_hooks=%d local_only=%s; captured_hooks=%d",
+            "loaded v0.5.13-hybrid-attribution; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s chat_mode=%s waza_hook=%s action_hooks=%s/%s effect_hook=%s filter_hook=%s effect_attack_hooks=%d local_only=%s; captured_hooks=%d",
             hooks.damage_mode,
             tostring(config.EnableDPSRecording ~= false),
             tostring(config.EnableSkillDiagnostics == true),

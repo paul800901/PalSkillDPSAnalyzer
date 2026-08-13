@@ -43,6 +43,11 @@ config.SkillDiagnosticsOnly = true
 -- identity. Disable only for compatibility diagnosis; without it, any final
 -- hit lacking direct Waza/DamageCauser evidence stays unresolved.
 config.EnableSkillSourceChain = true
+-- When Palworld omits Waza/DamageCauser from final damage, combine the Pal's
+-- live three EquipWaza slots with captured action begin/end events. Exact
+-- source-chain evidence always wins. Bounded results are labelled inferred,
+-- never teach the exact signature table, and ambiguous overlaps stay unresolved.
+config.EnableBoundedSkillInference = true
 -- A damage lab is more useful when the operator controls the sampling window.
 -- "manual" keeps one test open across many targets until F1 -> Start new test;
 -- "target" automatically creates a separate test for each damaged target.
@@ -100,8 +105,8 @@ config.HUDUseScreenTextFallback = false
 config.SkillDiagnosticLogCasts = true
 config.SkillDiagnosticMaxCastLogRows = 128
 config.SkillActionMaxEntries = 4096
--- Legacy timing values are retained for trace comparison only. They never
--- populate a confirmed skill bucket; effect/cast identity is required.
+-- Bounded inference may use these windows only after exact evidence fails.
+-- Ambiguous overlapping recent casts remain unresolved.
 config.SkillActionPostHitSeconds = 10
 config.SkillActionConflictSeconds = 1.25
 config.SkillEffectHitGapSeconds = 3
