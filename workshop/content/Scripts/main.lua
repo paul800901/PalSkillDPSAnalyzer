@@ -4,6 +4,7 @@ local config = require("./config")
 local battle_commentary = require("./commentary")
 local localization = require("./localization")
 local skill_names = require("./skill_names")
+local skill_effect_attribution = require("./skill_effect_attribution")
 local hud_module = require("./hud")
 
 local MOD = "[PalSkillDPSAnalyzer]"
@@ -11,9 +12,12 @@ local unpack_args = table.unpack or unpack
 local sessions = {}
 local session_addresses = {}
 local session_actor_keys = {}
+local global_source_owner_cache = {}
 local hooks = {
     damage = false,
     damage_mode = "none",
+    final_damage = false,
+    final_damage_path = "none",
     waza = false,
     action_begin = false,
     action_end = false,
@@ -31,8 +35,14 @@ local cached_waza_enum = nil
 local cached_pal_ui_utility = nil
 local cached_waza_database = nil
 local cached_waza_metadata = {}
+local canonical_skill_name
+local game_time_seconds
+local attack_signature
+local action_skill_name
 local action_records = {}
 local action_record_order = {}
+local recent_actions_by_actor = {}
+local delayed_effect_bindings = {}
 local skill_hud = nil
 
 -- Native damage hooks may run in the middle of an Unreal call. They must not
@@ -66,6 +76,7 @@ local metrics = {
     skill_samples = 0,
     action_begins = 0,
     action_ends = 0,
+    trace_events = 0,
 }
 
 local function log(message)
@@ -525,6 +536,39 @@ local function get_local_player_controller()
     return controller
 end
 
+-- The Windows HUD is useful only while a playable pawn owns the screen. The
+-- same Palworld process also owns the title screen, loading screens and native
+-- pause/options menus, so foreground-process checks alone cannot distinguish
+-- those states. F1's own workspace is allowed after it has acquired the pawn;
+-- its cursor flag must not make the workspace hide itself.
+local function local_gameplay_available(settings_open)
+    local world = find_world_context()
+    local statics = get_gameplay_statics()
+    local controller = get_local_player_controller()
+    if world == nil or statics == nil or controller == nil then
+        return false
+    end
+    local pawn_ok, pawn = safe_call(controller, "GetPawn")
+    if not pawn_ok or not is_valid(pawn) then
+        pawn_ok, pawn = safe_property(controller, "Pawn")
+    end
+    if not pawn_ok or not is_valid(pawn) then
+        return false
+    end
+    if settings_open == true then
+        return true
+    end
+    local paused_ok, paused = safe_call(statics, "IsGamePaused", world)
+    if paused_ok and bool_value(paused) then
+        return false
+    end
+    local cursor_ok, cursor_visible = safe_property(controller, "bShowMouseCursor")
+    if cursor_ok and bool_value(cursor_visible) then
+        return false
+    end
+    return true
+end
+
 local function local_player_uid()
     local controller = get_local_player_controller()
     if controller == nil then
@@ -884,6 +928,7 @@ local function get_boss_info(actor, utility)
         key = full_name,
         address = actor_address(actor),
         name = tostring(display_name),
+        is_boss = true,
         composite_group = composite and composite.group or nil,
         composite_part = composite and composite.id or nil,
         composite_terminal = composite and composite.terminal or false,
@@ -1082,6 +1127,16 @@ local function diagnostic_actor_key(actor)
     return actor_address(actor) or actor_full_name(actor)
 end
 
+local function captured_value_identity(value)
+    if value == nil then return nil end
+    local ok, address = pcall(function() return value:GetAddress() end)
+    address = ok and to_number(address) or 0
+    if address > 0 then return "addr:" .. tostring(address) end
+    local text = tostring(value)
+    if text == "" or text == "nil" then return nil end
+    return "ref:" .. text
+end
+
 local function waza_name_from_id(waza_id)
     waza_id = math.floor(to_number(waza_id))
     if waza_id <= 0 then
@@ -1201,6 +1256,165 @@ local function resolve_waza_metadata(waza_id, internal_name)
     return cached
 end
 
+local function for_each_unreal_array(array, callback)
+    if array == nil then return false end
+    if type(array) == "table" then
+        for index, value in ipairs(array) do
+            callback(index - 1, value)
+        end
+        return true
+    end
+    local ok = pcall(function()
+        array:ForEach(function(index, element)
+            callback(index, unwrap(element))
+        end)
+    end)
+    return ok
+end
+
+-- Read the Pal's actual three equipped active-skill slots. Palworld keeps
+-- default/filler attacks outside EquipWaza, so this is a stronger distinction
+-- than assuming that a particular internal action name is always a basic hit.
+local function refresh_equipped_waza(source, source_actor, force)
+    if source == nil or source.kind ~= "pal" or not is_valid(source_actor) then
+        return false
+    end
+    local now = os.time()
+    -- The three equipped slots can change mid-test while the player swaps
+    -- skills between engagements. The list must be re-read on every action
+    -- begin and at least once per TTL; otherwise a newly equipped skill is
+    -- wrongly labelled "basic" until the game restarts.
+    if force ~= true and (source.equipped_waza_count or 0) > 0
+        and (source.equipped_waza_refresh_at or 0) > now then
+        return true
+    end
+    if source.equipped_waza_attempt_at == now then return false end
+    source.equipped_waza_attempt_at = now
+
+    local component_ok, component = safe_property(source_actor, "CharacterParameterComponent")
+    if not component_ok or not is_valid(component) then
+        local call_ok, found = safe_call(source_actor, "GetCharacterParameterComponent")
+        component = call_ok and found or nil
+    end
+    if not is_valid(component) then return false end
+    local individual_ok, individual = safe_property(component, "IndividualParameter")
+    if not individual_ok or individual == nil then return false end
+    local save_ok, save_parameter = safe_property(individual, "SaveParameter")
+    if not save_ok or save_parameter == nil then return false end
+    local equip_ok, equip_waza = safe_property(save_parameter, "EquipWaza")
+    if not equip_ok or equip_waza == nil then return false end
+
+    local ids = {}
+    local codes = {}
+    local code_list = {}
+    local count = 0
+    local iterated = for_each_unreal_array(equip_waza, function(_, raw_value)
+        local numeric = math.floor(to_number(unwrap(raw_value)))
+        if numeric > 0 and ids[numeric] ~= true then
+            ids[numeric] = true
+            local metadata = resolve_waza_metadata(numeric)
+            local code = canonical_skill_name(metadata and metadata.code or "")
+            if code ~= "" then
+                codes[code] = true
+                code_list[#code_list + 1] = code
+            end
+            count = count + 1
+        end
+    end)
+    if not iterated or count == 0 then return false end
+    table.sort(code_list)
+    local equipped_fingerprint = table.concat(code_list, ",")
+    if source.equipped_waza_fingerprint ~= nil
+        and source.equipped_waza_fingerprint ~= equipped_fingerprint then
+        -- Only an observed loadout change invalidates learned mappings. Action
+        -- begin fires for every cast, so clearing these tables there discarded
+        -- accumulated damage and made the HUD row sum smaller than total damage.
+        source.skill_signatures = nil
+        source.known_equipped_signatures = nil
+    end
+    source.equipped_waza_fingerprint = equipped_fingerprint
+    source.equipped_waza_ids = ids
+    source.equipped_waza_codes = codes
+    source.equipped_waza_count = count
+    -- Asset-backed signatures are scoped to this Pal's current three active
+    -- skills. This never learns from timing guesses: a delayed DiamondFall hit
+    -- remains identifiable while another equipped skill is the current action.
+    source.known_equipped_signatures = {}
+    for code in pairs(codes) do
+        local fallback = config.SkillMetadataFallbacks
+            and config.SkillMetadataFallbacks[code]
+            or nil
+        local base_power = fallback and finite_positive_number(fallback.BasePower) or nil
+        local element = fallback and math.floor(to_number(fallback.AttackElementType)) or nil
+        if base_power ~= nil and element ~= nil then
+            local signature = string.format(
+                "bp:%s|element:%s", tostring(base_power), tostring(element))
+            local candidates = source.known_equipped_signatures[signature]
+            if candidates == nil then
+                candidates = {}
+                source.known_equipped_signatures[signature] = candidates
+            end
+            candidates[code] = true
+        end
+    end
+    -- A unique BasePower+element signature from one of the Pal's three actual
+    -- equipped slots is asset-backed evidence, not a timing guess. Seed it so
+    -- already-recorded delayed hits can be projected onto the same skill row.
+    source.skill_signatures = source.skill_signatures or {}
+    for signature, candidates in pairs(source.known_equipped_signatures) do
+        local only_code = nil
+        local candidate_count = 0
+        for code in pairs(candidates) do
+            only_code = code
+            candidate_count = candidate_count + 1
+        end
+        if candidate_count == 1 then
+            source.skill_signatures[signature] = {
+                ["skill:" .. only_code] = true,
+            }
+        end
+    end
+    local refresh_seconds = math.max(
+        1,
+        math.floor(to_number(config.EquipWazaRefreshSeconds) or 5)
+    )
+    source.equipped_waza_refresh_at = now + refresh_seconds
+    log(string.format(
+        "equipped-waza source=%s count=%d codes=%s",
+        source.name,
+        count,
+        table.concat(code_list, ",")
+    ))
+    return true
+end
+
+local function skill_candidate_category(source, candidate)
+    if source.kind ~= "pal" then return "skill" end
+    local code = canonical_skill_name(candidate.name)
+    if (source.equipped_waza_count or 0) > 0 then
+        local waza_id = math.floor(to_number(candidate.waza_id))
+        if waza_id > 0 then
+            return source.equipped_waza_ids[waza_id] == true and "skill" or "basic"
+        end
+        if code ~= "" and source.equipped_waza_codes[code] == true then
+            return "skill"
+        end
+        if code ~= "" and not string.find(code, "^UNKNOWN_")
+            and not string.find(code, "^UNRESOLVED_") then
+            return "basic"
+        end
+        return "other"
+    end
+    -- Compatibility fallback for builds where EquipWaza is temporarily not
+    -- readable. Dark Shot is Palworld's documented Dark-element default hit.
+    if code == "GravityShot" then return "basic" end
+    if candidate.unresolved_signature ~= nil or string.find(code, "^UNKNOWN_")
+        or string.find(code, "^UNRESOLVED_") then
+        return "other"
+    end
+    return "skill"
+end
+
 local function waza_pair_key(attacker, defender)
     local attacker_key = diagnostic_actor_key(attacker)
     local defender_key = diagnostic_actor_key(defender)
@@ -1211,18 +1425,37 @@ local function waza_pair_key(attacker, defender)
     return tostring(attacker_key) .. "->" .. tostring(defender_key), attacker_key
 end
 
+local function trace_skill_event(message)
+    local maximum = math.max(0,
+        math.floor(to_number(config.SkillDiagnosticMaxTraceEvents)))
+    if maximum <= 0 or metrics.trace_events >= maximum then
+        return
+    end
+    metrics.trace_events = metrics.trace_events + 1
+    log("skill-trace " .. tostring(message))
+end
+
 local function prune_waza_markers(now)
-    local ttl = math.max(1, math.floor(to_number(config.SkillMarkerTTLSeconds)))
+    local ttl = math.max(1, tonumber(config.SkillMarkerTTLSeconds) or 30)
     local maximum = math.max(64, math.floor(to_number(config.SkillMarkerMaxEntries)))
     local function prune(entries)
         local rows = {}
-        for key, marker in pairs(entries) do
-            if now - marker.at > ttl then
+        for key, bucket in pairs(entries) do
+            local kept = {}
+            for _, marker in ipairs(bucket) do
+                if now - marker.at >= 0 and now - marker.at <= ttl then
+                    kept[#kept + 1] = marker
+                end
+            end
+            if #kept == 0 then
                 entries[key] = nil
             else
-                rows[#rows + 1] = { key = key, at = marker.at }
+                entries[key] = kept
+                rows[#rows + 1] = { key = key, at = kept[#kept].at }
             end
         end
+        -- The configured maximum limits tracked actor/pair buckets. Every
+        -- bucket is independently bounded below, so memory remains bounded.
         if #rows > maximum then
             table.sort(rows, function(a, b) return a.at < b.at end)
             for index = 1, #rows - maximum do
@@ -1234,8 +1467,63 @@ local function prune_waza_markers(now)
     prune(recent_waza_by_attacker)
 end
 
+local function append_waza_marker(entries, key, marker)
+    if key == nil or key == "" then return end
+    local bucket = entries[key]
+    if bucket == nil then
+        bucket = {}
+        entries[key] = bucket
+    end
+    bucket[#bucket + 1] = marker
+    local maximum = math.max(4, math.floor(to_number(config.SkillMarkerMaxPerPair)))
+    while #bucket > maximum do
+        table.remove(bucket, 1)
+    end
+end
+
+local function damage_marker_signature(fields)
+    fields = fields or {}
+    local power = fields["info.BasePower"] or fields["result.BasePower"]
+    local element = fields["info.AttackElementType"] or fields["result.AttackElementType"]
+    if power == nil and element == nil then return nil end
+    return tostring(power or "?") .. "|" .. tostring(element or "?")
+end
+
+local function select_waza_marker(bucket, event)
+    if bucket == nil or #bucket == 0 then return nil, false end
+    local now = os.time()
+    local now_clock = os.clock()
+    local ttl = math.max(1, tonumber(config.SkillMarkerTTLSeconds) or 30)
+    local signature = damage_marker_signature(event.diagnostic_fields)
+    local candidates = {}
+    for index = #bucket, 1, -1 do
+        local marker = bucket[index]
+        local age = now - marker.at
+        if age >= 0 and age <= ttl
+            and (signature == nil or marker.signature == nil
+                or marker.signature == signature) then
+            candidates[#candidates + 1] = marker
+        elseif age > ttl then
+            break
+        end
+    end
+    if #candidates == 0 then return nil, false end
+    local newest = candidates[1]
+    local conflict_seconds = math.max(0,
+        tonumber(config.SkillMarkerConflictSeconds) or 0.35)
+    for index = 2, #candidates do
+        local other = candidates[index]
+        if newest.id ~= other.id
+            and math.abs(newest.at - other.at) <= 1
+            and math.abs(newest.clock - other.clock) <= conflict_seconds then
+            return nil, true
+        end
+    end
+    return newest, false
+end
+
 local function process_waza_marker(event)
-    if not is_valid(event.attacker) or not is_valid(event.defender) then
+    if not is_valid(event.attacker) then
         return
     end
     local waza_id = math.floor(to_number(event.waza_id))
@@ -1253,67 +1541,387 @@ local function process_waza_marker(event)
         localized_name = metadata.localized_name,
         panel_cool_time = metadata.panel_cool_time,
         at = event.captured_at or os.time(),
+        clock = event.captured_clock or os.clock(),
+        signature = event.signature,
+        return_summary = event.return_summary,
+        matches = 0,
+        damage_info_key = event.damage_info_key,
     }
-    if pair_key ~= nil then
-        recent_waza_by_pair[pair_key] = marker
-    end
-    recent_waza_by_attacker[attacker_key] = marker
+    append_waza_marker(recent_waza_by_pair, pair_key, marker)
+    append_waza_marker(recent_waza_by_attacker, attacker_key, marker)
     metrics.waza_markers = metrics.waza_markers + 1
+    trace_skill_event(string.format(
+        "waza-marker seq=%d pair=%s id=%d code=%s signature=%s return=%s damage_info=%s",
+        metrics.waza_markers, tostring(pair_key or attacker_key), waza_id,
+        tostring(metadata.code), tostring(event.signature or "none"),
+        tostring(event.return_summary or "none"),
+        marker.damage_info_key ~= nil and "captured" or "none"
+    ))
     if metrics.waza_markers % 64 == 1 then
         prune_waza_markers(marker.at)
     end
 end
 
-local function attach_runtime_skill_evidence(event, source_actor, source_kind)
+local function select_damage_info_marker(event)
+    local key = tostring(event.damage_info_key or "")
+    if key == "" then return nil end
+    local attacker_key = diagnostic_actor_key(event.attacker)
+    if attacker_key == nil or attacker_key == "" then return nil end
+    local bucket = recent_waza_by_attacker[attacker_key] or {}
+    local now = os.time()
+    local ttl = math.max(1, tonumber(config.SkillMarkerTTLSeconds) or 30)
+    for index = #bucket, 1, -1 do
+        local marker = bucket[index]
+        local age = now - marker.at
+        if age > ttl then break end
+        if marker.damage_info_key == key then return marker end
+    end
+    return nil
+end
+
+local function apply_waza_marker(event, marker, source_label)
+    if marker == nil then return false end
+    event.diagnostic_fields["waza.ID"] = marker.id
+    event.diagnostic_fields["waza.Name"] = marker.name
+    event.diagnostic_fields["waza.LocalizedName"] = marker.localized_name
+    event.diagnostic_fields["waza.PanelCoolTime"] = marker.panel_cool_time
+    event.diagnostic_fields["attribution.Source"] = source_label
+    metrics.waza_matches = metrics.waza_matches + 1
+    marker.matches = (marker.matches or 0) + 1
+    return true
+end
+
+local function recent_action_evidence(event, source_actor_key)
+    if source_actor_key == nil then
+        return nil, false
+    end
+    local now = game_time_seconds()
+    local signature = attack_signature(event.diagnostic_fields)
+    local binding_key = signature ~= nil and (source_actor_key .. "|" .. signature) or nil
+    local binding = binding_key ~= nil and delayed_effect_bindings[binding_key] or nil
+    local hit_gap = math.max(0.5, tonumber(config.SkillEffectHitGapSeconds) or 3)
+    local effect_lifetime = math.max(hit_gap, tonumber(config.SkillEffectMaxLifetimeSeconds) or 45)
+    if binding ~= nil
+        and now - binding.last_hit_at >= 0 and now - binding.last_hit_at <= hit_gap
+        and now - binding.started_at >= 0 and now - binding.started_at <= effect_lifetime then
+        binding.last_hit_at = now
+        return binding.record, false
+    end
+
+    local recent = recent_actions_by_actor[source_actor_key] or {}
+    local post_hit_seconds = math.max(1, tonumber(config.SkillActionPostHitSeconds) or 10)
+    local conflict_seconds = math.max(0, tonumber(config.SkillActionConflictSeconds) or 1.25)
+    local nearest = nil
+    local conflicting = false
+    for index = #recent, 1, -1 do
+        local candidate = recent[index]
+        local ended_at = tonumber(candidate.ended_at)
+        local age = ended_at ~= nil and (now - ended_at) or math.huge
+        if age >= 0 and age <= post_hit_seconds then
+            if nearest == nil then
+                nearest = candidate
+            elseif candidate.code ~= nearest.code
+                and math.abs((tonumber(nearest.ended_at) or now) - ended_at) <= conflict_seconds then
+                conflicting = true
+                break
+            end
+        elseif age > post_hit_seconds then
+            break
+        end
+    end
+    if conflicting then
+        return nil, true
+    end
+    if nearest ~= nil and binding_key ~= nil then
+        delayed_effect_bindings[binding_key] = {
+            record = nearest,
+            started_at = now,
+            last_hit_at = now,
+        }
+    end
+    return nearest, false
+end
+
+local function apply_action_record(event, record, source_label)
+    if record == nil or record.waza_id == nil then
+        return false
+    end
+    event.diagnostic_fields["waza.ID"] = record.waza_id
+    event.diagnostic_fields["waza.Name"] = record.code
+    event.diagnostic_fields["waza.LocalizedName"] = record.localized_name
+    event.diagnostic_fields["waza.PanelCoolTime"] = record.panel_cool_time
+    event.diagnostic_fields["action.Class"] = record.code
+    event.diagnostic_fields["attribution.Source"] = source_label
+    event.cast_key = record.key
+    return true
+end
+
+-- A completed equipped cast may still own a delayed shard, explosion or
+-- ground field after the Pal has started its filler attack. However, when the
+-- final damage signature exactly matches that filler attack, the current
+-- action is direct evidence and must win. Without this guard, every 40/Dark
+-- GravityShot hit during a fire field was reassigned to the previous fire
+-- skill.
+local function action_matches_damage_signature(action_metadata, fields)
+    if action_metadata == nil or action_metadata.code == nil then
+        return false
+    end
+    local fallback = config.SkillMetadataFallbacks
+        and config.SkillMetadataFallbacks[action_metadata.code]
+        or nil
+    local expected_power = fallback and finite_positive_number(fallback.BasePower) or nil
+    local expected_element = fallback
+        and math.floor(to_number(fallback.AttackElementType))
+        or nil
+    if expected_power == nil or expected_element == nil then
+        return false
+    end
+    fields = fields or {}
+    local actual_power = finite_positive_number(
+        fields["result.BasePower"] or fields["info.BasePower"])
+    local actual_element = fields["result.AttackElementType"]
+        or fields["info.AttackElementType"]
+    actual_element = actual_element ~= nil and math.floor(to_number(actual_element)) or nil
+    return actual_power == expected_power and actual_element == expected_element
+end
+
+local function apply_unique_equipped_signature(event, source_profile)
+    local fields = event.diagnostic_fields or {}
+    if fields["waza.ID"] ~= nil or fields["waza.Name"] ~= nil
+        or source_profile == nil then
+        return false
+    end
+    local power = finite_positive_number(
+        fields["result.BasePower"] or fields["info.BasePower"])
+    local element = fields["result.AttackElementType"]
+        or fields["info.AttackElementType"]
+    element = element ~= nil and math.floor(to_number(element)) or nil
+    if power == nil or element == nil then return false end
+    local signature = string.format(
+        "bp:%s|element:%s", tostring(power), tostring(element))
+    local known = source_profile.known_equipped_signatures
+        and source_profile.known_equipped_signatures[signature]
+        or nil
+    local code = nil
+    local count = 0
+    for candidate_code in pairs(known or {}) do
+        code = candidate_code
+        count = count + 1
+    end
+    if count ~= 1 then return false end
+    local metadata = resolve_waza_metadata(0, code)
+    fields["waza.Name"] = code
+    fields["waza.LocalizedName"] = metadata.localized_name
+    fields["waza.PanelCoolTime"] = metadata.panel_cool_time
+    fields["attribution.Source"] = "equipped_asset_signature"
+    return true
+end
+
+local function attach_runtime_skill_evidence(event, source_actor, source_kind, source_profile)
     if config.EnableSkillDiagnostics ~= true then
         return
     end
     event.diagnostic_fields = event.diagnostic_fields or {}
+    local identity_marker = select_damage_info_marker(event)
+    if identity_marker ~= nil then
+        -- The exact DamageInfo instance produced by MakeDamageInfoByWazaType
+        -- is stronger than copied Waza fields, effect assets, current action,
+        -- and timing. It also distinguishes simultaneous identical skills.
+        apply_waza_marker(event, identity_marker, "waza_damage_info")
+        trace_skill_event(string.format(
+            "waza-match source=damage_info id=%d code=%s",
+            identity_marker.id, tostring(identity_marker.name)
+        ))
+        return
+    end
+    -- The final damage event carried a captured DamageInfo identity but no
+    -- Waza construction marker matched it. Palworld may copy/wrap the
+    -- ReturnValue into another struct; trace the miss so the next on-device
+    -- run can verify the chain instead of silently degrading to timing rules.
+    if event.damage_info_key ~= nil and event.damage_info_key ~= "" then
+        trace_skill_event(string.format(
+            "damage-info-unmatched key=%s attacker=%s",
+            event.damage_info_key,
+            tostring(diagnostic_actor_key(event.attacker) or "none")
+        ))
+    end
+    local causer_info = diagnostic_object_info(event.damage_causer)
+    local effect_evidence = skill_effect_attribution.resolve(causer_info)
+    local direct_waza_id = 0
+    for _, field_name in ipairs({
+        "result.WazaID", "result.WazaId", "info.WazaID", "info.WazaId",
+    }) do
+        direct_waza_id = math.floor(to_number(event.diagnostic_fields[field_name]))
+        if direct_waza_id > 0 then break end
+    end
+    if direct_waza_id > 0 then
+        local metadata = resolve_waza_metadata(direct_waza_id)
+        event.diagnostic_fields["waza.ID"] = direct_waza_id
+        event.diagnostic_fields["waza.Name"] = metadata.code
+        event.diagnostic_fields["waza.LocalizedName"] = metadata.localized_name
+        event.diagnostic_fields["waza.PanelCoolTime"] = metadata.panel_cool_time
+        event.diagnostic_fields["attribution.Source"] = "damage_waza_id"
+    end
+    if effect_evidence ~= nil then
+        event.diagnostic_fields["effect.Asset"] = effect_evidence.matched_token
+        event.diagnostic_fields["effect.Phase"] = effect_evidence.phase
+        event.diagnostic_fields["effect.Waza"] = effect_evidence.waza
+        event.diagnostic_fields["effect.WazaPowerRate"] = effect_evidence.power_rate
+        if event.diagnostic_fields["waza.ID"] == nil then
+            event.diagnostic_fields["waza.Name"] = effect_evidence.code
+            event.diagnostic_fields["waza.LocalizedName"] =
+                skill_display_name(effect_evidence.code, "")
+            event.diagnostic_fields["attribution.Source"] = "damage_causer_asset"
+        end
+    end
     local pair_key, attacker_key = waza_pair_key(event.attacker, event.defender)
-    local marker = pair_key ~= nil and recent_waza_by_pair[pair_key] or nil
-    marker = marker or (attacker_key ~= nil and recent_waza_by_attacker[attacker_key] or nil)
-    local ttl = math.max(1, math.floor(to_number(config.SkillMarkerTTLSeconds)))
-    if marker ~= nil and os.time() - marker.at <= ttl then
-        event.diagnostic_fields["waza.ID"] = marker.id
-        event.diagnostic_fields["waza.Name"] = marker.name
-        event.diagnostic_fields["waza.LocalizedName"] = marker.localized_name
-        event.diagnostic_fields["waza.PanelCoolTime"] = marker.panel_cool_time
-        metrics.waza_matches = metrics.waza_matches + 1
+    local marker, marker_conflict = select_waza_marker(
+        pair_key ~= nil and recent_waza_by_pair[pair_key] or nil, event)
+    if marker == nil and not marker_conflict then
+        marker, marker_conflict = select_waza_marker(
+            attacker_key ~= nil and recent_waza_by_attacker[attacker_key] or nil, event)
+    end
+    if event.diagnostic_fields["waza.ID"] == nil
+        and event.diagnostic_fields["waza.Name"] == nil
+        and marker ~= nil then
+        apply_waza_marker(event, marker, "waza_marker")
+    elseif event.diagnostic_fields["waza.ID"] == nil
+        and event.diagnostic_fields["waza.Name"] == nil
+        and marker_conflict then
+        event.diagnostic_fields["attribution.Source"] = "waza_marker_conflict"
+    end
+
+    -- Palworld's final-damage callback often omits both Waza and DamageCauser
+    -- for multi-hit projectiles. A unique signature among this Pal's current
+    -- three equipped skills is still stronger than current/recent action
+    -- timing and prevents the multi-hit burst from becoming an unresolved row.
+    apply_unique_equipped_signature(event, source_profile)
+
+    -- Two unconsumed Waza construction events for the same attacker/target
+    -- are stronger evidence of concurrency than whatever action happens to be
+    -- current when the final damage callback runs. Never guess through it.
+    if marker_conflict then
+        return
     end
 
     if source_kind ~= "pal" or not is_valid(source_actor) then
         return
     end
+    local source_actor_key = diagnostic_actor_key(source_actor)
+    event.source_actor_key = source_actor_key
+    local recent_record, recent_conflict = recent_action_evidence(event, source_actor_key)
     local component_ok, action_component = safe_property(source_actor, "ActionComponent")
     if not component_ok or not is_valid(action_component) then
         local call_ok, component = safe_call(source_actor, "GetActionComponent")
         action_component = call_ok and component or nil
     end
-    if not is_valid(action_component) then
-        return
+    local action_ok, action = false, nil
+    if is_valid(action_component) then
+        action_ok, action = safe_call(action_component, "GetCurrentAction")
     end
-    local action_ok, action = safe_call(action_component, "GetCurrentAction")
-    if not action_ok or not is_valid(action) then
-        return
+    local has_current_action = action_ok and is_valid(action)
+    local has_current_skill_action = false
+    local current_action_is_equipped = false
+    local may_use_recent_action = not has_current_action
+    if has_current_action then
+        local simple_ok, simple_name = safe_call(action, "GetSimpleName")
+        local action_info = diagnostic_object_info(action)
+        local action_cast_key = action_instance_key(action)
+        local waza_ok, action_waza_id = safe_call(action, "GetWazaID")
+        action_waza_id = waza_ok and math.floor(to_number(action_waza_id)) or 0
+        local fallback_action_name, ignored_action_kind = action_skill_name(action_info.short_name)
+        has_current_skill_action = action_waza_id > 0 or fallback_action_name ~= nil
+        may_use_recent_action = ignored_action_kind == "movement"
+        if has_current_skill_action then
+            if simple_ok and text_value(simple_name) ~= "" then
+                event.diagnostic_fields["action.SimpleName"] = text_value(simple_name)
+            end
+            if action_info.short_name ~= "" then
+                event.diagnostic_fields["action.Class"] = action_info.short_name
+            end
+            -- A current skill action observed directly (Waza ID or its stable
+            -- action class) is reliable attribution evidence even when no Waza
+            -- ID is readable. Later branches may override this with an even
+            -- stronger completed-cast marker, but it must never be dropped to
+            -- an unattributed bucket.
+            if event.diagnostic_fields["attribution.Source"] == nil then
+                event.diagnostic_fields["attribution.Source"] = "current_action"
+            end
+        elseif action_info.short_name ~= "" then
+            -- Locomotion/animation actions can be current while a rain field,
+            -- projectile or delayed explosion lands. They are timing context,
+            -- never a damage skill, and must not block completed-cast lookup.
+            event.diagnostic_fields["action.IgnoredClass"] = action_info.short_name
+        end
+        local existing_waza_id = math.floor(to_number(event.diagnostic_fields["waza.ID"]))
+        local existing_waza_name = canonical_skill_name(
+            event.diagnostic_fields["waza.Name"]
+        )
+        local action_metadata = action_waza_id > 0
+            and resolve_waza_metadata(action_waza_id)
+            or nil
+        local action_waza_name = canonical_skill_name(
+            action_metadata and action_metadata.code or ""
+        )
+        local equipped_known = source_profile ~= nil
+            and (source_profile.equipped_waza_count or 0) > 0
+        if equipped_known then
+            current_action_is_equipped = (action_waza_id > 0
+                    and source_profile.equipped_waza_ids[action_waza_id] == true)
+                or (action_waza_name ~= ""
+                    and source_profile.equipped_waza_codes[action_waza_name] == true)
+        end
+        local recent_code = canonical_skill_name(recent_record and recent_record.code or "")
+        local recent_differs = recent_record ~= nil and recent_code ~= ""
+            and recent_code ~= action_waza_name
+        local current_action_matches_damage = action_matches_damage_signature(
+            action_metadata, event.diagnostic_fields)
+        if existing_waza_id <= 0 and existing_waza_name == ""
+            and action_waza_id > 0 and equipped_known
+            and recent_record ~= nil and not current_action_is_equipped
+            and not current_action_matches_damage then
+            -- A filler/basic action may already be current when rain, a falling
+            -- projectile or a ground explosion from the just-completed skill
+            -- lands. The completed equipped cast is stronger evidence.
+            apply_action_record(event, recent_record, "recent_completed_action_over_current_basic")
+        elseif existing_waza_id <= 0 and existing_waza_name == ""
+            and action_waza_id > 0 and equipped_known
+            and recent_differs and current_action_is_equipped then
+            event.diagnostic_fields["attribution.Source"] = "concurrent_action_conflict"
+            event.diagnostic_fields["action.ConflictingClass"] = action_info.short_name
+            event.diagnostic_fields["action.Class"] = nil
+            event.diagnostic_fields["action.SimpleName"] = nil
+        elseif existing_waza_id <= 0 and existing_waza_name == ""
+            and recent_conflict then
+            event.diagnostic_fields["attribution.Source"] = "recent_action_conflict"
+            event.diagnostic_fields["action.ConflictingClass"] = action_info.short_name
+            event.diagnostic_fields["action.Class"] = nil
+            event.diagnostic_fields["action.SimpleName"] = nil
+        elseif action_waza_id > 0 and existing_waza_id <= 0
+            and existing_waza_name == "" then
+            event.diagnostic_fields["waza.ID"] = action_waza_id
+            event.diagnostic_fields["waza.Name"] = action_metadata.code
+            event.diagnostic_fields["waza.LocalizedName"] = action_metadata.localized_name
+            event.diagnostic_fields["waza.PanelCoolTime"] = action_metadata.panel_cool_time
+            event.diagnostic_fields["attribution.Source"] = "current_action"
+            event.cast_key = action_cast_key
+        elseif has_current_skill_action and (action_waza_id <= 0 or action_waza_id == existing_waza_id
+            or (existing_waza_name ~= "" and existing_waza_name == action_waza_name)) then
+            event.cast_key = action_cast_key
+        end
     end
-    local simple_ok, simple_name = safe_call(action, "GetSimpleName")
-    if simple_ok and text_value(simple_name) ~= "" then
-        event.diagnostic_fields["action.SimpleName"] = text_value(simple_name)
-    end
-    local action_info = diagnostic_object_info(action)
-    if action_info.short_name ~= "" then
-        event.diagnostic_fields["action.Class"] = action_info.short_name
-    end
-    event.cast_key = action_instance_key(action)
-    event.source_actor_key = diagnostic_actor_key(source_actor)
-    local waza_ok, action_waza_id = safe_call(action, "GetWazaID")
-    action_waza_id = waza_ok and math.floor(to_number(action_waza_id)) or 0
-    if action_waza_id > 0 then
-        local metadata = resolve_waza_metadata(action_waza_id)
-        event.diagnostic_fields["waza.ID"] = action_waza_id
-        event.diagnostic_fields["waza.Name"] = metadata.code
-        event.diagnostic_fields["waza.LocalizedName"] = metadata.localized_name
-        event.diagnostic_fields["waza.PanelCoolTime"] = metadata.panel_cool_time
+    local unresolved_source = event.diagnostic_fields["attribution.Source"]
+    if may_use_recent_action
+        and unresolved_source ~= "concurrent_action_conflict"
+        and unresolved_source ~= "recent_action_conflict"
+        and event.diagnostic_fields["waza.ID"] == nil
+        and event.diagnostic_fields["waza.Name"] == nil
+        and source_actor_key ~= nil then
+        if recent_conflict then
+            event.diagnostic_fields["attribution.Source"] = "recent_action_conflict"
+        else
+            apply_action_record(event, recent_record, "recent_completed_action")
+        end
     end
 end
 
@@ -1326,7 +1934,7 @@ local function first_diagnostic_field(fields, names)
     return nil
 end
 
-local function game_time_seconds()
+game_time_seconds = function()
     local world = find_world_context()
     local statics = get_gameplay_statics()
     if world ~= nil and statics ~= nil then
@@ -1342,7 +1950,7 @@ local function game_time_seconds()
     return os.clock()
 end
 
-local function canonical_skill_name(value)
+canonical_skill_name = function(value)
     local name = tostring(value or "")
     name = string.gsub(name, "^.*::", "")
     name = string.gsub(name, "^:+", "")
@@ -1356,10 +1964,18 @@ local function canonical_skill_name(value)
     return name
 end
 
-local function action_skill_name(value)
+action_skill_name = function(value)
     local name = canonical_skill_name(value)
     if name == "" or name == "ActionDamage" or name == "Action_Damage" then
-        return nil
+        return nil, "generic_damage"
+    end
+    -- These are Pal AI movement/animation states, not attacks. Treating one as
+    -- a skill creates bogus rows such as PalAction_AnimationStepLeft while a
+    -- previously cast rain/ground effect is still dealing damage.
+    if string.find(name, "^PalAction_Animation") ~= nil
+        or string.find(name, "^PalAction_Move") ~= nil
+        or string.find(name, "^PalAction_[^_]*Step") ~= nil then
+        return nil, "movement"
     end
     name = string.gsub(name, "^Action_?", "")
     return name ~= "" and canonical_skill_name(name) or nil
@@ -1396,12 +2012,62 @@ local function action_lifecycle_details(action)
     }
 end
 
+local function get_target_info(actor, utility)
+    local boss_info = get_boss_info(actor, utility)
+    if boss_info ~= nil then
+        return boss_info
+    end
+    if tostring(config.TargetScope or "boss") ~= "all"
+        or not is_valid(actor) or actor_is_player_owned(actor, utility) then
+        return nil
+    end
+
+    -- The global hook also sees non-character damage. Open-world mode accepts
+    -- only Pal character actors exposing one of Palworld's parameter
+    -- components, so buildings and arbitrary destructibles never become tests.
+    local character_ok, character_component = safe_property(actor, "CharacterParameterComponent")
+    local static_ok, static_component = safe_property(actor, "StaticCharacterParameterComponent")
+    if not ((character_ok and is_valid(character_component))
+        or (static_ok and is_valid(static_component))) then
+        return nil
+    end
+    local full_name = actor_full_name(actor)
+    if full_name == "" then return nil end
+    local short_name = actor_short_name(actor)
+    return {
+        key = full_name,
+        address = actor_address(actor),
+        name = tostring(boss_display_name(actor, utility, short_name)),
+        is_boss = false,
+    }
+end
+
 local function prune_action_records()
     local maximum = math.max(128, math.floor(to_number(config.SkillActionMaxEntries)))
     while #action_record_order > maximum do
         local oldest = table.remove(action_record_order, 1)
         if action_records[oldest.key] == oldest.record then
             action_records[oldest.key] = nil
+        end
+    end
+end
+
+-- A fresh action begin asks for a new EquipWaza read. It is not evidence that
+-- the loadout changed: it fires for every ordinary cast. Learned mappings and
+-- accumulated candidates are preserved here; refresh_equipped_waza invalidates
+-- mappings only after observing a genuinely different three-slot fingerprint.
+local function invalidate_equipped_waza(actor_key)
+    if actor_key == nil then return end
+    for _, session in pairs(sessions) do
+        for _, source in pairs(session.diagnostic_sources or {}) do
+            if source.kind == "pal" and source.runtime_actor_keys ~= nil
+                and source.runtime_actor_keys[actor_key] == true then
+                source.equipped_waza_refresh_at = 0
+                -- The attempt guard is second-granularity. A cast that starts
+                -- and lands within the same second must still re-read after a
+                -- swap; otherwise the fresh list waits a full second.
+                source.equipped_waza_attempt_at = nil
+            end
         end
     end
 end
@@ -1438,13 +2104,35 @@ local function process_action_lifecycle_event(event)
     if event.kind == "action_begin" then
         record.started_at = now
         metrics.action_begins = metrics.action_begins + 1
+        invalidate_equipped_waza(record.actor_key)
+        trace_skill_event(string.format(
+            "action-begin key=%s actor=%s id=%s code=%s game=%.3f",
+            tostring(record.key), tostring(record.actor_key),
+            tostring(record.waza_id), tostring(record.code), now
+        ))
     else
         record.ended_at = now
+        if record.actor_key ~= nil then
+            local recent = recent_actions_by_actor[record.actor_key]
+            if recent == nil then
+                recent = {}
+                recent_actions_by_actor[record.actor_key] = recent
+            end
+            recent[#recent + 1] = record
+            while #recent > 16 do
+                table.remove(recent, 1)
+            end
+        end
         metrics.action_ends = metrics.action_ends + 1
+        trace_skill_event(string.format(
+            "action-end key=%s actor=%s id=%s code=%s game=%.3f",
+            tostring(record.key), tostring(record.actor_key),
+            tostring(record.waza_id), tostring(record.code), now
+        ))
     end
 end
 
-local function attack_signature(diagnostic_fields)
+attack_signature = function(diagnostic_fields)
     local base_power = first_diagnostic_field(diagnostic_fields, {
         "result.BasePower", "info.BasePower",
     })
@@ -1541,13 +2229,62 @@ local function skill_candidate_from_event(event, source_actor, source_kind)
     }
 end
 
+-- Only direct Waza, DamageInfo identity, effect-asset, and marker evidence may
+-- build the per-Pal signature table. "Most recently completed cast" and other
+-- timing guesses are display-only: letting them seed a signature lets one
+-- BasePower+element map to several skills and poisons reconciliation.
+local reliable_attribution_sources = {
+    ["waza_damage_info"] = true,
+    ["damage_waza_id"] = true,
+    ["damage_causer_asset"] = true,
+    ["waza_marker"] = true,
+    ["current_action"] = true,
+    ["equipped_asset_signature"] = true,
+}
+
+local function reliable_attribution(fields)
+    return reliable_attribution_sources[tostring(
+        (fields or {})["attribution.Source"]
+    )] == true
+end
+
 local function record_skill_candidate(session, source, event, source_actor, damage, hit_count)
     if config.EnableSkillDiagnostics ~= true or source == nil then
         return
     end
     source.skill_candidates = source.skill_candidates or {}
     local evidence = skill_candidate_from_event(event, source_actor, source.kind)
-    if evidence.concrete and evidence.signature ~= nil then
+    if evidence.unresolved_signature ~= nil and source.kind == "pal" then
+        local known = source.known_equipped_signatures
+            and source.known_equipped_signatures[evidence.unresolved_signature]
+            or nil
+        local code = nil
+        local count = 0
+        for candidate_code in pairs(known or {}) do
+            code = candidate_code
+            count = count + 1
+        end
+        if count == 1 then
+            local fallback = config.SkillMetadataFallbacks
+                and config.SkillMetadataFallbacks[code]
+                or nil
+            local metadata = resolve_waza_metadata(0, code)
+            evidence.key = "skill:" .. code
+            evidence.name = code
+            evidence.localized_name = metadata and metadata.localized_name or ""
+            evidence.panel_cool_time = metadata and metadata.panel_cool_time
+                or (fallback and finite_positive_number(fallback.PanelCoolTime) or nil)
+            evidence.waza_id = nil
+            evidence.concrete = true
+            evidence.unresolved_signature = nil
+            event.diagnostic_fields["waza.Name"] = code
+            event.diagnostic_fields["waza.LocalizedName"] = evidence.localized_name
+            event.diagnostic_fields["waza.PanelCoolTime"] = evidence.panel_cool_time
+            event.diagnostic_fields["attribution.Source"] = "equipped_asset_signature"
+        end
+    end
+    if evidence.concrete and evidence.signature ~= nil
+        and reliable_attribution(event.diagnostic_fields or {}) then
         source.skill_signatures = source.skill_signatures or {}
         local signature_candidates = source.skill_signatures[evidence.signature]
         if signature_candidates == nil then
@@ -1700,6 +2437,57 @@ local function reconcile_signature_candidates(session, source)
             ))
         end
     end
+end
+
+-- The live HUD must not expose engine-only UNRESOLVED rows when the evidence
+-- already points to exactly one observed skill. Keep the raw candidates
+-- untouched: another skill with the same power/element signature may appear
+-- later in the same manual test, at which point the HUD can safely show the
+-- ambiguity again instead of having permanently assigned old damage.
+local function snapshot_skill_candidates(source)
+    local projected = {}
+    local skipped = {}
+    for candidate_key, candidate in pairs(source.skill_candidates or {}) do
+        local copy = {}
+        for key, value in pairs(candidate) do
+            copy[key] = value
+        end
+        projected[candidate_key] = copy
+    end
+
+    for unresolved_key, candidate in pairs(source.skill_candidates or {}) do
+        local signature = candidate.unresolved_signature
+        local signature_candidates = signature ~= nil
+            and source.skill_signatures ~= nil
+            and source.skill_signatures[signature]
+            or nil
+        if signature_candidates ~= nil then
+            local concrete_key = nil
+            local concrete_count = 0
+            for candidate_key in pairs(signature_candidates) do
+                if source.skill_candidates[candidate_key] ~= nil then
+                    concrete_count = concrete_count + 1
+                    concrete_key = candidate_key
+                end
+            end
+            if concrete_count == 1 and concrete_key ~= unresolved_key
+                and projected[concrete_key] ~= nil then
+                projected[concrete_key].damage = projected[concrete_key].damage + candidate.damage
+                projected[concrete_key].hits = projected[concrete_key].hits + candidate.hits
+                projected[concrete_key].live_signature_damage =
+                    (projected[concrete_key].live_signature_damage or 0) + candidate.damage
+                skipped[unresolved_key] = true
+            end
+        end
+    end
+
+    local rows = {}
+    for candidate_key, candidate in pairs(projected) do
+        if skipped[candidate_key] ~= true then
+            rows[candidate_key] = candidate
+        end
+    end
+    return rows
 end
 
 local function session_recipients(session)
@@ -2045,6 +2833,8 @@ local function diagnostic_snapshot(session, state, reason)
         total_damage = session.total_damage,
         encounter_dps = session.total_damage / duration,
         include_player = config.IncludePlayerDamage == true,
+        measurement_mode = session.manual == true and "manual" or "target",
+        target_count = session.target_count or 1,
         language = translator_code,
         sources = {},
     }
@@ -2057,7 +2847,7 @@ local function diagnostic_snapshot(session, state, reason)
             hits = source.hits or 0,
             skills = {},
         }
-        for _, candidate in ipairs(ranked_damage_entries(source.skill_candidates or {})) do
+        for _, candidate in ipairs(ranked_damage_entries(snapshot_skill_candidates(source))) do
             local timing = candidate_timing(session, source, candidate)
             local internal_code = tostring(candidate.name or "UNKNOWN")
             local localized_name = tostring(candidate.localized_name or "")
@@ -2065,6 +2855,7 @@ local function diagnostic_snapshot(session, state, reason)
                 name = skill_display_name(internal_code, localized_name),
                 runtime_name = localized_name,
                 internal_code = internal_code,
+                category = skill_candidate_category(source, candidate),
                 damage = candidate.damage,
                 encounter_dps = candidate.damage / duration,
                 hits = candidate.hits or 0,
@@ -2547,6 +3338,9 @@ local function start_session(boss_info)
         key = boss_info.key,
         address = boss_info.address,
         name = boss_info.name,
+        manual = boss_info.manual == true,
+        manual_armed = boss_info.manual == true,
+        target_count = 0,
         composite_group = boss_info.composite_group,
         composite_anchor = boss_info.composite_anchor,
         composite_parts_seen = {},
@@ -2576,8 +3370,20 @@ local function start_session(boss_info)
     }
     sessions[session.key] = session
     bind_session_actor(session, boss_info)
-    log("session started boss=" .. session.name .. " key=" .. session.key)
+    log("session started target=" .. session.name .. " key=" .. session.key
+        .. " manual=" .. tostring(session.manual))
     return session
+end
+
+local function ensure_manual_session()
+    local key = "__PAL_SKILL_DPS_MANUAL_TEST__"
+    local session = sessions[key]
+    if session ~= nil and session.finished ~= true then return session end
+    return start_session({
+        key = key,
+        name = tr("hud_manual_test"),
+        manual = true,
+    })
 end
 
 local function record_damage(
@@ -2591,6 +3397,15 @@ local function record_damage(
     event
 )
     hit_count = math.max(1, math.floor(to_number(hit_count)))
+    if session.manual == true and session.manual_armed == true then
+        local now = os.time()
+        session.manual_armed = false
+        session.started_at = now
+        session.started_game_at = game_time_seconds()
+        session.last_damage_at = now
+        session.last_progress_at = now
+        log("manual test recording started on first accepted hit")
+    end
     local state_address = actor_address(player_state)
     local key = state_address ~= nil and session.player_state_entries[state_address] or nil
     local entry = key ~= nil and session.contributors[key] or nil
@@ -2676,6 +3491,8 @@ local function record_damage(
             pal.runtime_actor_keys[runtime_actor_key] = true
         end
         session.diagnostic_sources["pal:" .. tostring(source_key)] = pal
+        refresh_equipped_waza(pal, source_actor)
+        attach_runtime_skill_evidence(event, source_actor, source_kind, pal)
         record_skill_candidate(session, pal, event, source_actor, damage, hit_count)
         session.last_hitter_label = tr("pal_killer", {
             player = entry.name,
@@ -2706,6 +3523,7 @@ local function record_damage(
             player_source.runtime_actor_keys[runtime_actor_key] = true
         end
         session.diagnostic_sources["player:" .. tostring(key)] = player_source
+        attach_runtime_skill_evidence(event, source_actor, source_kind, player_source)
         record_skill_candidate(session, player_source, event, source_actor, damage, hit_count)
         session.last_hitter_label = entry.name
     end
@@ -2869,7 +3687,8 @@ local function process_damage_event(event)
     end
 
     local address = actor_address(event.defender)
-    if non_boss_cache_hit(address) then
+    local scope_all = tostring(config.TargetScope or "boss") == "all"
+    if not scope_all and non_boss_cache_hit(address) then
         return
     end
 
@@ -2879,48 +3698,23 @@ local function process_damage_event(event)
         return
     end
     local session = address ~= nil and session_addresses[address] or session_actor_keys[key]
-    local utility = nil
-    if session == nil then
-        utility = get_pal_utility()
-        if utility == nil then
-            metrics.invalid = metrics.invalid + 1
-            return
-        end
-        local boss_info = get_boss_info(event.defender, utility)
-        if boss_info == nil then
-            remember_non_boss(address, event.target_key)
-            return
-        end
-        session = find_composite_session(boss_info)
-        if session ~= nil then
-            bind_session_actor(session, boss_info)
-            metrics.composite_joins = metrics.composite_joins + 1
-            log(string.format(
-                "composite part joined boss=%s group=%s part=%s",
-                session.name,
-                tostring(boss_info.composite_group),
-                tostring(boss_info.composite_part)
-            ))
-        else
-            session = start_session(boss_info)
-        end
-    end
-    if event.target_key ~= nil then
-        session.native_target_keys = session.native_target_keys or {}
-        session.native_target_keys[event.target_key] = true
-        classify_native_target(event.target_key, "boss")
-    end
-
     if not is_valid(event.attacker) then
         metrics.invalid = metrics.invalid + 1
         return
     end
-    utility = utility or get_pal_utility()
+    local utility = get_pal_utility()
     if utility == nil then
         metrics.invalid = metrics.invalid + 1
         return
     end
-    local state, source_kind, source_actor = resolve_damage_owner(event, utility, session.source_owner_cache)
+
+    -- Resolve the owner before opening an all-world/manual test. This prevents
+    -- wild-vs-wild combat elsewhere in the world from creating phantom rows.
+    local state, source_kind, source_actor = resolve_damage_owner(
+        event,
+        utility,
+        session and session.source_owner_cache or global_source_owner_cache
+    )
     if state == nil then
         return
     end
@@ -2931,8 +3725,48 @@ local function process_damage_event(event)
         )
         return
     end
+
+    local target_info = nil
+    if session == nil then
+        target_info = get_target_info(event.defender, utility)
+        if target_info == nil then
+            if not scope_all then remember_non_boss(address, event.target_key) end
+            return
+        end
+
+        if tostring(config.MeasurementMode or "target") == "manual" then
+            session = ensure_manual_session()
+            local already_bound = (target_info.address ~= nil
+                and session.actor_addresses[target_info.address] == true)
+                or (target_info.key ~= nil and session.actor_keys[target_info.key] == true)
+            bind_session_actor(session, target_info)
+            if not already_bound then
+                session.target_count = (session.target_count or 0) + 1
+            end
+        else
+            session = find_composite_session(target_info)
+            if session ~= nil then
+                bind_session_actor(session, target_info)
+                metrics.composite_joins = metrics.composite_joins + 1
+                log(string.format(
+                    "composite part joined target=%s group=%s part=%s",
+                    session.name,
+                    tostring(target_info.composite_group),
+                    tostring(target_info.composite_part)
+                ))
+            else
+                session = start_session(target_info)
+                session.target_count = 1
+            end
+        end
+    end
+    if event.target_key ~= nil then
+        session.native_target_keys = session.native_target_keys or {}
+        session.native_target_keys[event.target_key] = true
+        classify_native_target(event.target_key, "boss")
+    end
+
     event.observed_at = game_time_seconds()
-    attach_runtime_skill_evidence(event, source_actor or event.attacker, source_kind)
     record_damage(
         session,
         state,
@@ -3021,7 +3855,14 @@ local function process_finish_event(event)
         end
     end
     if session ~= nil then
-        if event.reason == "defeated" and session.composite_group ~= nil then
+        if session.manual == true then
+            unbind_session_actor(session, matched_address, matched_key)
+            log(string.format(
+                "manual test target ended reason=%s target=%s; recording remains active",
+                tostring(event.reason), tostring(matched_key or matched_address)
+            ))
+            return
+        elseif event.reason == "defeated" and session.composite_group ~= nil then
             local part = (matched_address ~= nil and session.actor_parts_by_address[matched_address])
                 or (matched_key ~= nil and session.actor_parts_by_key[matched_key])
             if part ~= nil and part.terminal ~= true then
@@ -3152,6 +3993,10 @@ local function capture_damage(damage_param)
     local damage_info = copied_field(result, "DamageInfo")
         or copied_field(result, "CharacterDamageInfo")
         or copied_field(result, "damageInfo")
+    local damage_info_key = nil
+    if damage_info ~= nil then
+        damage_info_key = captured_value_identity(damage_info)
+    end
     local damage_causer = copied_field(result, "DamageCauser")
         or copied_field(result, "damageCauser")
         or copied_field(damage_info, "DamageCauser")
@@ -3192,10 +4037,36 @@ local function capture_damage(damage_param)
         override_network_owner = override_network_owner,
         info_attacker = info_attacker,
         diagnostic_fields = diagnostic_fields,
+        damage_info_key = damage_info_key,
     })
 end
 
-local function capture_waza_marker(attacker_param, defender_param, waza_param)
+-- PalCharacterParameterComponent:OnDamage is Palworld's final-damage lane in
+-- current builds. The payload shape differs from the older event-notify hook,
+-- so probe only the temporary callback parameters and forward the first
+-- struct that exposes Attacker/Defender/ActualDamage. No UFunction is called
+-- from the hook.
+local function capture_final_damage(...)
+    if config.EnableDPSRecording == false then return end
+    for index = 1, select("#", ...) do
+        local candidate = unwrap(select(index, ...))
+        local usable = false
+        if candidate ~= nil then
+            local probe_ok, probe_result = pcall(function()
+                return candidate.Attacker ~= nil
+                    and candidate.Defender ~= nil
+                    and finite_positive_number(candidate.ActualDamage) ~= nil
+            end)
+            usable = probe_ok and probe_result == true
+        end
+        if usable then
+            capture_damage(candidate)
+            return
+        end
+    end
+end
+
+local function capture_waza_marker(attacker_param, defender_param, waza_param, return_param)
     if config.EnableDPSRecording == false or config.EnableSkillDiagnostics ~= true then
         return
     end
@@ -3205,12 +4076,45 @@ local function capture_waza_marker(attacker_param, defender_param, waza_param)
     if attacker == nil or defender == nil or waza_id <= 0 then
         return
     end
+    local returned = unwrap(return_param)
+    local damage_info_key = nil
+    if returned ~= nil then
+        damage_info_key = captured_value_identity(returned)
+    end
+    local function primitive_field(name)
+        if returned == nil then return nil end
+        local ok, value = pcall(function() return returned[name] end)
+        if not ok then return nil end
+        local value_type = type(value)
+        if value_type == "number" or value_type == "string"
+            or value_type == "boolean" then
+            return value
+        end
+        return nil
+    end
+    local base_power = primitive_field("BasePower")
+    local element = primitive_field("AttackElementType")
+    local signature = nil
+    if base_power ~= nil or element ~= nil then
+        signature = tostring(base_power or "?") .. "|" .. tostring(element or "?")
+    end
+    local summary_parts = {}
+    for _, name in ipairs({ "WazaID", "WazaId", "BasePower", "AttackElementType" }) do
+        local value = primitive_field(name)
+        if value ~= nil then
+            summary_parts[#summary_parts + 1] = name .. "=" .. tostring(value)
+        end
+    end
     enqueue_event({
         kind = "waza",
         attacker = attacker,
         defender = defender,
         waza_id = waza_id,
         captured_at = os.time(),
+        captured_clock = os.clock(),
+        signature = signature,
+        return_summary = #summary_parts > 0 and table.concat(summary_parts, ",") or nil,
+        damage_info_key = damage_info_key,
     })
 end
 
@@ -3311,13 +4215,45 @@ local function cleanup_sessions()
     end
     local expired = {}
     for _, session in pairs(sessions) do
-        if session.finished ~= true and now - session.last_damage_at >= timeout then
+        if session.finished ~= true and session.manual ~= true
+            and now - session.last_damage_at >= timeout then
             expired[#expired + 1] = session
         end
     end
     for _, session in ipairs(expired) do
         finish_session(session, "timeout")
     end
+end
+
+local function activate_final_damage_hook()
+    local candidates = {
+        "/Script/Pal.PalCharacterParameterComponent:OnDamage",
+        "/Script/Pal.PalDamageReactionComponent:MulticastDamageReact",
+    }
+    local errors = {}
+    for _, path in ipairs(candidates) do
+        local ok, err = pcall(function()
+            RegisterHook(path, function(...)
+                local captured, capture_err = pcall(capture_final_damage, ...)
+                if not captured then
+                    metrics.errors = metrics.errors + 1
+                    log("final damage capture error: " .. tostring(capture_err))
+                end
+            end)
+        end)
+        if ok then
+            hooks.final_damage = true
+            hooks.final_damage_path = path
+            log("final damage hook=" .. path)
+            return true
+        end
+        errors[#errors + 1] = path .. ": " .. tostring(err)
+    end
+    hooks.final_damage = false
+    hooks.final_damage_path = "none"
+    log("final damage hook unavailable; compatibility hook retained: "
+        .. table.concat(errors, " | "))
+    return false
 end
 
 local function reset_skill_diagnostics()
@@ -3338,10 +4274,17 @@ local function reset_skill_diagnostics()
     end
     recent_waza_by_pair = {}
     recent_waza_by_attacker = {}
+    global_source_owner_cache = {}
     action_records = {}
     action_record_order = {}
+    recent_actions_by_actor = {}
+    delayed_effect_bindings = {}
+    metrics.trace_events = 0
     if skill_hud ~= nil then
         skill_hud:clear()
+    end
+    if tostring(config.MeasurementMode or "target") == "manual" then
+        ensure_manual_session()
     end
     log("diagnostic reset active_sessions=" .. tostring(count))
 end
@@ -3350,6 +4293,7 @@ local function publish_current_skill_hud()
     if skill_hud == nil or config.EnableSkillDiagnostics ~= true then
         return
     end
+    skill_hud:poll_external_commands()
     local latest = nil
     for _, session in pairs(sessions) do
         if session.finished ~= true and session.total_damage > 0
@@ -3568,7 +4512,12 @@ local function register_hooks()
         hooks.damage_mode = "required-native-unavailable"
         log("native collector is required but unavailable; damage recording disabled")
     else
-        activate_lua_damage_fallback("native collector unavailable")
+        if activate_final_damage_hook() then
+            hooks.damage = true
+            hooks.damage_mode = "pal-final-damage"
+        else
+            activate_lua_damage_fallback("final damage hook unavailable")
+        end
     end
 
     if config.EnableSkillDiagnostics == true then
@@ -3605,10 +4554,23 @@ local function register_hooks()
                 _, attacker, defender, attacker_hit_component,
                 defender_hit_component, hit_location, foliage_index, waza_type
             )
-                local ok, err = pcall(capture_waza_marker, attacker, defender, waza_type)
+                -- The post callback owns the completed ReturnValue. Capturing
+                -- here would create a second, weaker marker before the damage
+                -- info has been populated.
+            end, function(
+                -- UE4SS places a non-void ReturnValue immediately after the
+                -- Context in post callbacks, before the original parameters.
+                -- The former callback assumed it was last, so attacker/waza
+                -- were shifted and every live marker was silently discarded.
+                _, return_value, attacker, defender, attacker_hit_component,
+                defender_hit_component, hit_location, foliage_index, waza_type,
+                ...
+            )
+                local ok, err = pcall(
+                    capture_waza_marker, attacker, defender, waza_type, return_value)
                 if not ok then
                     metrics.errors = metrics.errors + 1
-                    log("Waza marker capture error: " .. tostring(err))
+                    log("Waza post-marker capture error: " .. tostring(err))
                 end
             end)
         end)
@@ -3677,7 +4639,7 @@ local function register_hooks()
 
     if hooks.damage and hooks.death then
         log(string.format(
-            "loaded v0.4.2-external-hud; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s chat_mode=%s waza_hook=%s action_hooks=%s/%s local_only=%s; captured_hooks=%d",
+            "loaded v0.5.11-dark-attribution-hotfix; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s chat_mode=%s waza_hook=%s action_hooks=%s/%s local_only=%s; captured_hooks=%d",
             hooks.damage_mode,
             tostring(config.EnableDPSRecording ~= false),
             tostring(config.EnableSkillDiagnostics == true),
@@ -3700,6 +4662,7 @@ skill_hud = hud_module.new({
     log = log,
     get_player_controller = get_local_player_controller,
     get_world_context = find_world_context,
+    is_gameplay_available = local_gameplay_available,
     get_language = function() return get_translator().code end,
     get_language_name = localization.language_name,
     language_options = localization.language_options(),

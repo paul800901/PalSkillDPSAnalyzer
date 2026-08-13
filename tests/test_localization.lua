@@ -51,8 +51,20 @@ for _, code in ipairs(codes) do
         assert(type(hud_locale[key]) == "string" and hud_locale[key] ~= "",
             code .. " is missing HUD translation key " .. key)
     end
+    local hud_extra = hud_strings.extra_strings[code]
+    assert(type(hud_extra) == "table", code .. " is missing damage-lab workspace translations")
+    for key in pairs(hud_strings.extra_strings.en) do
+        assert(type(hud_extra[key]) == "string" and hud_extra[key] ~= "",
+            code .. " is missing damage-lab translation key " .. key)
+    end
     assert((skill_names.coverage[code] or 0) >= 350,
         code .. " has unexpectedly low bundled skill-name coverage")
+    assert(type(hud_strings.skill_category_names[code]) == "string"
+        and hud_strings.skill_category_names[code] ~= "",
+        code .. " is missing the basic-attack category name")
+    assert(type(hud_strings.other_category_names[code]) == "string"
+        and hud_strings.other_category_names[code] ~= "",
+        code .. " is missing the unattributed-damage category name")
 end
 
 assert(localization.new("schinese").code == "zh-CN")

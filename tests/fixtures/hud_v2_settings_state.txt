@@ -1,0 +1,30 @@
+PAL_SKILL_DPS_HUD_V2
+sequence=31
+visible=1
+anchor=center
+scale=1
+settings=1
+view=settings
+title=帕魯技能 DPS｜設定
+note=隨時按 F1 開啟；設定自動儲存，新測試會從第一下命中才開始計時。
+footer=↑↓ 選擇　←→／Enter 調整　F1 關閉
+close_label=關閉
+settings_tab_label=設定
+results_tab_label=本次測試
+selected_tab=results
+no_results_label=尚未記錄傷害。
+result_context=手動傷害測試｜240.7 秒｜1 個目標
+result_damage=8442
+result_dps=35.0701
+reset_notice=✓ 測試已重新待命，第一下有效傷害才開始計時
+command_ack=cmd-fixture-1
+---
+B	reset	測試控制	開始新測試（傷害歸零）	按 Enter	1
+P	Language	一般	顯示語言	繁體中文	0
+P	MeasurementMode	測量方式	測試分場方式	手動測試區間	0
+P	TargetScope	測量方式	可測量目標	所有野生帕魯	0
+P	HUDAnchor	戰鬥儀表	面板位置	左側安全區	0
+S	1	夜幕魔蝠	8442	35.0701	81
+R	1	1	極寒雙星	DoubleIcicleThrow	4280	17.7802	50.6989	29	4	1070	3.1338	341.4402	30	35.7454	32.6108	4	0	每次 1070.0｜動作 3.1秒｜施放DPS 341.4｜完整計時 4/4	面板CD 30.0秒｜實際間隔 35.7秒｜AI／再用空窗 32.6秒
+R	1	2	鑽石星辰	IcicleThrow	2853	11.8521	33.7953	21	5	570.6	3.0298	218.0831	20	30.1887	32.7538	4	0	每次 570.6｜動作 3.0秒｜施放DPS 218.1｜完整計時 4/5	面板CD 20.0秒｜實際間隔 30.2秒｜AI／再用空窗 32.8秒
+R	1	3	普攻｜暗能彈	GravityShot	1309	5.4379	15.5058	31	23	56.913	2.1307	26.7113	2	5.2335	3.1026	23	0	每次 56.9｜動作 2.1秒｜施放DPS 26.7｜完整計時 23/23	面板CD 2.0秒｜實際間隔 5.2秒｜AI／再用空窗 3.1秒

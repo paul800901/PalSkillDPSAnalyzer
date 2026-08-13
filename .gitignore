@@ -4,6 +4,7 @@
 *.obj
 dist/
 native/build*/
+/work/
 .idea/
 .vscode/
 enabled.txt.disabled*

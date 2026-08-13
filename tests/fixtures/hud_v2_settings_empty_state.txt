@@ -1,0 +1,31 @@
+PAL_SKILL_DPS_HUD_V2
+sequence=32
+visible=1
+anchor=center
+scale=1
+settings=1
+view=settings
+title=帕魯技能 DPS｜設定
+note=隨時按 F1 開啟；設定自動儲存，新測試會從第一下命中才開始計時。
+footer=↑↓ 選擇　←→／Enter 調整　F1 關閉
+close_label=關閉
+settings_tab_label=設定
+results_tab_label=本次測試
+selected_tab=results
+no_results_label=尚未記錄傷害。關閉 F1 後，讓任一隻帕魯打出第一下即可開始。
+result_context=手動傷害測試｜0.0 秒｜0 個目標
+result_damage=0
+result_dps=0
+reset_notice=
+command_ack=
+---
+B	reset	測試控制	開始新測試（傷害歸零）	按 Enter	1
+P	Language	一般	顯示語言	繁體中文	0
+P	MeasurementMode	測量方式	測試分場方式	手動測試區間	0
+P	TargetScope	測量方式	可測量目標	所有野生帕魯	0
+P	EnableSkillDPSHUD	戰鬥儀表	顯示技能 DPS 面板	開	0
+P	IncludePlayerDamage	測量方式	納入人物／武器傷害	關	0
+P	HUDDetailMode	戰鬥儀表	資料密度	精簡	0
+P	HUDShowInternalSkillCode	戰鬥儀表	顯示內部英文代碼	關	0
+P	HUDAnchor	戰鬥儀表	面板位置	左側安全區	0
+P	HUDScale	戰鬥儀表	面板縮放	85%	0

@@ -2,7 +2,7 @@
   "ModName": "帕魯技能 DPS 分析器",
   "PackageName": "PalSkillDPSAnalyzerSP",
   "Thumbnail": "thumbnail.png",
-  "Version": "0.4.2",
+  "Version": "0.5.11",
   "DebugMode": false,
   "MinRevision": 82182,
   "Author": "paul800901",

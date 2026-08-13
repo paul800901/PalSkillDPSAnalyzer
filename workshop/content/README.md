@@ -1,16 +1,15 @@
 # 帕魯技能 DPS 分析器
 
-Palworld 1.0 單人世界傷害驗證 Mod。預設只計算帕魯，依技能 ID、投射物或傷害來源建立診斷候選；獨立 HUD 會即時列出逐技能傷害、施放次數、每次傷害、面板 CD、實際間隔、完整動作、單次施放 DPS 與再用空窗。聊天輸出預設關閉，不進行玩家排名。
+Palworld 1.0 單人世界傷害驗證 Mod。預設只計算帕魯，依實際帕魯個體與技能分組；坐騎、隊伍／跟隨帕魯與基地多隻帕魯不會被合併。聊天輸出預設關閉，不進行玩家排名。
 
 ## 使用方法
 
 1. 訂閱並啟用本 Mod 與 `UE4SS Experimental (Palworld)`。
-2. 進入單人世界後按 F1 開啟設定面板；方向鍵上下選擇，左右或 Enter 調整。
-3. 使用一隻帕魯攻擊 Boss；右上專用面板會即時更新。
-4. 擊殺、捕捉或停止造成傷害 60 秒後完成結算。
-5. 保留 `Palworld\Mods\NativeMods\UE4SS\UE4SS.log`。
+2. 進入單人世界後按 F2 開始新測試（傷害歸零）；第一筆有效傷害才會開始計時。
+4. 可同時測試一般野生帕魯、野外／石板 Boss 與基地多帕魯群戰。
+5. 從即時儀表查看帕魯與技能，並保留 `Palworld\Mods\NativeMods\UE4SS\UE4SS.log`。
 
-人物傷害預設關閉。要測試武器時，可直接在 F1 面板開啟，或修改：
+人物傷害預設關閉。要測試武器時，修改：
 
 ```lua
 config.IncludePlayerDamage = true
@@ -24,7 +23,7 @@ config.IncludePlayerDamage = true
 Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\config.lua
 ```
 
-這是 v0.4.2 外部透明 HUD 版。F1 可選跟隨遊戲或 17 種指定語言，設定、DPS 欄位與技能名稱會同步切換；也可選擇顯示內部英文代碼。實機確認目前 UE4SS 的 Lua 動態 UMG 與 `PrintString` 都可能造成 GameThread 崩潰，因此本版只由 Lua 寫入本機狀態檔，再交給隨附的 Windows WPF 透明面板顯示，不再呼叫 Unreal UI，也不使用聊天框。同一技能不同次施放會合併，同時保留逐次動作計時。只需要 UE4SS Experimental；PalSchema 不是必要依賴。
+這是 v0.5.11 暗系長戰歸因熱修版。它保留固定 HUD 與三格裝備唯一 BasePower＋屬性簽名，並新增暗黑雷射、黑暗之擁、劇毒射擊的闇屬性簽名；40／闇仍獨立顯示為普攻「暗能彈」。預設採手動測試區間並接受所有野生帕魯；按 F2 可隨時歸零。灼燒與中毒狀態傷害尚未宣稱支援。即時儀表是固定尺寸、不可點擊的純顯示層；舊 F1 外部設定窗仍停用，等待遊戲內原生 CommonUI。只需要 UE4SS Experimental；PalSchema 不是必要依賴。
 
 專案：https://github.com/paul800901/PalSkillDPSAnalyzer
 

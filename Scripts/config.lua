@@ -33,12 +33,19 @@ config.MessagePrefix = "[PalSkillDPS]"
 -- release records evidence-backed candidates and never invents a name.
 config.EnableSkillDiagnostics = true
 config.SkillDiagnosticsOnly = true
+-- A damage lab is more useful when the operator controls the sampling window.
+-- "manual" keeps one test open across many targets until F1 -> Start new test;
+-- "target" automatically creates a separate test for each damaged target.
+config.MeasurementMode = "manual"
+-- "all" accepts open-world Alpha/Boss and ordinary wild Pals. "boss" keeps
+-- the former boss-flag-only behaviour.
+config.TargetScope = "all"
 -- Off by default. Enable for a separate player-character test run. When the
 -- damage causer exposes a weapon/projectile, the analyzer creates one bucket
 -- per candidate; otherwise it falls back to a generic player source bucket.
 config.IncludePlayerDamage = false
 config.DumpDamageSchema = false
-config.SkillDiagnosticMaxSamplesPerCandidate = 3
+config.SkillDiagnosticMaxSamplesPerCandidate = 64
 config.SkillDiagnosticMaxSchemaFields = 128
 config.SkillDiagnosticChatMaxRows = 12
 -- Diagnostic results use a dedicated in-game HUD by default. Chat output is
@@ -50,22 +57,32 @@ config.SkillDiagnosticChatMode = "off"
 -- change values. User choices are persisted beside these scripts.
 config.EnableSkillDPSHUD = true
 config.HUDRefreshMilliseconds = 500
-config.HUDDetailMode = "full"
+config.HUDSettingsVersion = 3
+-- Compact is the public default: one proportional bar per skill with damage,
+-- share, casts and encounter DPS. "full" reveals timing diagnostics below
+-- every row when the user deliberately switches modes in F1.
+config.HUDDetailMode = "compact"
 -- Keep the panel compact: show the official localized skill name by default.
 -- F1 can reveal the internal English Waza/action code when diagnosing a skill.
 config.HUDShowInternalSkillCode = false
-config.HUDAnchor = "top-right"
-config.HUDScale = 1.0
-config.HUDMaxSkillRows = 6
+config.HUDAnchor = "left-center"
+config.HUDScale = 0.85
+config.HUDMaxSkillRows = 5
 config.HUDKeepFinalResults = true
+-- Final automatic-target results remain briefly, rather than covering loading
+-- screens indefinitely. -1 keeps them until the next test; 0 hides at once.
+config.HUDFinalResultSeconds = 15
 -- Current Palworld/UE4SS builds crash when a Lua-only mod constructs UMG or
 -- calls PrintString from the live damage path. The shipped HUD is therefore a
 -- separate transparent Windows overlay fed by a local state file. It never
 -- calls Unreal UI APIs and remains hidden while Palworld is not foreground.
 config.EnableExternalHUD = true
 config.ExternalHUDAutoLaunch = true
+-- The external window is display-only. Interactive settings require a native
+-- Palworld CommonUI surface; cross-process mouse/focus control is disabled.
+config.EnableExternalHUDSettings = false
 -- Retained as explicit compatibility guards for older user settings. Neither
--- unsafe backend is called by v0.4.2, even if an old settings file says true.
+-- unsafe backend is called by current releases, even if an old settings file says true.
 config.HUDUseExperimentalUMG = false
 config.HUDUseScreenTextFallback = false
 -- The chat shows aggregate timing for every displayed skill. UE4SS.log can
@@ -73,10 +90,30 @@ config.HUDUseScreenTextFallback = false
 config.SkillDiagnosticLogCasts = true
 config.SkillDiagnosticMaxCastLogRows = 128
 config.SkillActionMaxEntries = 4096
+-- Rain, projectiles, explosions and ground fields may start dealing damage
+-- after their PalAction has ended. Keep recent casts long enough to match the
+-- first delayed hit, then retain a short per-signature effect burst. Timing
+-- conflicts remain explicitly unattributed rather than being guessed.
+config.SkillActionPostHitSeconds = 10
+config.SkillActionConflictSeconds = 1.25
+config.SkillEffectHitGapSeconds = 3
+config.SkillEffectMaxLifetimeSeconds = 45
 -- A Pal Waza marker is emitted immediately before its damage info is built.
 -- Keep it briefly so delayed projectiles and multi-hit skills remain attributed.
 config.SkillMarkerTTLSeconds = 30
 config.SkillMarkerMaxEntries = 2048
+-- The three equipped Waza slots can change while a manual test is open. Every
+-- action begin invalidates the cached list, and this TTL additionally forces
+-- a re-read so a newly equipped skill loses the "basic" prefix on the next
+-- hit without restarting the game.
+config.EquipWazaRefreshSeconds = 5
+-- Waza construction markers are kept as a per-attacker/per-target queue. A
+-- short conflict window prevents two overlapping skills from silently
+-- overwriting each other; ambiguous hits stay unresolved for diagnostics.
+config.SkillMarkerConflictSeconds = 0.35
+config.SkillMarkerMaxPerPair = 24
+-- Keep enough bounded trace evidence to reconstruct one full manual test.
+config.SkillDiagnosticMaxTraceEvents = 256
 
 -- Runtime metadata always takes priority: the analyzer asks Palworld for its
 -- current localized Waza name and database cooldown. These entries only cover
@@ -97,6 +134,73 @@ config.SkillMetadataFallbacks = {
     GravityShot = {
         Name = { en = "Dark Shot", ["zh-CN"] = "暗能弹", ["zh-TW"] = "暗能彈" },
         PanelCoolTime = 2,
+        BasePower = 40,
+        AttackElementType = 8,
+    },
+    -- Palworld 1.0 final-damage events from the 2026-08-13 World Tree
+    -- Dragon test omit Waza and DamageCauser for many Dark multi-hits. These
+    -- signatures are safe only while the matching Waza is in this Pal's
+    -- current EquipWaza slots; PoisonShot status poison remains separate.
+    DarkLaser = {
+        Name = { en = "Dark Laser", ["zh-CN"] = "暗黑雷射", ["zh-TW"] = "暗黑雷射" },
+        PanelCoolTime = 30,
+        BasePower = 450,
+        AttackElementType = 8,
+    },
+    DarkLegion = {
+        Name = { en = "Dark Whisp", ["zh-CN"] = "黑暗之拥", ["zh-TW"] = "黑暗之擁" },
+        PanelCoolTime = 30,
+        BasePower = 600,
+        AttackElementType = 8,
+    },
+    PoisonShot = {
+        Name = { en = "Poison Blast", ["zh-CN"] = "剧毒射击", ["zh-TW"] = "劇毒射擊" },
+        PanelCoolTime = 2,
+        BasePower = 30,
+        AttackElementType = 8,
+    },
+    -- Palworld 1.0 active-skill data and the 2026-08-13 final-damage log
+    -- agree on these fire signatures. They are used only while the matching
+    -- Waza is actually present in this Pal's EquipWaza slots, so another
+    -- skill with the same power cannot leak across loadouts.
+    FireBall = {
+        Name = { en = "Fire Ball", ["zh-CN"] = "烈焰球", ["zh-TW"] = "烈焰球" },
+        PanelCoolTime = 30,
+        BasePower = 600,
+        AttackElementType = 2,
+    },
+    FlameFunnel = {
+        Name = { en = "Flame Funnel", ["zh-CN"] = "流火", ["zh-TW"] = "流火" },
+        PanelCoolTime = 16,
+        BasePower = 300,
+        AttackElementType = 2,
+    },
+    FlareTornado = {
+        Name = { en = "Flare Storm", ["zh-CN"] = "烈焰风暴", ["zh-TW"] = "烈焰風暴" },
+        PanelCoolTime = 12,
+        BasePower = 200,
+        AttackElementType = 2,
+    },
+    -- These signatures were verified from Palworld 1.0 cooked assets and the
+    -- 2026-08-12 live final-damage log. They are matched only when the same
+    -- Waza is present in this Pal's current three EquipWaza slots.
+    DiamondFall = {
+        Name = { en = "Diamond Rain", ["zh-CN"] = "晶钻之雨", ["zh-TW"] = "晶鑽之雨" },
+        PanelCoolTime = 30,
+        BasePower = 600,
+        AttackElementType = 6,
+    },
+    DoubleIcicleThrow = {
+        Name = { en = "Double Blizzard", ["zh-CN"] = "极寒双星", ["zh-TW"] = "極寒雙星" },
+        PanelCoolTime = 30,
+        BasePower = 700,
+        AttackElementType = 6,
+    },
+    IcicleThrow = {
+        Name = { en = "Diamond Star", ["zh-CN"] = "钻石星辰", ["zh-TW"] = "鑽石星辰" },
+        PanelCoolTime = 20,
+        BasePower = 450,
+        AttackElementType = 6,
     },
 }
 
