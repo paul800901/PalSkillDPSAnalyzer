@@ -5,6 +5,8 @@
 dist/
 native/build*/
 /work/
+/.toolchain/
+/external/
 .idea/
 .vscode/
 enabled.txt.disabled*

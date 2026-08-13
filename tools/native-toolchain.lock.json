@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "target": "Palworld 1.0 Windows x64 / UE4SS Experimental",
+  "visual_studio": {
+    "winget_id": "Microsoft.VisualStudio.2022.BuildTools",
+    "product_version": "17.14.37",
+    "workload": "Microsoft.VisualStudio.Workload.VCTools",
+    "msvc_version": "14.44.35207",
+    "windows_sdk_version": "10.0.26100.0"
+  },
+  "ue4ss": {
+    "repository": "https://github.com/UE4SS-RE/RE-UE4SS.git",
+    "commit": "c838a8acaade1a0f860bdf249f039e58f4e10088",
+    "runtime_sha256": "D0107F63E567313CB6A15C505B5DB2BDBA38130964A04E019BDA7611C6178022",
+    "submodules": {
+      "deps/first/Unreal": {
+        "repository": "https://github.com/Re-UE4SS/UEPseudo.git",
+        "commit": "b2e876da82b17254c04304746341c8fde0ddb37c",
+        "requires_epic_linked_github_account": true
+      },
+      "deps/first/patternsleuth": {
+        "repository": "https://github.com/trumank/patternsleuth.git",
+        "commit": "da8bfe4c5a464be0ef225c2c9a6ccaa2d9284018"
+      }
+    }
+  },
+  "header_only_dependencies": {
+    "fmt": {
+      "repository": "https://github.com/fmtlib/fmt.git",
+      "tag": "11.2.0",
+      "commit": "40626af88bd7df9a5fb80be7b25ac85b122d6c21"
+    },
+    "zydis": {
+      "repository": "https://github.com/zyantific/zydis.git",
+      "tag": "v4.1.1",
+      "commit": "a2278f1d254e492f6a6b39f6cb5d1f5d515659dc"
+    },
+    "zycore": {
+      "repository": "https://github.com/zyantific/zycore-c.git",
+      "tag": "v1.5.2",
+      "commit": "0b2432ced0884fd152b471d97ecf0258ff4d859f"
+    }
+  }
+}

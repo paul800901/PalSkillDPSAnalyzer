@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
 
 if(NOT DEFINED UE4SS_SOURCE_DIR)
-    message(FATAL_ERROR "UE4SS_SOURCE_DIR must point to RE-UE4SS commit c2ac246")
+    message(FATAL_ERROR "UE4SS_SOURCE_DIR must point to the commit locked by tools/native-toolchain.lock.json")
 endif()
 if(NOT DEFINED UE4SS_IMPORT_LIBRARY)
     message(FATAL_ERROR "UE4SS_IMPORT_LIBRARY must point to the generated UE4SS.lib")
@@ -27,7 +27,6 @@ add_library(BossDPSNativeCollector SHARED
     src/BossDPSNativeCollector.cpp
 )
 target_include_directories(BossDPSNativeCollector PRIVATE
-    include
     "${UE4SS_SOURCE_DIR}/UE4SS/include"
     "${UE4SS_SOURCE_DIR}/UE4SS/generated_include"
     "${UE4SS_SOURCE_DIR}/deps/first/Unreal/include"
@@ -46,6 +45,7 @@ target_include_directories(BossDPSNativeCollector PRIVATE
     "${FMT_SOURCE_DIR}/include"
     "${ZYDIS_SOURCE_DIR}/include"
     "${ZYCORE_SOURCE_DIR}/include"
+    include
 )
 target_compile_definitions(BossDPSNativeCollector PRIVATE
     UE_BUILD_SHIPPING=1

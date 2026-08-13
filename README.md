@@ -99,6 +99,10 @@ powershell -ExecutionPolicy Bypass -File .\tests\run_all.ps1
 
 離線測試不連線、不啟動或修改 Palworld。實機反射欄位仍需一次受控 Boss 戰驗證。
 
+原生 C++ 來源收集器的工具鏈、鎖定版本、Git 邊界與 Workshop 發佈分工，見
+[`docs/NATIVE_DEVELOPMENT.md`](docs/NATIVE_DEVELOPMENT.md)。Visual Studio 與第三方
+依賴可保留在專案目錄，但不會被提交到 Git；乾淨 checkout 可由鎖定檔重新建立。
+
 ## 授權與來源
 
 MIT License。Boss 遭遇辨識、帕魯歸屬與安全訊息核心衍生自 [AsahiChan-Game/PalBossDPSBroadcast](https://github.com/AsahiChan-Game/PalBossDPSBroadcast)，詳細見 [NOTICE.md](NOTICE.md)。17 語言技能名稱表由 `tools/update_skill_names.ps1` 從 [PalDB Active Skills](https://paldb.cc/en/Active_Skills) 的遊戲本地化資料產生。本專案為獨立 Mod，與 Pocketpair、PalDB、Steam 或 UE4SS 無隸屬關係。
