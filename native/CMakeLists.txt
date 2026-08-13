@@ -71,5 +71,15 @@ add_executable(collector_stress tests/collector_stress.cpp)
 target_include_directories(collector_stress PRIVATE include)
 target_compile_options(collector_stress PRIVATE /W4 /EHsc)
 
+add_executable(attribution_event_core_test tests/attribution_event_core_test.cpp)
+target_include_directories(attribution_event_core_test PRIVATE include)
+target_compile_options(attribution_event_core_test PRIVATE /W4 /WX /EHsc /utf-8)
+
+add_executable(native_event_queue_test tests/native_event_queue_test.cpp)
+target_include_directories(native_event_queue_test PRIVATE include)
+target_compile_options(native_event_queue_test PRIVATE /W4 /WX /EHsc /utf-8)
+
 enable_testing()
 add_test(NAME collector_stress COMMAND collector_stress)
+add_test(NAME attribution_event_core_test COMMAND attribution_event_core_test)
+add_test(NAME native_event_queue_test COMMAND native_event_queue_test)

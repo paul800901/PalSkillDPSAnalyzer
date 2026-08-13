@@ -74,6 +74,7 @@ local metrics = {
     contributor_cache_hits = 0,
     native_buckets = 0,
     native_hits = 0,
+    native_events = 0,
     ignored_player_damage = 0,
     waza_markers = 0,
     waza_matches = 0,
@@ -3697,14 +3698,22 @@ local activate_lua_damage_fallback
 local handle_native_collector_failure
 
 local function drain_native_damage()
-    if hooks.damage_mode ~= "native" or config.EnableDPSRecording == false then
+    if (hooks.damage_mode ~= "native" and hooks.damage_mode ~= "native-event")
+        or config.EnableDPSRecording == false then
         return
     end
     local limit = math.max(1, math.floor(to_number(config.NativeMaxBucketsPerDrain)))
     for _ = 1, limit do
-        local called, has_record, attacker, defender, damage, damage_causer,
-            override_network_owner, info_attacker, hits, target_key =
-            pcall(BossDPSNativeDrainOne)
+        local event_mode = hooks.damage_mode == "native-event"
+        local called, has_record, first, defender, damage, damage_causer,
+            override_network_owner, info_attacker, hits, target_key
+        if event_mode then
+            called, has_record, first = pcall(BossDPSNativeDrainEventOne)
+        else
+            called, has_record, first, defender, damage, damage_causer,
+                override_network_owner, info_attacker, hits, target_key =
+                pcall(BossDPSNativeDrainOne)
+        end
         if not called then
             metrics.errors = metrics.errors + 1
             log("native collector drain failed: " .. tostring(has_record))
@@ -3714,26 +3723,41 @@ local function drain_native_damage()
             return
         end
         if has_record ~= true then
-            if attacker == "faulted" and handle_native_collector_failure ~= nil then
-                handle_native_collector_failure("native collector faulted at runtime")
+            if (first == "faulted" or first == "overflow")
+                and handle_native_collector_failure ~= nil then
+                handle_native_collector_failure("native collector " .. tostring(first)
+                    .. " at runtime")
             end
             return
+        end
+        local event
+        if event_mode then
+            event = first
+            if type(event) ~= "table" or event.kind ~= "damage" then
+                metrics.errors = metrics.errors + 1
+                log("native event payload was invalid")
+                return
+            end
+            metrics.native_events = metrics.native_events + 1
+        else
+            event = {
+                kind = "damage",
+                attacker = first,
+                defender = defender,
+                damage = damage,
+                damage_causer = damage_causer,
+                override_network_owner = override_network_owner,
+                info_attacker = info_attacker,
+                hits = hits,
+                target_key = target_key,
+            }
         end
         metrics.accepted = metrics.accepted + 1
         metrics.processed = metrics.processed + 1
         metrics.native_buckets = metrics.native_buckets + 1
-        metrics.native_hits = metrics.native_hits + math.max(1, math.floor(to_number(hits)))
-        local ok, err = pcall(process_damage_event, {
-            kind = "damage",
-            attacker = attacker,
-            defender = defender,
-            damage = damage,
-            damage_causer = damage_causer,
-            override_network_owner = override_network_owner,
-            info_attacker = info_attacker,
-            hits = hits,
-            target_key = target_key,
-        })
+        metrics.native_hits = metrics.native_hits
+            + math.max(1, math.floor(to_number(event.hits)))
+        local ok, err = pcall(process_damage_event, event)
         if not ok then
             metrics.errors = metrics.errors + 1
             log("native damage processing error: " .. tostring(err))
@@ -4071,7 +4095,7 @@ activate_lua_damage_fallback = function(reason)
 end
 
 handle_native_collector_failure = function(reason)
-    if hooks.damage_mode ~= "native" then
+    if hooks.damage_mode ~= "native" and hooks.damage_mode ~= "native-event" then
         return
     end
     if config.RequireNativeCollector == true then
@@ -4283,7 +4307,7 @@ local function schedule_skill_hud()
 end
 
 local function schedule_native_drain()
-    if hooks.damage_mode ~= "native" then
+    if hooks.damage_mode ~= "native" and hooks.damage_mode ~= "native-event" then
         return
     end
     local milliseconds = math.max(
@@ -4408,8 +4432,19 @@ local function schedule_damage_schema_dump()
 end
 
 local function register_hooks()
+    local native_event_ready = false
     local native_ready = false
     if config.PreferNativeCollector ~= false
+        and type(BossDPSNativeEventIsReady) == "function"
+        and type(BossDPSNativeDrainEventOne) == "function" then
+        local status_ok, status = pcall(BossDPSNativeEventIsReady)
+        native_event_ready = status_ok and status == true
+        if not status_ok then
+            log("native event collector readiness check failed: " .. tostring(status))
+        end
+    end
+    if not native_event_ready and config.PreferNativeCollector ~= false
+        and config.AllowLegacyNativeAggregate == true
         and type(BossDPSNativeIsReady) == "function"
         and type(BossDPSNativeDrainOne) == "function" then
         local status_ok, status = pcall(BossDPSNativeIsReady)
@@ -4419,7 +4454,14 @@ local function register_hooks()
         end
     end
 
-    if native_ready then
+    if native_event_ready then
+        hooks.damage = true
+        hooks.damage_mode = "native-event"
+        local capabilities = type(BossDPSNativeCapabilities) == "function"
+            and select(2, pcall(BossDPSNativeCapabilities))
+            or "api_version=2"
+        log("native event collector selected: " .. tostring(capabilities))
+    elseif native_ready then
         hooks.damage = true
         hooks.damage_mode = "native"
         local status = type(BossDPSNativeStatus) == "function"

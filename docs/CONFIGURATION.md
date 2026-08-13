@@ -28,6 +28,8 @@ v0.5.11 暫時停用不可靠的外部 F1 互動設定；請直接修改本檔�
 | `SkillActionConflictSeconds` | `1.25` | 兩個不同施放結束時間過近時視為衝突，不強行歸屬 |
 | `SkillEffectHitGapSeconds` | `3` | 已確認的同一延遲效果允許相鄰命中的最大間隔 |
 | `SkillEffectMaxLifetimeSeconds` | `45` | 已確認延遲效果可持續累計的最長時間 |
+| `PreferNativeCollector` | `true` | 優先使用具備逐命中與精確來源鏈能力的原生事件 API v2；未完成／不相容時自動退回 Lua |
+| `AllowLegacyNativeAggregate` | `false` | 是否允許只保留總傷、會丟失技能來源的舊原生聚合器；技能分析不建議開啟 |
 | `MeasurementMode` | `"manual"` | `manual` 由使用者控制測試區間；`target` 每個目標自動分場 |
 | `TargetScope` | `"all"` | `all` 接受所有野生帕魯；`boss` 只接受 Boss／頭目 |
 
@@ -73,11 +75,14 @@ v0.5.11 暫時停用不可靠的外部 F1 互動設定；請直接修改本檔�
 專案保留上游 Boss 遭遇偵測需要的安全與快取設定。診斷版固定建議：
 
 ```lua
-config.PreferNativeCollector = false
+config.PreferNativeCollector = true
+config.AllowLegacyNativeAggregate = false
 config.EnableProgressReports = false
 config.EnableDetailedAwards = false
 config.EnablePalDamageBreakdown = false
 config.EnableFunComments = false
 ```
 
-原生聚合器會把多次事件先合併，可能丟失技能候選欄位，因此診斷版使用 Lua 回退路徑。
+只有原生事件 API 回報精確 cast／effect 來源鏈已就緒時才會啟用；舊聚合器不會被
+技能分析器誤選。原生來源鏈未完成或 ABI 不符時，會保留總傷並以未歸屬呈現，
+不使用時間、倍率或屬性冒充精確技能。

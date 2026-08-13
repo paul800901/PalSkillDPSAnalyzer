@@ -57,7 +57,8 @@ foreach ($requiredSetting in @(
     "config.HUDShowInternalSkillCode = false",
     "config.SkillActionPostHitSeconds = 10",
     "config.SkillEffectMaxLifetimeSeconds = 45",
-    "config.PreferNativeCollector = false"
+    "config.PreferNativeCollector = true",
+    "config.AllowLegacyNativeAggregate = false"
 )) {
     if (-not $configText.Contains($requiredSetting)) { throw "Workshop config missing: $requiredSetting" }
 }

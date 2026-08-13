@@ -11,12 +11,17 @@ config.EnableDPSRecording = true
 config.Language = "auto"
 
 -- Prefer the optional C++ collector when it is installed and ABI-compatible.
--- The native layer aggregates high-frequency hits before Lua sees them.
+-- API v2 emits every final hit in sequence and preserves exact source tokens;
+-- older aggregate-only builds remain a compatibility fallback.
 -- Keep RequireNativeCollector false so an incompatible/missing DLL falls back
 -- to the proven Lua hook instead of silently disabling all damage recording.
 -- Diagnostics require the unaggregated Lua event so candidate skill metadata
 -- is not discarded by the native high-frequency collector.
-config.PreferNativeCollector = false
+config.PreferNativeCollector = true
+-- Aggregate-only collector v1 discards per-hit source identities, so it is
+-- disabled for the skill analyzer unless explicitly requested for total-only
+-- compatibility testing.
+config.AllowLegacyNativeAggregate = false
 config.RequireNativeCollector = false
 config.NativeDrainIntervalMilliseconds = 50
 config.NativeMaxBucketsPerDrain = 512

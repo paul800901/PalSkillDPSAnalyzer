@@ -1,4 +1,5 @@
 #include "CollectorCore.hpp"
+#include "NativeEventQueue.hpp"
 
 #include <LuaMadeSimple/LuaMadeSimple.hpp>
 #include <LuaType/LuaUObject.hpp>
@@ -9,9 +10,11 @@
 #include <Unreal/FWeakObjectPtr.hpp>
 #include <Unreal/UFunctionStructs.hpp>
 #include <Unreal/UObjectGlobals.hpp>
+#include <Unreal/UObjectArray.hpp>
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -31,6 +34,7 @@ namespace
     constexpr auto damage_function_path =
         STR("/Script/Pal.PalEventNotify_Character:OnCharacterDamaged_ServerInternal");
     constexpr std::size_t maximum_pending_buckets = 4096;
+    constexpr std::size_t maximum_pending_events = 16384;
 
     enum class TargetState : std::uint8_t
     {
@@ -195,6 +199,62 @@ namespace
         return reinterpret_cast<std::uintptr_t>(object);
     }
 
+    auto object_token(UObject* object) -> pal_dps::ObjectToken
+    {
+        if (object == nullptr)
+        {
+            return {};
+        }
+        const auto index = object->GetInternalIndex();
+        if (index < 0)
+        {
+            return {};
+        }
+        auto* item = FUObjectArray::IndexToObject(index);
+        if (item == nullptr || item->GetSerialNumber() <= 0)
+        {
+            return {};
+        }
+        return {
+            static_cast<std::uint32_t>(index),
+            static_cast<std::uint32_t>(item->GetSerialNumber()),
+        };
+    }
+
+    auto resolve_object(const pal_dps::ObjectToken token) -> UObject*
+    {
+        if (!token.valid())
+        {
+            return nullptr;
+        }
+        auto* item = FUObjectArray::IndexToObject(static_cast<std::int32_t>(token.index));
+        if (item == nullptr || static_cast<std::uint32_t>(item->GetSerialNumber()) != token.serial)
+        {
+            return nullptr;
+        }
+        return item->GetUObject();
+    }
+
+    auto token_text(const pal_dps::ObjectToken token) -> std::string
+    {
+        if (!token.valid())
+        {
+            return {};
+        }
+        return std::to_string(token.index) + ":" + std::to_string(token.serial);
+    }
+
+    auto token_text(const pal_dps::CastToken token) -> std::string
+    {
+        return token.valid() ? std::to_string(token.value) : std::string{};
+    }
+
+    auto captured_nanoseconds() -> std::uint64_t
+    {
+        return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    }
+
     auto format_pointer(std::uintptr_t value) -> std::string
     {
         char buffer[2 + sizeof(std::uintptr_t) * 2 + 1]{};
@@ -272,6 +332,10 @@ namespace
             lua.register_function("BossDPSNativeDrainOne", &lua_drain_one);
             lua.register_function("BossDPSNativeClassifyTarget", &lua_classify_target);
             lua.register_function("BossDPSNativeStatus", &lua_status);
+            lua.register_function("BossDPSNativeEventIsReady", &lua_event_is_ready);
+            lua.register_function("BossDPSNativeDrainEventOne", &lua_drain_event_one);
+            lua.register_function("BossDPSNativeResetEvents", &lua_reset_events);
+            lua.register_function("BossDPSNativeCapabilities", &lua_capabilities);
         }
 
         auto is_ready() const -> bool
@@ -282,6 +346,18 @@ namespace
         auto is_faulted() const -> bool
         {
             return m_faulted.load(std::memory_order_acquire);
+        }
+
+        auto event_api_available() const -> bool
+        {
+            return is_ready() && !is_faulted();
+        }
+
+        auto event_is_ready() const -> bool
+        {
+            return event_api_available()
+                && m_exact_source_ready.load(std::memory_order_acquire)
+                && m_event_queue.exact_stream_usable();
         }
 
         auto drain_one() -> std::optional<PendingRecord>
@@ -339,10 +415,26 @@ namespace
             }
         }
 
+        auto drain_event_one() -> std::optional<pal_dps::NativeEvent>
+        {
+            pal_dps::NativeEvent event{};
+            if (!m_event_queue.drain_one(event))
+            {
+                return std::nullopt;
+            }
+            return event;
+        }
+
+        auto reset_events() -> void
+        {
+            m_event_queue.reset();
+        }
+
         auto status() -> std::string
         {
             std::scoped_lock lock{m_mutex};
             std::ostringstream output;
+            const auto event_stats = m_event_queue.stats();
             output << "ready=" << (is_ready() ? "true" : "false")
                    << "; faulted=" << (is_faulted() ? "true" : "false")
                    << "; accepted_hits=" << m_collector.accepted_hits()
@@ -350,7 +442,16 @@ namespace
                    << "; drained_buckets=" << m_collector.drained_buckets()
                    << "; skipped_nonboss=" << m_skipped_nonboss
                    << "; overflow_buckets=" << m_overflow_buckets
-                   << "; capture_errors=" << m_capture_errors.load();
+                   << "; capture_errors=" << m_capture_errors.load()
+                   << "; event_api=2"
+                   << "; event_api_available="
+                   << (event_api_available() ? "true" : "false")
+                   << "; event_ready=" << (event_is_ready() ? "true" : "false")
+                   << "; event_pending=" << event_stats.pending
+                   << "; event_accepted=" << event_stats.accepted
+                   << "; event_drained=" << event_stats.drained
+                   << "; event_dropped=" << event_stats.dropped
+                   << "; event_overflow=" << (event_stats.overflowed ? "true" : "false");
             return output.str();
         }
 
@@ -471,6 +572,25 @@ namespace
             );
             auto* info_attacker = m_layout.info_attacker.read(nested);
 
+            // Do not start an undrained high-frequency stream until the exact
+            // cast/effect source hooks are active. Until then Lua keeps using
+            // its fail-closed fallback and this collector remains legacy-safe.
+            if (m_exact_source_ready.load(std::memory_order_acquire))
+            {
+                pal_dps::NativeEvent native_event{};
+                native_event.kind = pal_dps::NativeEventKind::final_damage;
+                native_event.captured_ns = captured_nanoseconds();
+                native_event.attacker = object_token(attacker);
+                native_event.defender = object_token(defender);
+                native_event.damage_causer = object_token(damage_causer);
+                native_event.override_network_owner = object_token(override_network_owner);
+                native_event.info_attacker = object_token(info_attacker);
+                native_event.damage = damage;
+                native_event.hits = 1;
+                native_event.evidence_kind.assign("unresolved");
+                static_cast<void>(m_event_queue.enqueue(std::move(native_event)));
+            }
+
             const boss_dps::DamageKey key{
                 .defender = pointer_key(defender),
                 .attacker = pointer_key(attacker),
@@ -562,6 +682,120 @@ namespace
             return 9;
         }
 
+        static auto add_object_pair(
+            const Lua& lua,
+            Lua::Table& table,
+            const char* key,
+            const pal_dps::ObjectToken token) -> void
+        {
+            table.add_key(key);
+            RC::LuaType::auto_construct_object(lua, resolve_object(token));
+            table.fuse_pair();
+        }
+
+        static auto add_token_pair(
+            Lua::Table& table,
+            const char* key,
+            const pal_dps::ObjectToken token) -> void
+        {
+            const auto text = token_text(token);
+            table.add_pair(key, text.c_str());
+        }
+
+        static auto add_token_pair(
+            Lua::Table& table,
+            const char* key,
+            const pal_dps::CastToken token) -> void
+        {
+            const auto text = token_text(token);
+            table.add_pair(key, text.c_str());
+        }
+
+        static auto lua_event_is_ready(const Lua& lua) -> int
+        {
+            lua.set_bool(s_instance != nullptr && s_instance->event_is_ready());
+            return 1;
+        }
+
+        static auto lua_drain_event_one(const Lua& lua) -> int
+        {
+            if (s_instance == nullptr || !s_instance->event_api_available())
+            {
+                lua.set_bool(false);
+                if (s_instance != nullptr)
+                {
+                    lua.set_string(s_instance->is_faulted() ? "faulted" : "overflow");
+                    return 2;
+                }
+                return 1;
+            }
+            const auto event = s_instance->drain_event_one();
+            if (!event.has_value())
+            {
+                lua.set_bool(false);
+                if (!s_instance->m_event_queue.exact_stream_usable())
+                {
+                    lua.set_string("overflow");
+                    return 2;
+                }
+                return 1;
+            }
+
+            lua.set_bool(true);
+            auto table = lua.prepare_new_table(0, 32);
+            table.add_pair("api_version", 2);
+            table.add_pair("kind", "damage");
+            table.add_pair("sequence", static_cast<long long>(event->sequence));
+            table.add_pair("captured_ns", static_cast<long long>(event->captured_ns));
+            table.add_pair("damage", event->damage);
+            table.add_pair("hits", static_cast<long long>(event->hits));
+            const std::string evidence_kind{event->evidence_kind.view()};
+            const std::string skill_code{event->skill_code.view()};
+            const std::string status_code{event->status_code.view()};
+            table.add_pair("evidence_kind", evidence_kind.c_str());
+            add_object_pair(lua, table, "attacker", event->attacker);
+            add_object_pair(lua, table, "defender", event->defender);
+            add_object_pair(lua, table, "damage_causer", event->damage_causer);
+            add_object_pair(lua, table, "override_network_owner", event->override_network_owner);
+            add_object_pair(lua, table, "info_attacker", event->info_attacker);
+            add_token_pair(table, "attacker_id", event->attacker);
+            add_token_pair(table, "defender_id", event->defender);
+            add_token_pair(table, "damage_causer_id", event->damage_causer);
+            add_token_pair(table, "override_network_owner_id", event->override_network_owner);
+            add_token_pair(table, "info_attacker_id", event->info_attacker);
+            add_token_pair(table, "damage_info_id", event->damage_info);
+            add_token_pair(table, "action_id", event->action);
+            add_token_pair(table, "cast_id", event->cast);
+            add_token_pair(table, "effect_id", event->effect);
+            add_token_pair(table, "filter_id", event->filter);
+            add_token_pair(table, "status_application_id", event->status_application);
+            const auto target_key = format_pointer(pointer_key(resolve_object(event->defender)));
+            table.add_pair("target_key", target_key.c_str());
+            table.add_pair("waza_id", static_cast<long long>(event->waza_id));
+            table.add_pair("skill_code", skill_code.c_str());
+            table.add_pair("status_code", status_code.c_str());
+            table.make_local();
+            return 2;
+        }
+
+        static auto lua_reset_events(const Lua&) -> int
+        {
+            if (s_instance != nullptr)
+            {
+                s_instance->reset_events();
+            }
+            return 0;
+        }
+
+        static auto lua_capabilities(const Lua& lua) -> int
+        {
+            lua.set_string(
+                "api_version=2;final_damage=true;exact_attribution=false;action=false;"
+                "effect_init=false;effect_attack=false;damage_info=false;status=false"
+            );
+            return 1;
+        }
+
         static auto lua_classify_target(const Lua& lua) -> int
         {
             if (s_instance != nullptr)
@@ -583,9 +817,11 @@ namespace
         CallbackId m_hook_id{-1};
         std::atomic<bool> m_ready{};
         std::atomic<bool> m_faulted{};
+        std::atomic<bool> m_exact_source_ready{};
         std::atomic<std::uint64_t> m_capture_errors{};
         std::mutex m_mutex;
         boss_dps::CollectorCore m_collector;
+        pal_dps::NativeEventQueue m_event_queue{maximum_pending_events};
         std::unordered_map<boss_dps::DamageKey, WeakObjects, boss_dps::DamageKeyHash>
             m_bucket_objects;
         std::deque<PendingRecord> m_drained_records;

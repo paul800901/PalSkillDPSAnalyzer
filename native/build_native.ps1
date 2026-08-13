@@ -159,4 +159,23 @@ if ($LASTEXITCODE -ne 0) {
     throw "Native stress test failed with exit code $LASTEXITCODE"
 }
 
+foreach ($testName in @("attribution_event_core_test", "native_event_queue_test")) {
+    $sourcePath = Join-Path $PSScriptRoot "tests\$testName.cpp"
+    $testArguments = @(
+        "/nologo", "/std:c++latest", "/EHsc", "/MD", "/O2", "/W4", "/WX", "/utf-8",
+        $sourcePath,
+        "/I$PSScriptRoot\include",
+        "/Fo:$BuildDirectory\$testName.obj",
+        "/Fe:$BuildDirectory\$testName.exe"
+    )
+    & cl.exe @testArguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "$testName build failed with exit code $LASTEXITCODE"
+    }
+    & "$BuildDirectory\$testName.exe"
+    if ($LASTEXITCODE -ne 0) {
+        throw "$testName failed with exit code $LASTEXITCODE"
+    }
+}
+
 Write-Host "Native collector built: $BuildDirectory\main.dll"

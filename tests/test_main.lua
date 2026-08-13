@@ -2270,6 +2270,57 @@ end
 run_manual_damage_lab_test()
 run_manual_damage_lab_test = nil
 
+-- Native event API v2: every final hit arrives separately with a stable
+-- sequence and object-token diagnostics. It must be preferred by the runtime
+-- and preserve total/hit conservation without going through aggregation.
+do
+local native_event_boss = boss_actor("BP_RaidBoss_NativeEvent_C_500")
+local native_event_index = 0
+BossDPSNativeDrainEventOne = function()
+    native_event_index = native_event_index + 1
+    if native_event_index <= 3 then
+        return true, {
+            api_version = 2,
+            kind = "damage",
+            sequence = native_event_index,
+            captured_ns = native_event_index * 100,
+            attacker = player_one,
+            defender = native_event_boss,
+            damage = 100 + native_event_index,
+            hits = 1,
+            target_key = "0xDEF",
+            attacker_id = "1:1",
+            defender_id = "2:1",
+            evidence_kind = "unresolved",
+        }
+    end
+    return false
+end
+BossDPSBroadcastTestApi.hooks.damage_mode = "native-event"
+local native_events_before = BossDPSBroadcastTestApi.metrics.native_events
+local native_event_hits_before = BossDPSBroadcastTestApi.metrics.native_hits
+phase = "game"
+BossDPSBroadcastTestApi.drain_native_damage()
+phase = "bootstrap"
+local native_event_session
+for _, candidate in pairs(BossDPSBroadcastTestApi.sessions) do
+    if candidate.name == "RaidBoss_NativeEvent" then
+        native_event_session = candidate
+        break
+    end
+end
+assert(native_event_session ~= nil, "native event stream did not start a boss session")
+assert(native_event_session.total_damage == 306,
+    "native event stream changed per-hit total damage")
+assert(BossDPSBroadcastTestApi.metrics.native_events - native_events_before == 3,
+    "native event metric is incorrect")
+assert(BossDPSBroadcastTestApi.metrics.native_hits - native_event_hits_before == 3,
+    "native event stream changed hit conservation")
+death(native_event_boss)
+run_game_tasks()
+run_delayed_tasks()
+end
+
 -- Native bridge simulation: one aggregated bucket represents many hits. Lua
 -- must preserve the exact damage while carrying the hit count into tie-break
 -- metadata, and it must classify the target for the C++ fast path.
