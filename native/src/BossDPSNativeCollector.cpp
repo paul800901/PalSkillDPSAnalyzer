@@ -7,13 +7,17 @@
 #include <Unreal/CoreUObject/UObject/Class.hpp>
 #include <Unreal/CoreUObject/UObject/UnrealType.hpp>
 #include <Unreal/FField.hpp>
+#include <Unreal/Hooks/Hooks.hpp>
+#include <Unreal/Property/FEnumProperty.hpp>
 #include <Unreal/FWeakObjectPtr.hpp>
 #include <Unreal/UFunctionStructs.hpp>
 #include <Unreal/UObjectGlobals.hpp>
 #include <Unreal/UObjectArray.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -25,14 +29,19 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <vector>
 
 namespace
 {
     using RC::LuaMadeSimple::Lua;
     using namespace RC::Unreal;
 
-    constexpr auto damage_function_path =
-        STR("/Script/Pal.PalEventNotify_Character:OnCharacterDamaged_ServerInternal");
+    constexpr std::array damage_function_paths{
+        STR("/Script/Pal.PalCharacterParameterComponent:OnDamage"),
+        STR("/Script/Pal.PalEventNotify_Character:OnCharacterDamaged_ServerInternal"),
+    };
+    constexpr auto skill_effect_base_class_path = STR("/Script/Pal.PalSkillEffectBase");
+    constexpr auto attack_filter_class_path = STR("/Script/Pal.PalAttackFilter");
     constexpr std::size_t maximum_pending_buckets = 4096;
     constexpr std::size_t maximum_pending_events = 16384;
 
@@ -111,6 +120,34 @@ namespace
                 && actual_damage.property != nullptr;
         }
     };
+
+    struct AttackFunctionLayout
+    {
+        ObjectField defender{};
+        FStructProperty* damage_info{};
+        ObjectField info_attacker{};
+
+        [[nodiscard]] auto ready() const -> bool
+        {
+            return defender.property != nullptr
+                && damage_info != nullptr
+                && info_attacker.property != nullptr;
+        }
+    };
+
+    struct AttackScope
+    {
+        UFunction* function{};
+        UObject* context{};
+        pal_dps::ObjectToken attacker{};
+        pal_dps::ObjectToken defender{};
+        pal_dps::ObjectToken effect{};
+        pal_dps::ObjectToken filter{};
+        std::int64_t waza_id{};
+        std::string skill_code{};
+    };
+
+    thread_local std::vector<AttackScope> active_attack_scopes{};
 
     struct WeakObjects
     {
@@ -194,6 +231,98 @@ namespace
         return {CastField<FNumericProperty>(find_property(owner, names))};
     }
 
+    auto contains_ignore_case(std::string_view value, std::string_view needle) -> bool
+    {
+        if (needle.empty())
+        {
+            return true;
+        }
+        if (value.size() < needle.size())
+        {
+            return false;
+        }
+        for (std::size_t index = 0; index + needle.size() <= value.size(); ++index)
+        {
+            if (std::equal(
+                    needle.begin(), needle.end(), value.begin() + static_cast<std::ptrdiff_t>(index),
+                    [](const char left, const char right) {
+                        return static_cast<unsigned char>(std::tolower(left))
+                            == static_cast<unsigned char>(std::tolower(right));
+                    }))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    auto read_integer_property(FProperty* property, void* container) -> std::optional<std::int64_t>
+    {
+        if (property == nullptr || container == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto* address = property->ContainerPtrToValuePtr<void>(container);
+        if (auto* enum_property = CastField<FEnumProperty>(property))
+        {
+            auto* numeric = enum_property->GetUnderlyingProperty();
+            if (numeric != nullptr)
+            {
+                return static_cast<std::int64_t>(numeric->GetUnsignedIntPropertyValue(address));
+            }
+        }
+        if (auto* numeric = CastField<FNumericProperty>(property))
+        {
+            return numeric->IsInteger()
+                ? std::optional<std::int64_t>{numeric->GetSignedIntPropertyValue(address)}
+                : std::nullopt;
+        }
+        return std::nullopt;
+    }
+
+    auto enum_code(FProperty* property, const std::int64_t value) -> std::string
+    {
+        UEnum* enumeration{};
+        if (auto* enum_property = CastField<FEnumProperty>(property))
+        {
+            enumeration = enum_property->GetEnum().Get();
+        }
+        else if (auto* numeric = CastField<FNumericProperty>(property))
+        {
+            enumeration = numeric->GetIntPropertyEnum();
+        }
+        if (enumeration == nullptr)
+        {
+            return {};
+        }
+        auto code = RC::to_string(enumeration->GetNameByValue(value).ToString());
+        if (const auto separator = code.rfind("::"); separator != std::string::npos)
+        {
+            code.erase(0, separator + 2);
+        }
+        return code;
+    }
+
+    auto read_filter_waza(UObject* filter) -> std::pair<std::int64_t, std::string>
+    {
+        if (filter == nullptr || filter->GetClassPrivate() == nullptr)
+        {
+            return {};
+        }
+        auto* property = find_property(filter->GetClassPrivate(), {"Waza", "WazaID", "WazaId", "WazaType"});
+        const auto value = read_integer_property(property, filter);
+        if (!value.has_value() || value.value() <= 0)
+        {
+            return {};
+        }
+        auto code = enum_code(property, value.value());
+        if (code.empty())
+        {
+            code = "WAZA_ID_" + std::to_string(value.value());
+        }
+        return {value.value(), std::move(code)};
+    }
+
     auto pointer_key(UObject* object) -> std::uintptr_t
     {
         return reinterpret_cast<std::uintptr_t>(object);
@@ -268,28 +397,55 @@ namespace
         BossDPSNativeCollector()
         {
             ModName = STR("BossDPSNativeCollector");
-            ModVersion = STR("3.2.0");
-            ModDescription = STR("Native high-frequency damage aggregator for BossDPSBroadcast");
+            ModVersion = STR("3.4.0");
+            ModDescription = STR("Native exact Pal skill damage source collector");
             ModAuthors = STR("AsahiChan-Game");
+        }
+
+        ~BossDPSNativeCollector() override
+        {
+            if (m_damage_function != nullptr && m_hook_id >= 0)
+            {
+                static_cast<void>(m_damage_function->UnregisterHook(m_hook_id));
+            }
+            if (m_filter_bind_function != nullptr && m_filter_bind_hook_id >= 0)
+            {
+                static_cast<void>(m_filter_bind_function->UnregisterHook(m_filter_bind_hook_id));
+            }
+            if (m_script_pre_id != Hook::ERROR_ID)
+            {
+                static_cast<void>(Hook::UnregisterCallback(m_script_pre_id));
+            }
+            if (m_script_post_id != Hook::ERROR_ID)
+            {
+                static_cast<void>(Hook::UnregisterCallback(m_script_post_id));
+            }
+            if (s_instance == this)
+            {
+                s_instance = nullptr;
+            }
         }
 
         auto on_unreal_init() -> void override
         {
             try
             {
-                auto* damage_function =
-                    UObjectGlobals::StaticFindObject<UFunction*>(nullptr, nullptr, damage_function_path);
-                if (damage_function == nullptr)
+                for (const auto path : damage_function_paths)
                 {
-                    log(STR("damage UFunction was not found; Lua fallback remains available"));
+                    auto* candidate = UObjectGlobals::StaticFindObject<UFunction*>(nullptr, nullptr, path);
+                    if (candidate != nullptr && discover_layout(candidate))
+                    {
+                        m_damage_function = candidate;
+                        m_damage_function_path = RC::to_string(path);
+                        break;
+                    }
+                }
+                if (m_damage_function == nullptr)
+                {
+                    log(STR("final damage UFunction/layout was not found; Lua fallback remains available"));
                     return;
                 }
-                if (!discover_layout(damage_function))
-                {
-                    log(STR("damage layout was not recognized; Lua fallback remains available"));
-                    return;
-                }
-                m_hook_id = damage_function->RegisterPreHook(
+                m_hook_id = m_damage_function->RegisterPreHook(
                     [this](UnrealScriptFunctionCallableContext& context, void*) {
                         try
                         {
@@ -304,9 +460,15 @@ namespace
                     }
                 );
                 m_ready.store(m_hook_id >= 0, std::memory_order_release);
-                log(m_ready
-                        ? STR("native damage hook ready (aggregate-only mode)")
-                        : STR("native damage hook registration failed; Lua fallback remains available"));
+                if (!m_ready)
+                {
+                    log(STR("native damage hook registration failed; Lua fallback remains available"));
+                    return;
+                }
+                initialize_skill_source_hooks();
+                log(m_exact_source_ready
+                        ? STR("native damage + Blueprint OnAttack source hooks ready")
+                        : STR("native damage hook ready; exact source hook unavailable, using Lua fallback"));
             }
             catch (const std::exception& error)
             {
@@ -323,7 +485,8 @@ namespace
             Lua*
         ) -> void override
         {
-            if (mod_name != STR("BossDPSBroadcast"))
+            if (mod_name != STR("PalSkillDPSAnalyzerSP")
+                && mod_name != STR("BossDPSBroadcast"))
             {
                 return;
             }
@@ -336,6 +499,7 @@ namespace
             lua.register_function("BossDPSNativeDrainEventOne", &lua_drain_event_one);
             lua.register_function("BossDPSNativeResetEvents", &lua_reset_events);
             lua.register_function("BossDPSNativeCapabilities", &lua_capabilities);
+            log(STR("native event API registered for Lua mod ") + StringType{mod_name});
         }
 
         auto is_ready() const -> bool
@@ -451,7 +615,15 @@ namespace
                    << "; event_accepted=" << event_stats.accepted
                    << "; event_drained=" << event_stats.drained
                    << "; event_dropped=" << event_stats.dropped
-                   << "; event_overflow=" << (event_stats.overflowed ? "true" : "false");
+                   << "; event_overflow=" << (event_stats.overflowed ? "true" : "false")
+                   << "; damage_path=" << m_damage_function_path
+                   << "; script_calls=" << m_script_calls.load()
+                   << "; attack_matches=" << m_attack_matches.load()
+                   << "; attack_without_waza=" << m_attack_without_waza.load()
+                   << "; filter_bind_matches=" << m_filter_bind_matches.load()
+                   << "; exact_hits=" << m_exact_hits.load()
+                   << "; unresolved_hits=" << m_unresolved_hits.load()
+                   << "; source_errors=" << m_source_errors.load();
             return output.str();
         }
 
@@ -467,8 +639,268 @@ namespace
             std::fflush(stderr);
         }
 
+        auto initialize_skill_source_hooks() -> void
+        {
+            m_skill_effect_base_class = UObjectGlobals::StaticFindObject<UClass*>(
+                nullptr, nullptr, skill_effect_base_class_path
+            );
+            m_attack_filter_class = UObjectGlobals::StaticFindObject<UClass*>(
+                nullptr, nullptr, attack_filter_class_path
+            );
+            if (m_skill_effect_base_class == nullptr || m_attack_filter_class == nullptr)
+            {
+                log(STR("Pal skill-effect classes were not found"));
+                return;
+            }
+
+            Hook::FCallbackOptions pre_options{};
+            pre_options.bReadonly = true;
+            pre_options.OwnerModName = STR("PalSkillDPSAnalyzer");
+            pre_options.HookName = STR("SkillEffectAttackPre");
+            m_script_pre_id = Hook::RegisterProcessLocalScriptFunctionPreCallback(
+                [this](Hook::TCallbackIterationData<void>&, UObject* context, FFrame& stack, void*) {
+                    try
+                    {
+                        capture_script_attack_pre(context, stack);
+                    }
+                    catch (...)
+                    {
+                        ++m_source_errors;
+                    }
+                },
+                pre_options
+            );
+
+            Hook::FCallbackOptions post_options{};
+            post_options.bReadonly = true;
+            post_options.OwnerModName = STR("PalSkillDPSAnalyzer");
+            post_options.HookName = STR("SkillEffectAttackPost");
+            m_script_post_id = Hook::RegisterProcessLocalScriptFunctionPostCallback(
+                [this](Hook::TCallbackIterationData<void>&, UObject* context, FFrame& stack, void*) {
+                    try
+                    {
+                        capture_script_attack_post(context, stack);
+                    }
+                    catch (...)
+                    {
+                        ++m_source_errors;
+                    }
+                },
+                post_options
+            );
+
+            m_filter_bind_function = UObjectGlobals::StaticFindObject<UFunction*>(
+                nullptr, nullptr, STR("/Script/Pal.PalAttackFilter:BindPrimitiveComponent")
+            );
+            if (m_filter_bind_function != nullptr)
+            {
+                m_filter_bind_hook_id = m_filter_bind_function->RegisterPreHook(
+                    [this](UnrealScriptFunctionCallableContext& context, void*) {
+                        try
+                        {
+                            capture_filter_binding(context.Context);
+                        }
+                        catch (...)
+                        {
+                            ++m_source_errors;
+                        }
+                    }
+                );
+            }
+
+            const auto script_hooks_ready = m_script_pre_id != Hook::ERROR_ID
+                && m_script_post_id != Hook::ERROR_ID;
+            m_exact_source_ready.store(script_hooks_ready, std::memory_order_release);
+        }
+
+        auto capture_filter_binding(UObject* filter) -> void
+        {
+            if (filter == nullptr || m_attack_filter_class == nullptr
+                || !filter->IsA(m_attack_filter_class))
+            {
+                return;
+            }
+            auto* outer = filter->GetOuterPrivate();
+            if (outer == nullptr || m_skill_effect_base_class == nullptr
+                || !outer->IsA(m_skill_effect_base_class))
+            {
+                return;
+            }
+            const auto effect_token = object_token(outer);
+            const auto filter_token = object_token(filter);
+            if (!effect_token.valid() || !filter_token.valid())
+            {
+                return;
+            }
+            std::scoped_lock lock{m_source_mutex};
+            m_effect_filters.insert_or_assign(effect_token, filter_token);
+            ++m_filter_bind_matches;
+        }
+
+        auto find_attack_filter(UObject* effect) -> UObject*
+        {
+            if (effect == nullptr || effect->GetClassPrivate() == nullptr
+                || m_attack_filter_class == nullptr)
+            {
+                return nullptr;
+            }
+            for (TFieldIterator<FProperty> iterator{
+                     effect->GetClassPrivate(), EFieldIterationFlags::IncludeSuper
+                 };
+                 iterator;
+                 ++iterator)
+            {
+                auto* property = *iterator;
+                auto* object_property = CastField<FObjectPropertyBase>(property);
+                if (object_property == nullptr)
+                {
+                    continue;
+                }
+                auto* address = property->ContainerPtrToValuePtr<void>(effect);
+                auto* candidate = object_property->GetObjectPropertyValue(address);
+                if (candidate != nullptr && candidate->IsA(m_attack_filter_class))
+                {
+                    return candidate;
+                }
+            }
+
+            const auto effect_token = object_token(effect);
+            std::scoped_lock lock{m_source_mutex};
+            const auto known = m_effect_filters.find(effect_token);
+            return known == m_effect_filters.end() ? nullptr : resolve_object(known->second);
+        }
+
+        auto discover_attack_layout(UFunction* function) -> AttackFunctionLayout
+        {
+            AttackFunctionLayout layout{};
+            if (function == nullptr)
+            {
+                return layout;
+            }
+            const auto function_name = RC::to_string(function->GetName());
+            if (!contains_ignore_case(function_name, "OnAttackDelegate__DelegateSignature"))
+            {
+                return layout;
+            }
+            for (TFieldIterator<FProperty> iterator{
+                     function,
+                     EFieldIterationFlags::IncludeSuper | EFieldIterationFlags::IncludeDeprecated
+                 };
+                 iterator;
+                 ++iterator)
+            {
+                auto* property = *iterator;
+                if (!property->HasAnyPropertyFlags(CPF_Parm)
+                    || property->HasAnyPropertyFlags(CPF_ReturnParm))
+                {
+                    continue;
+                }
+                const auto name = field_name(property);
+                if (layout.defender.property == nullptr
+                    && (equals_ignore_case(name, "Defencer") || equals_ignore_case(name, "Defender")))
+                {
+                    if (CastField<FObjectPropertyBase>(property) != nullptr
+                        || CastField<FWeakObjectProperty>(property) != nullptr)
+                    {
+                        layout.defender = {property};
+                    }
+                    continue;
+                }
+                auto* structure = CastField<FStructProperty>(property);
+                if (structure == nullptr || structure->GetStruct().Get() == nullptr)
+                {
+                    continue;
+                }
+                auto* info_struct = structure->GetStruct().Get();
+                const auto attacker = find_object_field(info_struct, {"Attacker"});
+                if (attacker.property != nullptr
+                    && (equals_ignore_case(name, "damageInfo")
+                        || contains_ignore_case(RC::to_string(info_struct->GetName()), "PalDamageInfo")))
+                {
+                    layout.damage_info = structure;
+                    layout.info_attacker = attacker;
+                }
+            }
+            return layout;
+        }
+
+        auto capture_script_attack_pre(UObject* context, FFrame& stack) -> void
+        {
+            auto* function = stack.Node();
+            if (function == nullptr)
+            {
+                function = stack.CurrentNativeFunction();
+            }
+            if (function == nullptr
+                || !contains_ignore_case(
+                    RC::to_string(function->GetName()), "OnAttackDelegate__DelegateSignature"
+                ))
+            {
+                return;
+            }
+            ++m_script_calls;
+            if (context == nullptr || stack.Locals() == nullptr
+                || m_skill_effect_base_class == nullptr
+                || context->GetClassPrivate() == nullptr
+                || !context->GetClassPrivate()->IsChildOf(m_skill_effect_base_class))
+            {
+                return;
+            }
+
+            auto layout = discover_attack_layout(function);
+            if (!layout.ready())
+            {
+                return;
+            }
+            auto* filter = find_attack_filter(context);
+            const auto [waza_id, skill_code] = read_filter_waza(filter);
+            if (filter == nullptr || waza_id <= 0 || skill_code.empty())
+            {
+                ++m_attack_without_waza;
+                return;
+            }
+
+            auto* parameters = reinterpret_cast<std::byte*>(stack.Locals());
+            auto* damage_info = layout.damage_info->ContainerPtrToValuePtr<void>(parameters);
+            auto* attacker = layout.info_attacker.read(damage_info);
+            auto* defender = layout.defender.read(parameters);
+            if (defender == nullptr)
+            {
+                return;
+            }
+            active_attack_scopes.push_back({
+                .function = function,
+                .context = context,
+                .attacker = object_token(attacker),
+                .defender = object_token(defender),
+                .effect = object_token(context),
+                .filter = object_token(filter),
+                .waza_id = waza_id,
+                .skill_code = skill_code,
+            });
+            ++m_attack_matches;
+        }
+
+        auto capture_script_attack_post(UObject* context, FFrame& stack) -> void
+        {
+            auto* function = stack.Node();
+            if (function == nullptr)
+            {
+                function = stack.CurrentNativeFunction();
+            }
+            if (!active_attack_scopes.empty())
+            {
+                const auto& scope = active_attack_scopes.back();
+                if (scope.function == function && scope.context == context)
+                {
+                    active_attack_scopes.pop_back();
+                }
+            }
+        }
+
         auto discover_layout(UFunction* function) -> bool
         {
+            m_layout = {};
             for (TFieldIterator<FProperty> iterator{
                      function,
                      EFieldIterationFlags::IncludeSuper | EFieldIterationFlags::IncludeDeprecated
@@ -588,6 +1020,34 @@ namespace
                 native_event.damage = damage;
                 native_event.hits = 1;
                 native_event.evidence_kind.assign("unresolved");
+
+                const auto attacker_token = object_token(attacker);
+                const auto defender_token = object_token(defender);
+                for (auto scope = active_attack_scopes.rbegin();
+                     scope != active_attack_scopes.rend();
+                     ++scope)
+                {
+                    if (scope->defender != defender_token)
+                    {
+                        continue;
+                    }
+                    if (scope->attacker.valid() && attacker_token.valid()
+                        && scope->attacker != attacker_token)
+                    {
+                        continue;
+                    }
+                    native_event.effect = scope->effect;
+                    native_event.filter = scope->filter;
+                    native_event.waza_id = scope->waza_id;
+                    native_event.skill_code.assign(scope->skill_code);
+                    native_event.evidence_kind.assign("effect_waza");
+                    ++m_exact_hits;
+                    break;
+                }
+                if (native_event.waza_id <= 0)
+                {
+                    ++m_unresolved_hits;
+                }
                 static_cast<void>(m_event_queue.enqueue(std::move(native_event)));
             }
 
@@ -787,10 +1247,12 @@ namespace
 
         static auto lua_capabilities(const Lua& lua) -> int
         {
-            lua.set_string(
-                "api_version=2;final_damage=true;exact_attribution=false;action=false;"
-                "effect_init=false;effect_attack=false;damage_info=false;status=false"
-            );
+            const auto exact = s_instance != nullptr && s_instance->event_is_ready();
+            lua.set_string(exact
+                ? "api_version=2;final_damage=true;exact_attribution=true;action=false;"
+                  "effect_init=false;effect_attack=true;damage_info=false;status=false"
+                : "api_version=2;final_damage=true;exact_attribution=false;action=false;"
+                  "effect_init=false;effect_attack=false;damage_info=false;status=false");
             return 1;
         }
 
@@ -812,12 +1274,28 @@ namespace
       private:
         inline static BossDPSNativeCollector* s_instance{};
         ReflectedDamageLayout m_layout{};
+        UFunction* m_damage_function{};
+        UFunction* m_filter_bind_function{};
+        UClass* m_skill_effect_base_class{};
+        UClass* m_attack_filter_class{};
+        std::string m_damage_function_path{};
         CallbackId m_hook_id{-1};
+        CallbackId m_filter_bind_hook_id{-1};
+        Hook::GlobalCallbackId m_script_pre_id{Hook::ERROR_ID};
+        Hook::GlobalCallbackId m_script_post_id{Hook::ERROR_ID};
         std::atomic<bool> m_ready{};
         std::atomic<bool> m_faulted{};
         std::atomic<bool> m_exact_source_ready{};
         std::atomic<std::uint64_t> m_capture_errors{};
+        std::atomic<std::uint64_t> m_script_calls{};
+        std::atomic<std::uint64_t> m_attack_matches{};
+        std::atomic<std::uint64_t> m_attack_without_waza{};
+        std::atomic<std::uint64_t> m_filter_bind_matches{};
+        std::atomic<std::uint64_t> m_exact_hits{};
+        std::atomic<std::uint64_t> m_unresolved_hits{};
+        std::atomic<std::uint64_t> m_source_errors{};
         std::mutex m_mutex;
+        std::mutex m_source_mutex;
         boss_dps::CollectorCore m_collector;
         pal_dps::NativeEventQueue m_event_queue{maximum_pending_events};
         std::unordered_map<boss_dps::DamageKey, WeakObjects, boss_dps::DamageKeyHash>
@@ -825,6 +1303,8 @@ namespace
         std::deque<PendingRecord> m_drained_records;
         std::unordered_map<std::uintptr_t, FWeakObjectPtr> m_known_defenders;
         std::unordered_map<std::uintptr_t, TargetClassification> m_target_states;
+        std::unordered_map<pal_dps::ObjectToken, pal_dps::ObjectToken, pal_dps::ObjectTokenHash>
+            m_effect_filters;
         std::uint64_t m_skipped_nonboss{};
         std::uint64_t m_overflow_buckets{};
     };

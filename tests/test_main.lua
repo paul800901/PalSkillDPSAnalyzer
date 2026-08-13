@@ -2398,6 +2398,83 @@ run_game_tasks()
 run_delayed_tasks()
 end
 
+-- Native exact source proof: when the C++ collector observes a Blueprint
+-- attack delegate whose PalAttackFilter still carries its Waza ID, Lua must
+-- put the final damage into that skill instead of the unresolved bucket.
+do
+local exact_native = {
+    boss = boss_actor("BP_RaidBoss_NativeEffectWaza_C_502"),
+    index = 0,
+}
+BossDPSNativeDrainEventOne = function()
+    exact_native.index = exact_native.index + 1
+    if exact_native.index == 1 then
+        return true,
+            2,                                      -- api_version (1)
+            "damage",                              -- kind (2)
+            7001,                                   -- sequence (3)
+            7001000,                                -- captured_ns (4)
+            777,                                    -- damage (5)
+            2,                                      -- hits (6)
+            "effect_waza",                         -- evidence_kind (7)
+            player_two_pal,                         -- attacker (8)
+            exact_native.boss,                      -- defender (9)
+            nil,                                    -- damage_causer (10)
+            nil,                                    -- override_network_owner (11)
+            nil,                                    -- info_attacker (12)
+            "3:1",                                 -- attacker_id (13)
+            "502:1",                               -- defender_id (14)
+            "0:0",                                 -- damage_causer_id (15)
+            "0:0",                                 -- override_network_owner_id (16)
+            "0:0",                                 -- info_attacker_id (17)
+            "",                                    -- damage_info_id (18)
+            "",                                    -- action_id (19)
+            "",                                    -- cast_id (20)
+            "400:9",                               -- effect_id (21)
+            "401:9",                               -- filter_id (22)
+            "0:0",                                 -- status_application_id (23)
+            "0xEXACT",                             -- target_key (24)
+            602,                                    -- waza_id (25)
+            "DiamondFall",                         -- skill_code (26)
+            ""                                     -- status_code (27)
+    end
+    return false
+end
+BossDPSBroadcastTestApi.hooks.damage_mode = "native-event"
+phase = "game"
+BossDPSBroadcastTestApi.drain_native_damage()
+phase = "bootstrap"
+for _, candidate in pairs(BossDPSBroadcastTestApi.sessions) do
+    if candidate.name == "RaidBoss_NativeEffectWaza" then
+        exact_native.session = candidate
+        break
+    end
+end
+assert(exact_native.session ~= nil and exact_native.session.total_damage == 777,
+    "exact native effect/Waza event did not preserve final damage")
+for _, source in pairs(exact_native.session.diagnostic_sources) do
+    if source.kind == "pal" then
+        exact_native.source = source
+        break
+    end
+end
+assert(exact_native.source ~= nil,
+    "exact native effect/Waza event did not retain the Pal source")
+exact_native.skill = exact_native.source.skill_candidates["skill:DiamondFall"]
+assert(exact_native.skill ~= nil
+        and exact_native.skill.damage == 777
+        and exact_native.skill.hits == 2
+        and exact_native.skill.waza_id == 602,
+    "exact native effect/Waza event did not enter the DiamondFall bucket")
+for key in pairs(exact_native.source.skill_candidates) do
+    assert(string.find(key, "UNRESOLVED", 1, true) == nil,
+        "exact native effect/Waza event also entered an unresolved bucket")
+end
+death(exact_native.boss)
+run_game_tasks()
+run_delayed_tasks()
+end
+
 -- Native bridge simulation: one aggregated bucket represents many hits. Lua
 -- must preserve the exact damage while carrying the hit count into tie-break
 -- metadata, and it must classify the target for the C++ fast path.

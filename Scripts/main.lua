@@ -3775,6 +3775,22 @@ local function drain_native_damage()
                 log("native event payload was invalid")
                 return
             end
+            if event.evidence_kind == "effect_waza"
+                and math.floor(to_number(event.waza_id)) > 0 then
+                local native_waza_id = math.floor(to_number(event.waza_id))
+                local native_code = tostring(event.skill_code or "")
+                if native_code == "" then
+                    native_code = "WAZA_ID_" .. tostring(native_waza_id)
+                end
+                event.effect_attack = {
+                    token = event.sequence,
+                    effect_id = event.effect_id,
+                    cast_id = tostring(event.cast_id or "") ~= ""
+                        and event.cast_id or nil,
+                    code = native_code,
+                    waza_id = native_waza_id,
+                }
+            end
             metrics.native_events = metrics.native_events + 1
         else
             event = {
