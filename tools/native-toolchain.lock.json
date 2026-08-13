@@ -39,6 +39,20 @@
       "repository": "https://github.com/zyantific/zycore-c.git",
       "tag": "v1.5.2",
       "commit": "0b2432ced0884fd152b471d97ecf0258ff4d859f"
+    },
+    "imgui": {
+      "repository": "https://github.com/ocornut/imgui.git",
+      "tag": "v1.92.1",
+      "commit": "5d4126876bc10396d4c6511853ff10964414c776"
+    },
+    "imgui_text_edit": {
+      "repository": "https://github.com/UE4SS-RE/ImGuiColorTextEdit.git",
+      "tag": "v1.2.0",
+      "commit": "6d943aba9f7cef05da80b86dbb0253b63818f95c"
+    },
+    "icon_font_cpp_headers": {
+      "repository": "https://github.com/juliettef/IconFontCppHeaders.git",
+      "commit": "210b5a399a64270674560d633638952d1e8d804d"
     }
   }
 }

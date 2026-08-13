@@ -2321,6 +2321,83 @@ run_game_tasks()
 run_delayed_tasks()
 end
 
+-- Native event API v2 positional tuple: keep parity with the table payload
+-- above. The bridge returns `true` followed by exactly 27 payload fields;
+-- Lua must reconstruct one event table per hit without losing damage or hits.
+do
+local positional = {
+    boss = boss_actor("BP_RaidBoss_NativePositionalEvent_C_501"),
+    index = 0,
+}
+BossDPSNativeDrainEventOne = function()
+    positional.index = positional.index + 1
+    if positional.index <= 3 then
+        return true,
+            2,                                      -- api_version (1)
+            "damage",                               -- kind (2)
+            positional.index,                        -- sequence (3)
+            positional.index * 1000,                 -- captured_ns (4)
+            200 + positional.index,                  -- damage (5)
+            1,                                       -- hits (6)
+            "unresolved",                            -- evidence_kind (7)
+            player_one,                              -- attacker (8)
+            positional.boss,                         -- defender (9)
+            nil,                                     -- damage_causer (10)
+            nil,                                     -- override_network_owner (11)
+            nil,                                     -- info_attacker (12)
+            "1:1",                                   -- attacker_id (13)
+            "3:1",                                   -- defender_id (14)
+            "0:0",                                   -- damage_causer_id (15)
+            "0:0",                                   -- override_network_owner_id (16)
+            "0:0",                                   -- info_attacker_id (17)
+            "damage-info:" .. positional.index,      -- damage_info_id (18)
+            "action:" .. positional.index,           -- action_id (19)
+            "cast:" .. positional.index,             -- cast_id (20)
+            "effect:" .. positional.index,           -- effect_id (21)
+            "filter:" .. positional.index,           -- filter_id (22)
+            "0:0",                                   -- status_application_id (23)
+            "0xPOS",                                 -- target_key (24)
+            0,                                       -- waza_id (25)
+            "",                                      -- skill_code (26)
+            ""                                       -- status_code (27)
+    end
+    return false
+end
+BossDPSBroadcastTestApi.hooks.damage_mode = "native-event"
+positional.events_before = BossDPSBroadcastTestApi.metrics.native_events
+positional.hits_before = BossDPSBroadcastTestApi.metrics.native_hits
+phase = "game"
+BossDPSBroadcastTestApi.drain_native_damage()
+phase = "bootstrap"
+for _, candidate in pairs(BossDPSBroadcastTestApi.sessions) do
+    if candidate.name == "RaidBoss_NativePositionalEvent" then
+        positional.session = candidate
+        break
+    end
+end
+assert(positional.session ~= nil,
+    "positional native event tuple did not start a boss session")
+assert(positional.session.total_damage == 606,
+    "positional native event tuple changed per-hit total damage")
+positional.contributor_damage = 0
+positional.contributor_hits = 0
+for _, contributor in pairs(positional.session.contributors) do
+    positional.contributor_damage = positional.contributor_damage + contributor.damage
+    positional.contributor_hits = positional.contributor_hits + contributor.hits
+end
+assert(positional.contributor_damage == positional.session.total_damage,
+    "positional native event tuple violated contributor/session damage conservation")
+assert(positional.contributor_hits == 3,
+    "positional native event tuple violated contributor hit conservation")
+assert(BossDPSBroadcastTestApi.metrics.native_events - positional.events_before == 3,
+    "positional native event tuple changed event conservation")
+assert(BossDPSBroadcastTestApi.metrics.native_hits - positional.hits_before == 3,
+    "positional native event tuple changed native hit conservation")
+death(positional.boss)
+run_game_tasks()
+run_delayed_tasks()
+end
+
 -- Native bridge simulation: one aggregated bucket represents many hits. Lua
 -- must preserve the exact damage while carrying the hit count into tie-break
 -- metadata, and it must classify the target for the C++ fast path.

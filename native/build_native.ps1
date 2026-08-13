@@ -5,6 +5,9 @@ param(
     [string]$FmtSource = "",
     [string]$ZydisSource = "",
     [string]$ZycoreSource = "",
+    [string]$ImGuiSource = "",
+    [string]$ImGuiTextEditSource = "",
+    [string]$IconFontSource = "",
     [Parameter(Mandatory = $true)]
     [string]$UE4SSDll,
     [string]$BuildDirectory = "$PSScriptRoot\build-native"
@@ -30,6 +33,15 @@ if ([string]::IsNullOrWhiteSpace($ZydisSource)) {
 }
 if ([string]::IsNullOrWhiteSpace($ZycoreSource)) {
     $ZycoreSource = Join-Path $projectRootResolved "external\zycore"
+}
+if ([string]::IsNullOrWhiteSpace($ImGuiSource)) {
+    $ImGuiSource = Join-Path $projectRootResolved "external\imgui"
+}
+if ([string]::IsNullOrWhiteSpace($ImGuiTextEditSource)) {
+    $ImGuiTextEditSource = Join-Path $projectRootResolved "external\imgui-text-edit"
+}
+if ([string]::IsNullOrWhiteSpace($IconFontSource)) {
+    $IconFontSource = Join-Path $projectRootResolved "external\icon-font-cpp-headers"
 }
 
 if (-not (Test-Path -LiteralPath $UE4SSDll -PathType Leaf)) {
@@ -58,6 +70,15 @@ if (-not (Test-Path -LiteralPath "$ZydisSource\include\Zydis\Zydis.h" -PathType 
 }
 if (-not (Test-Path -LiteralPath "$ZycoreSource\include\Zycore\Types.h" -PathType Leaf)) {
     throw "Zycore source was not found: $ZycoreSource"
+}
+if (-not (Test-Path -LiteralPath "$ImGuiSource\imgui.h" -PathType Leaf)) {
+    throw "ImGui source was not found: $ImGuiSource"
+}
+if (-not (Test-Path -LiteralPath "$ImGuiTextEditSource\TextEditor.h" -PathType Leaf)) {
+    throw "ImGuiColorTextEdit source was not found: $ImGuiTextEditSource"
+}
+if (-not (Test-Path -LiteralPath "$IconFontSource\IconsFontAwesome6.h" -PathType Leaf)) {
+    throw "IconFontCppHeaders source was not found: $IconFontSource"
 }
 
 . (Join-Path $projectRootResolved "tools\enter_native_toolchain.ps1") -ProjectRoot $projectRootResolved
@@ -111,12 +132,23 @@ $includeDirectories = @(
     "$UE4SSSource\deps\first\File\include",
     "$UE4SSSource\deps\first\Function\include",
     "$UE4SSSource\deps\first\Helpers\include",
+    "$UE4SSSource\deps\first\Input\include",
+    "$UE4SSSource\deps\first\IniParser\include",
+    "$UE4SSSource\deps\first\JSON\include",
+    "$UE4SSSource\deps\first\MProgram\include",
+    "$UE4SSSource\deps\first\ParserBase\include",
+    "$UE4SSSource\deps\first\Profiler\include",
+    "$UE4SSSource\deps\first\ScopedTimer\include",
+    "$UE4SSSource\deps\first\SinglePassSigScanner\include",
     "$UE4SSSource\deps\first\Constructs\include",
     "$UE4SSSource\deps\first\DynamicOutput\include",
     "$UE4SSSource\deps\first\ASMHelper\include",
     "$FmtSource\include",
     "$ZydisSource\include",
     "$ZycoreSource\include",
+    $ImGuiSource,
+    $ImGuiTextEditSource,
+    $IconFontSource,
     "$PSScriptRoot\include"
 )
 $includeArguments = @()

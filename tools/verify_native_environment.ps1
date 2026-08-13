@@ -42,7 +42,10 @@ if ($RequireDependencies) {
         @{ Name = "RE-UE4SS"; Path = "external\RE-UE4SS"; Commit = $lock.ue4ss.commit },
         @{ Name = "fmt"; Path = "external\fmt"; Commit = $lock.header_only_dependencies.fmt.commit },
         @{ Name = "Zydis"; Path = "external\zydis"; Commit = $lock.header_only_dependencies.zydis.commit },
-        @{ Name = "Zycore"; Path = "external\zycore"; Commit = $lock.header_only_dependencies.zycore.commit }
+        @{ Name = "Zycore"; Path = "external\zycore"; Commit = $lock.header_only_dependencies.zycore.commit },
+        @{ Name = "ImGui"; Path = "external\imgui"; Commit = $lock.header_only_dependencies.imgui.commit },
+        @{ Name = "ImGuiColorTextEdit"; Path = "external\imgui-text-edit"; Commit = $lock.header_only_dependencies.imgui_text_edit.commit },
+        @{ Name = "IconFontCppHeaders"; Path = "external\icon-font-cpp-headers"; Commit = $lock.header_only_dependencies.icon_font_cpp_headers.commit }
     )
     foreach ($repository in $repositories) {
         $path = Join-Path $projectRootResolved $repository.Path
@@ -53,6 +56,16 @@ if ($RequireDependencies) {
         $actualCommit = (git -C $path rev-parse HEAD).Trim()
         if ($actualCommit -ne $repository.Commit) {
             $issues.Add("$($repository.Name) commit mismatch: expected $($repository.Commit), got $actualCommit")
+        }
+    }
+
+    foreach ($requiredHeader in @(
+        "external\imgui\imgui.h",
+        "external\imgui-text-edit\TextEditor.h",
+        "external\icon-font-cpp-headers\IconsFontAwesome6.h"
+    )) {
+        if (-not (Test-Path -LiteralPath (Join-Path $projectRootResolved $requiredHeader) -PathType Leaf)) {
+            $issues.Add("Required UE4SS UI header is missing: $requiredHeader")
         }
     }
 

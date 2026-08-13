@@ -3707,8 +3707,12 @@ local function drain_native_damage()
         local event_mode = hooks.damage_mode == "native-event"
         local called, has_record, first, defender, damage, damage_causer,
             override_network_owner, info_attacker, hits, target_key
+        local native_event_results
         if event_mode then
-            called, has_record, first = pcall(BossDPSNativeDrainEventOne)
+            native_event_results = table.pack(pcall(BossDPSNativeDrainEventOne))
+            called = native_event_results[1]
+            has_record = native_event_results[2]
+            first = native_event_results[3]
         else
             called, has_record, first, defender, damage, damage_causer,
                 override_network_owner, info_attacker, hits, target_key =
@@ -3732,7 +3736,40 @@ local function drain_native_damage()
         end
         local event
         if event_mode then
-            event = first
+            if type(first) == "table" then
+                -- Compatibility with the first API-v2 development build.
+                event = first
+            else
+                event = {
+                    api_version = first,
+                    kind = native_event_results[4],
+                    sequence = native_event_results[5],
+                    captured_ns = native_event_results[6],
+                    damage = native_event_results[7],
+                    hits = native_event_results[8],
+                    evidence_kind = native_event_results[9],
+                    attacker = native_event_results[10],
+                    defender = native_event_results[11],
+                    damage_causer = native_event_results[12],
+                    override_network_owner = native_event_results[13],
+                    info_attacker = native_event_results[14],
+                    attacker_id = native_event_results[15],
+                    defender_id = native_event_results[16],
+                    damage_causer_id = native_event_results[17],
+                    override_network_owner_id = native_event_results[18],
+                    info_attacker_id = native_event_results[19],
+                    damage_info_id = native_event_results[20],
+                    action_id = native_event_results[21],
+                    cast_id = native_event_results[22],
+                    effect_id = native_event_results[23],
+                    filter_id = native_event_results[24],
+                    status_application_id = native_event_results[25],
+                    target_key = native_event_results[26],
+                    waza_id = native_event_results[27],
+                    skill_code = native_event_results[28],
+                    status_code = native_event_results[29],
+                }
+            end
             if type(event) ~= "table" or event.kind ~= "damage" then
                 metrics.errors = metrics.errors + 1
                 log("native event payload was invalid")

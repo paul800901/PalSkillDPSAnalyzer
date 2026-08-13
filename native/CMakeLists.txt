@@ -17,6 +17,9 @@ endif()
 if(NOT DEFINED ZYDIS_SOURCE_DIR OR NOT DEFINED ZYCORE_SOURCE_DIR)
     message(FATAL_ERROR "ZYDIS_SOURCE_DIR and ZYCORE_SOURCE_DIR are required")
 endif()
+if(NOT DEFINED IMGUI_SOURCE_DIR OR NOT DEFINED IMGUI_TEXT_EDIT_SOURCE_DIR OR NOT DEFINED ICON_FONT_SOURCE_DIR)
+    message(FATAL_ERROR "IMGUI_SOURCE_DIR, IMGUI_TEXT_EDIT_SOURCE_DIR, and ICON_FONT_SOURCE_DIR are required")
+endif()
 
 add_library(UE4SSRuntime SHARED IMPORTED GLOBAL)
 set_target_properties(UE4SSRuntime PROPERTIES
@@ -39,12 +42,23 @@ target_include_directories(BossDPSNativeCollector PRIVATE
     "${UE4SS_SOURCE_DIR}/deps/first/File/include"
     "${UE4SS_SOURCE_DIR}/deps/first/Function/include"
     "${UE4SS_SOURCE_DIR}/deps/first/Helpers/include"
+    "${UE4SS_SOURCE_DIR}/deps/first/Input/include"
+    "${UE4SS_SOURCE_DIR}/deps/first/IniParser/include"
+    "${UE4SS_SOURCE_DIR}/deps/first/JSON/include"
+    "${UE4SS_SOURCE_DIR}/deps/first/MProgram/include"
+    "${UE4SS_SOURCE_DIR}/deps/first/ParserBase/include"
+    "${UE4SS_SOURCE_DIR}/deps/first/Profiler/include"
+    "${UE4SS_SOURCE_DIR}/deps/first/ScopedTimer/include"
+    "${UE4SS_SOURCE_DIR}/deps/first/SinglePassSigScanner/include"
     "${UE4SS_SOURCE_DIR}/deps/first/Constructs/include"
     "${UE4SS_SOURCE_DIR}/deps/first/DynamicOutput/include"
     "${UE4SS_SOURCE_DIR}/deps/first/ASMHelper/include"
     "${FMT_SOURCE_DIR}/include"
     "${ZYDIS_SOURCE_DIR}/include"
     "${ZYCORE_SOURCE_DIR}/include"
+    "${IMGUI_SOURCE_DIR}"
+    "${IMGUI_TEXT_EDIT_SOURCE_DIR}"
+    "${ICON_FONT_SOURCE_DIR}"
     include
 )
 target_compile_definitions(BossDPSNativeCollector PRIVATE

@@ -76,7 +76,10 @@ run this script again. No project source or installed game file was changed.
 $dependencies = @(
     @{ Name = "fmt"; Entry = $lock.header_only_dependencies.fmt; Directory = "fmt" },
     @{ Name = "Zydis"; Entry = $lock.header_only_dependencies.zydis; Directory = "zydis" },
-    @{ Name = "Zycore"; Entry = $lock.header_only_dependencies.zycore; Directory = "zycore" }
+    @{ Name = "Zycore"; Entry = $lock.header_only_dependencies.zycore; Directory = "zycore" },
+    @{ Name = "ImGui"; Entry = $lock.header_only_dependencies.imgui; Directory = "imgui" },
+    @{ Name = "ImGuiColorTextEdit"; Entry = $lock.header_only_dependencies.imgui_text_edit; Directory = "imgui-text-edit" },
+    @{ Name = "IconFontCppHeaders"; Entry = $lock.header_only_dependencies.icon_font_cpp_headers; Directory = "icon-font-cpp-headers" }
 )
 
 foreach ($dependency in $dependencies) {

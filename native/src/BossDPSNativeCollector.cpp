@@ -682,33 +682,29 @@ namespace
             return 9;
         }
 
-        static auto add_object_pair(
-            const Lua& lua,
-            Lua::Table& table,
-            const char* key,
-            const pal_dps::ObjectToken token) -> void
+        static auto native_event_kind_text(const pal_dps::NativeEventKind kind) -> std::string_view
         {
-            table.add_key(key);
-            RC::LuaType::auto_construct_object(lua, resolve_object(token));
-            table.fuse_pair();
+            switch (kind)
+            {
+            case pal_dps::NativeEventKind::cast_begin: return "cast_begin";
+            case pal_dps::NativeEventKind::cast_end: return "cast_end";
+            case pal_dps::NativeEventKind::effect_initialize: return "effect_initialize";
+            case pal_dps::NativeEventKind::effect_link: return "effect_link";
+            case pal_dps::NativeEventKind::damage_info_link: return "damage_info_link";
+            case pal_dps::NativeEventKind::status_application: return "status_application";
+            case pal_dps::NativeEventKind::final_damage: return "damage";
+            }
+            return "unknown";
         }
 
-        static auto add_token_pair(
-            Lua::Table& table,
-            const char* key,
-            const pal_dps::ObjectToken token) -> void
+        static auto push_token(const Lua& lua, const pal_dps::ObjectToken token) -> void
         {
-            const auto text = token_text(token);
-            table.add_pair(key, text.c_str());
+            lua.set_string(token_text(token));
         }
 
-        static auto add_token_pair(
-            Lua::Table& table,
-            const char* key,
-            const pal_dps::CastToken token) -> void
+        static auto push_token(const Lua& lua, const pal_dps::CastToken token) -> void
         {
-            const auto text = token_text(token);
-            table.add_pair(key, text.c_str());
+            lua.set_string(token_text(token));
         }
 
         static auto lua_event_is_ready(const Lua& lua) -> int
@@ -741,41 +737,43 @@ namespace
                 return 1;
             }
 
+            // UE4SS statically links the raw Lua C API and does not export those
+            // symbols to C++ mods. LuaMadeSimple's inline Table::add_pair helper
+            // therefore cannot be used by a separately linked mod. Return one
+            // stable positional event tuple and let the Lua bridge name it.
             lua.set_bool(true);
-            auto table = lua.prepare_new_table(0, 32);
-            table.add_pair("api_version", 2);
-            table.add_pair("kind", "damage");
-            table.add_pair("sequence", static_cast<long long>(event->sequence));
-            table.add_pair("captured_ns", static_cast<long long>(event->captured_ns));
-            table.add_pair("damage", event->damage);
-            table.add_pair("hits", static_cast<long long>(event->hits));
+            lua.set_integer(2);
+            lua.set_string(native_event_kind_text(event->kind));
+            lua.set_integer(static_cast<std::int64_t>(event->sequence));
+            lua.set_integer(static_cast<std::int64_t>(event->captured_ns));
+            lua.set_number(event->damage);
+            lua.set_integer(static_cast<std::int64_t>(event->hits));
             const std::string evidence_kind{event->evidence_kind.view()};
             const std::string skill_code{event->skill_code.view()};
             const std::string status_code{event->status_code.view()};
-            table.add_pair("evidence_kind", evidence_kind.c_str());
-            add_object_pair(lua, table, "attacker", event->attacker);
-            add_object_pair(lua, table, "defender", event->defender);
-            add_object_pair(lua, table, "damage_causer", event->damage_causer);
-            add_object_pair(lua, table, "override_network_owner", event->override_network_owner);
-            add_object_pair(lua, table, "info_attacker", event->info_attacker);
-            add_token_pair(table, "attacker_id", event->attacker);
-            add_token_pair(table, "defender_id", event->defender);
-            add_token_pair(table, "damage_causer_id", event->damage_causer);
-            add_token_pair(table, "override_network_owner_id", event->override_network_owner);
-            add_token_pair(table, "info_attacker_id", event->info_attacker);
-            add_token_pair(table, "damage_info_id", event->damage_info);
-            add_token_pair(table, "action_id", event->action);
-            add_token_pair(table, "cast_id", event->cast);
-            add_token_pair(table, "effect_id", event->effect);
-            add_token_pair(table, "filter_id", event->filter);
-            add_token_pair(table, "status_application_id", event->status_application);
+            lua.set_string(evidence_kind);
+            RC::LuaType::auto_construct_object(lua, resolve_object(event->attacker));
+            RC::LuaType::auto_construct_object(lua, resolve_object(event->defender));
+            RC::LuaType::auto_construct_object(lua, resolve_object(event->damage_causer));
+            RC::LuaType::auto_construct_object(lua, resolve_object(event->override_network_owner));
+            RC::LuaType::auto_construct_object(lua, resolve_object(event->info_attacker));
+            push_token(lua, event->attacker);
+            push_token(lua, event->defender);
+            push_token(lua, event->damage_causer);
+            push_token(lua, event->override_network_owner);
+            push_token(lua, event->info_attacker);
+            push_token(lua, event->damage_info);
+            push_token(lua, event->action);
+            push_token(lua, event->cast);
+            push_token(lua, event->effect);
+            push_token(lua, event->filter);
+            push_token(lua, event->status_application);
             const auto target_key = format_pointer(pointer_key(resolve_object(event->defender)));
-            table.add_pair("target_key", target_key.c_str());
-            table.add_pair("waza_id", static_cast<long long>(event->waza_id));
-            table.add_pair("skill_code", skill_code.c_str());
-            table.add_pair("status_code", status_code.c_str());
-            table.make_local();
-            return 2;
+            lua.set_string(target_key);
+            lua.set_integer(event->waza_id);
+            lua.set_string(skill_code);
+            lua.set_string(status_code);
+            return 28;
         }
 
         static auto lua_reset_events(const Lua&) -> int
