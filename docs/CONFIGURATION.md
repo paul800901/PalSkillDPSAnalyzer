@@ -31,7 +31,7 @@ v0.5.11 暫時停用不可靠的外部 F1 互動設定；請直接修改本檔�
 | `PreferNativeCollector` | `true` | 優先使用具備逐命中與精確來源鏈能力的原生事件 API v2；未完成／不相容時自動退回 Lua |
 | `AllowLegacyNativeAggregate` | `false` | 是否允許只保留總傷、會丟失技能來源的舊原生聚合器；技能分析不建議開啟 |
 | `MeasurementMode` | `"manual"` | `manual` 由使用者控制測試區間；`target` 每個目標自動分場 |
-| `TargetScope` | `"all"` | `all` 接受所有野生帕魯；`boss` 只接受 Boss／頭目 |
+| `TargetScope` | `"boss"` | `boss` 接受競技場／塔／地城／石板 Boss 與有 Boss／Alpha 標記的大世界頭目；`all` 僅用於額外的非 Boss 診斷 |
 
 帕魯測試請保持 `IncludePlayerDamage = false`。測試人物武器時改為 `true`，並建議每場只使用一種武器。
 
@@ -61,7 +61,7 @@ v0.5.11 暫時停用不可靠的外部 F1 互動設定；請直接修改本檔�
 
 ## 結算口徑
 
-- 測試區間：`manual` 從歸零後第一筆有效傷害開始，跨多個目標持續累計；`target` 依單一目標的擊殺、捕捉或逾時結算。
+- 測試區間：`manual` 從歸零後第一筆符合 `TargetScope` 的有效傷害開始，預設可跨多隻 Boss 持續累計；`target` 依單一目標的擊殺、捕捉或逾時結算。
 - 來源：以實際攻擊者帕魯個體分組；坐騎、隊伍／跟隨帕魯及基地帕魯不因屬於同一玩家而合併。啟用人物後，人物角色另算一個來源。
 - 候選：優先使用 `EPalWazaID`；缺少 Waza 時使用去除實例編號的當前動作、投射物、武器來源或未知桶。
 - 泛用持續傷害：只有 `BasePower + AttackElementType` 在整場唯一對應到一個已知技能時才合併；有歧義時保持未解析。

@@ -240,7 +240,7 @@ foreach ($requiredSetting in @(
     'config.SkillDiagnosticChatMode = "off"',
     "config.EnableSkillDPSHUD = true",
     'config.MeasurementMode = "manual"',
-    'config.TargetScope = "all"',
+    'config.TargetScope = "boss"',
     "config.HUDSettingsVersion = 3",
     'config.HUDDetailMode = "compact"',
     "config.EnableExternalHUD = true",

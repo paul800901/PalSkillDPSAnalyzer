@@ -538,7 +538,7 @@ assert(runtime_config.SkillDiagnosticChatMode == "off", "diagnostic chat should 
 assert(runtime_config.EnableSkillDPSHUD == true, "skill DPS HUD should default to enabled")
 assert(runtime_config.HUDSettingsVersion == 3, "HUD settings schema should be v3")
 assert(runtime_config.MeasurementMode == "manual", "damage lab should default to a manual test window")
-assert(runtime_config.TargetScope == "all", "damage lab should accept open-world Pal targets")
+assert(runtime_config.TargetScope == "boss", "damage lab should default to arena and open-world Boss targets")
 assert(runtime_config.EnableExternalHUD == true, "external HUD should default to enabled")
 assert(runtime_config.ExternalHUDAutoLaunch == true, "external HUD should auto-launch by default")
 assert(runtime_config.HUDDetailMode == "compact", "HUD should default to compact combat bars")

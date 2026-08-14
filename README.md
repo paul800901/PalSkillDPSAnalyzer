@@ -1,6 +1,6 @@
 # PalSkillDPSAnalyzer v0.5.14-native-exact-attribution
 
-Palworld 1.0 單機用 UE4SS Lua 傷害驗證 Mod。它不是玩家排行榜，而是可由使用者控制開始點的傷害實驗室：同一個測試區間可跨 Boss、野外頭目、一般野生帕魯及多個目標，並把坐騎、隊伍帕魯、跟隨出戰帕魯與基地帕魯依實際個體分組，再把每隻帕魯的技能分桶。輸出包含總傷害、整場 DPS、占比、命中、每次施放傷害、完整動作時間、單次施放 DPS、實際施放間隔與 AI／再用空窗。
+Palworld 1.0 單機用 UE4SS 傷害驗證 Mod。它不是玩家排行榜，而是專門測量帕魯對 Boss 造成的技能傷害：預設接受競技場／高塔／地城／石板等封閉戰鬥 Boss，以及大世界有 Boss／Alpha 標記的頭目；普通野怪與基地混戰不納入預設正式統計。輸出包含總傷害、整場 DPS、占比、命中、每次施放傷害、完整動作時間、單次施放 DPS、實際施放間隔與 AI／再用空窗。
 
 人物傷害預設關閉。需要測試武器時，可在另一場戰鬥中開啟人物來源；能辨識武器／投射物就分桶，不能辨識時保留為未知人物武器，不猜名稱。
 
@@ -8,7 +8,7 @@ Palworld 1.0 單機用 UE4SS Lua 傷害驗證 Mod。它不是玩家排行榜，�
 
 第一次有效命中後，畫面左側安全區會開啟縮小至 85% 的透明置頂 HUD；聊天輸出預設關閉。戰鬥儀表只顯示前五個技能的官方本地化名稱，並把總傷害放在每列與整體摘要的主要位置；整場 DPS、占比與施放次數作為次要效率資訊，避免時間增加造成 DPS 波動時遮蔽真正累積輸出。
 
-預設是「手動測試區間」：按 `F2` 可安全歸零並重新待命，直到第一下有效命中才開始計時；之後即使其中一隻敵人死亡，測試仍會持續，直到再次按 F2。可測量目標預設為所有野生帕魯，因此野外 Boss、石板 Boss、一般大世界戰鬥與基地多帕魯群戰都能使用。
+預設是「手動 Boss 測試區間」：按 `F2` 可安全歸零並重新待命，直到第一下對可辨識 Boss 的有效命中才開始計時；之後即使其中一隻 Boss 死亡，測試仍會持續，直到再次按 F2。競技場內 Boss 與大世界 Boss 標記目標都會接受；普通野生帕魯預設排除。
 
 實機已確認目前 Palworld／UE4SS 會在 Lua 動態 UMG 與 `PrintString` 路徑造成 GameThread 存取違規。顯示層因此隔離成隨附的 Windows WPF 程序：Lua 只寫入本機 UTF-8 結構化狀態檔，不再從傷害回呼呼叫 Unreal UI。面板只在 Palworld 位於前景時顯示，遊戲關閉後約 10 秒自行退出。
 
@@ -18,7 +18,7 @@ Palworld 1.0 單機用 UE4SS Lua 傷害驗證 Mod。它不是玩家排行榜，�
 - 技能 DPS 面板開關
 - 人物／武器傷害（預設關閉）
 - 手動測試區間／每個目標自動分場
-- 所有野生帕魯／只限 Boss 與頭目
+- Boss 與頭目（預設）／所有野生帕魯（僅額外診斷）
 - 完整／精簡資料密度（預設精簡長條）
 - 內部英文技能代碼（預設不顯示）
 - 左／右安全區、左上／右上位置與 75%／85%／100%／115% 縮放
@@ -42,7 +42,7 @@ Palworld 1.0 單機用 UE4SS Lua 傷害驗證 Mod。它不是玩家排行榜，�
 config.EnableSkillDiagnostics = true
 config.SkillDiagnosticsOnly = true
 config.MeasurementMode = "manual"
-config.TargetScope = "all"
+config.TargetScope = "boss"
 config.IncludePlayerDamage = false
 config.SkillDiagnosticChatMode = "off"
 config.EnableSkillDPSHUD = true
@@ -73,7 +73,7 @@ powershell -ExecutionPolicy Bypass -File .\workshop\build_workshop.ps1
 ## 驗證流程
 
 1. 啟用本 Mod 與 UE4SS Experimental。
-2. 進入世界後按 F2 歸零，再使用一隻或多隻帕魯攻擊任意野生帕魯／Boss；計時從第一下開始。
+2. 進入世界後按 F2 歸零，再使用帕魯攻擊一隻競技場／石板 Boss 或有 Boss 標記的大世界頭目；計時從第一下可接受 Boss 傷害開始。
 3. 確認左側即時儀表沒有左右跳動，且晶鑽之雨沒有再被歸到暗能彈。
 4. 測試後保留 `UE4SS.log`，供技能建立、最終傷害與動作生命週期逐筆核對。
 5. 以原生 capabilities 中的 `attack_matches`、`exact_hits`、`unresolved_hits`，以及 `diagnostic-candidate`／`diagnostic-cast` 行確認精確來源鏈與顯示結果；沒有 exact 證據的命中不得進入具名技能桶。
@@ -82,7 +82,7 @@ powershell -ExecutionPolicy Bypass -File .\workshop\build_workshop.ps1
 ## 適用邊界
 
 - 正式目標：Palworld 1.0 Windows 單人世界。
-- Boss 房間、塔主、野外 Boss、召喚／石板 Boss、一般野生帕魯及基地多帕魯戰鬥可用；PvP 不是目前目標。
+- Boss 房間、塔主、地城／競技場 Boss、召喚／石板 Boss 與有 Boss／Alpha 標記的大世界頭目是正式目標；普通野生帕魯、基地群戰與 PvP 不是預設正式統計範圍。
 - 持續傷害、燃燒、中毒、同一泛用投射物承載多種技能等情況，可能先進入未知或合併候選。
 - 「面板 CD」來自遊戲技能資料庫；「實際開始間隔」是相鄰施放開始到開始，會包含 AI 選招、移動、距離與其他技能造成的等待，不等同純冷卻。
 - 「完整動作」只統計成功捕捉開始與結束的施放。報表的 `完整計時 n/m` 是覆蓋率；未完整捕捉時只保留首末命中窗，不把它冒充動作時間。

@@ -52,9 +52,10 @@ config.EnableBoundedSkillInference = true
 -- "manual" keeps one test open across many targets until F1 -> Start new test;
 -- "target" automatically creates a separate test for each damaged target.
 config.MeasurementMode = "manual"
--- "all" accepts open-world Alpha/Boss and ordinary wild Pals. "boss" keeps
--- the former boss-flag-only behaviour.
-config.TargetScope = "all"
+-- "boss" accepts arena/tower/raid/tablet Bosses and open-world Alpha/Boss
+-- targets, while excluding ordinary wild Pals from the formal test totals.
+-- Use "all" only for an explicit non-Boss diagnostic run.
+config.TargetScope = "boss"
 -- Off by default. Enable for a separate player-character test run. When the
 -- damage causer exposes a weapon/projectile, the analyzer creates one bucket
 -- per candidate; otherwise it falls back to a generic player source bucket.
