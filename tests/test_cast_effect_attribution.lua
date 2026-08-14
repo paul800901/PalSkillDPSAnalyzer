@@ -85,6 +85,7 @@ local function run_case(name, fixture)
 end
 
 run_case("overlap", fixtures.overlap)
+run_case("sustained_exact_overlap", fixtures.sustained_exact_overlap)
 run_case("same_signature_exact", fixtures.same_signature_exact)
 run_case("same_signature_weak", fixtures.same_signature_weak)
 run_case("wrapper_copy_propagated", fixtures.wrapper_copy_propagated)

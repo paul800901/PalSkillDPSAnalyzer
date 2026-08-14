@@ -58,7 +58,7 @@ $vdf = @(
     ('    "visibility" "{0}"' -f $Visibility)
     ('    "title" "{0}"' -f (ConvertTo-VdfValue $workshopTitle))
     ('    "description" "{0}"' -f (ConvertTo-VdfValue $description))
-    '    "changenote" "v0.5.13: adds bounded attribution from the live three-slot Pal loadout and action lifecycle while exact sources remain authoritative; ambiguous overlaps stay unresolved."'
+    '    "changenote" "v0.5.14: adds native per-hit exact attribution from cast and effect through Blueprint OnAttack to final damage; missing exact sources remain unresolved."'
     '}'
 ) -join "`r`n"
 [System.IO.File]::WriteAllText($vdfPath, $vdf, [System.Text.UTF8Encoding]::new($false))
@@ -76,8 +76,8 @@ if (-not $match.Success -or $match.Groups[1].Value -eq "0") {
 }
 
 $metadata.publishedfileid = $match.Groups[1].Value
-$metadata.changenote = "v0.5.13: adds bounded attribution from the live three-slot Pal loadout and action lifecycle while exact sources remain authoritative; ambiguous overlaps stay unresolved."
-$metadata.last_published_version = "0.5.13"
+$metadata.changenote = "v0.5.14: adds native per-hit exact attribution from cast and effect through Blueprint OnAttack to final damage; missing exact sources remain unresolved."
+$metadata.last_published_version = "0.5.14"
 $metadataJson = $metadata | ConvertTo-Json -Depth 4
 [System.IO.File]::WriteAllText($metadataPath, $metadataJson + "`r`n", [System.Text.UTF8Encoding]::new($false))
 

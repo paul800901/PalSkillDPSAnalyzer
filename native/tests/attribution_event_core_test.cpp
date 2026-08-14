@@ -123,6 +123,98 @@ namespace
         expect_conservation(snapshot);
     }
 
+    auto sustained_exact_overlap_test() -> void
+    {
+        AttributionEventCore core{32};
+        const auto pal = token(201, 7);
+        const auto boss = token(202, 1);
+        const auto ice_cast = cast_token(210);
+        const auto apocalypse_cast = cast_token(211);
+        const auto gravity_cast = cast_token(212);
+        const auto sand_cast = cast_token(213);
+        const auto ice_effect = token(220, 1);
+        const auto apocalypse_effect = token(221, 1);
+        const auto sand_effect = token(222, 1);
+        const auto ice_info = token(230, 1);
+        const auto apocalypse_info = token(231, 1);
+        const auto gravity_waza = token(240, 1);
+
+        expect(core.on_cast_begin({ice_cast, pal, token(250, 1), {}, "IceAge"})
+            == LinkResult::linked, "IceAge cast link");
+        expect(core.on_effect({ice_effect, pal, ice_cast, {}})
+            == LinkResult::linked, "IceAge effect link");
+        expect(core.on_damage_info({ice_info, pal, {}, ice_effect, {}})
+            == LinkResult::linked, "IceAge DamageInfo link");
+
+        expect(core.on_cast_begin(
+            {apocalypse_cast, pal, token(251, 1), {}, "Apocalypse"})
+            == LinkResult::linked, "sustained Apocalypse cast link");
+        expect(core.on_effect({apocalypse_effect, pal, apocalypse_cast, {}})
+            == LinkResult::linked, "sustained Apocalypse effect link");
+        expect(core.on_damage_info({apocalypse_info, pal, {}, apocalypse_effect, {}})
+            == LinkResult::linked, "sustained Apocalypse DamageInfo link");
+
+        // IceAge lands after Apocalypse starts, but its exact DamageInfo must
+        // keep the delayed hit on the older IceAge cast.
+        const auto ice_after_apocalypse =
+            core.on_hit({pal, boss, {}, ice_info, {}, {}, 80, 160, 6});
+        const auto apocalypse_first =
+            core.on_hit({pal, boss, {}, apocalypse_info, {}, {}, 101, 400, 8});
+
+        expect(core.on_cast_begin(
+            {gravity_cast, pal, token(252, 1), gravity_waza, "GravityShot"})
+            == LinkResult::linked, "sustained GravityShot cast link");
+        const auto gravity = core.on_hit({pal, boss, {}, {}, gravity_waza, {}, 40, 40, 8});
+        // Apocalypse keeps ticking after GravityShot becomes the newer cast.
+        const auto apocalypse_after_gravity =
+            core.on_hit({pal, boss, {}, apocalypse_info, {}, {}, 103, 400, 8});
+
+        expect(core.on_cast_begin({sand_cast, pal, token(253, 1), {}, "SandTwister"})
+            == LinkResult::linked, "SandTwister cast link");
+        expect(core.on_effect({sand_effect, pal, sand_cast, {}})
+            == LinkResult::linked, "SandTwister effect link");
+        const auto sand = core.on_hit({pal, boss, sand_effect, {}, {}, {}, 55, 80, 3});
+        // Both older sustained effects keep their original cast after
+        // SandTwister starts.
+        const auto ice_after_sand =
+            core.on_hit({pal, boss, ice_effect, {}, {}, {}, 82, 160, 6});
+        const auto apocalypse_after_sand =
+            core.on_hit({pal, boss, {}, apocalypse_info, {}, {}, 107, 400, 8});
+
+        // BasePower/element and event order alone are not exact evidence.
+        const auto weak_apocalypse = core.on_hit({pal, boss, {}, {}, {}, {}, 17, 400, 8});
+
+        expect(ice_after_apocalypse.cast == ice_cast
+                && ice_after_apocalypse.evidence == EvidenceKind::damage_info,
+            "IceAge delayed hit was stolen by Apocalypse");
+        expect(ice_after_sand.cast == ice_cast
+                && ice_after_sand.evidence == EvidenceKind::effect,
+            "IceAge delayed effect was stolen by SandTwister");
+        expect(apocalypse_first.cast == apocalypse_cast
+                && apocalypse_after_gravity.cast == apocalypse_cast
+                && apocalypse_after_sand.cast == apocalypse_cast,
+            "Apocalypse tail was stolen by a newer cast");
+        expect(gravity.cast == gravity_cast && gravity.evidence == EvidenceKind::direct_waza,
+            "GravityShot exact token crossed into a sustained skill");
+        expect(sand.cast == sand_cast && sand.evidence == EvidenceKind::effect,
+            "SandTwister exact effect did not remain independent");
+        expect(weak_apocalypse.kind == AttributionKind::unresolved
+                && weak_apocalypse.evidence == EvidenceKind::none,
+            "missing exact token guessed Apocalypse from signature/order");
+
+        const auto snapshot = core.snapshot();
+        expect_total(snapshot.skills.at("IceAge"), 162, 2, "IceAge sustained total");
+        expect_total(snapshot.skills.at("Apocalypse"), 311, 3,
+            "Apocalypse sustained total");
+        expect_total(snapshot.skills.at("GravityShot"), 40, 1,
+            "GravityShot sustained total");
+        expect_total(snapshot.skills.at("SandTwister"), 55, 1,
+            "SandTwister sustained total");
+        expect_total(snapshot.unresolved, 17, 1, "sustained overlap unresolved total");
+        expect_total(snapshot.total, 585, 8, "sustained overlap total");
+        expect_conservation(snapshot);
+    }
+
     auto same_signature_and_fail_closed_test() -> void
     {
         AttributionEventCore core;
@@ -321,6 +413,7 @@ namespace
 auto main() -> int
 {
     overlap_test();
+    sustained_exact_overlap_test();
     same_signature_and_fail_closed_test();
     wrapper_and_object_serial_test();
     reused_action_instance_test();

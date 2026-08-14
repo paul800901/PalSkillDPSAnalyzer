@@ -1,5 +1,14 @@
 # 更新日志
 
+## 0.5.14-native-exact-attribution — 原生逐擊精確來源鏈
+
+- 原生 C++ 收集器改為逐擊 Event v2，沿 action／cast、技能效果與子效果、AttackFilter Waza、Blueprint OnAttack 連到最終 OnDamage；歸因完成前不先聚合。
+- Blueprint script UFunction 改由 UE4SS 全域 ProcessLocalScriptFunction callback 攔截；OnInitialize／BindPrimitiveComponent 未被觀察到時不再錯誤停用整條事件流。
+- 原生事件只有精確 effect／cast／Waza 證據可進入具名技能桶；缺少來源、來源衝突、攻擊者不符或物件世代不符時一律 fail closed 到「未辨識傷害」。
+- 移除原生 Event v2 對目前動作、最近施放、三格唯一倍率、BasePower 與元素推測的依賴，避免多段脫手技能互相冒名。
+- 新增冰河凍域／沙塵暴／啟示錄／暗能彈交錯延遲命中、同倍率同屬性、DamageInfo copy、物件位址重用、狀態傷害隔離與逐擊守恆回歸。
+- 原生建置已通過 200 萬命中壓力測試、事件佇列與來源鏈測試；完整離線測試及本機安裝檔 hash 讀回通過。Palworld 實機精確命中尚待本版重開驗收；灼燒／中毒獨立狀態列仍未完成。
+
 ## 0.5.13-hybrid-attribution — 即時三格技能與施放生命週期
 
 - 每次命中前即時維護帕魯的三格 `EquipWaza`，換技後由下一次 action 重新讀取，不沿用舊配置。

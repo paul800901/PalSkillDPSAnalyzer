@@ -29,6 +29,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace
@@ -42,8 +43,10 @@ namespace
     };
     constexpr auto skill_effect_base_class_path = STR("/Script/Pal.PalSkillEffectBase");
     constexpr auto attack_filter_class_path = STR("/Script/Pal.PalAttackFilter");
+    constexpr auto action_base_class_path = STR("/Script/Pal.PalActionBase");
     constexpr std::size_t maximum_pending_buckets = 4096;
     constexpr std::size_t maximum_pending_events = 16384;
+    constexpr std::size_t maximum_source_records = 32768;
 
     enum class TargetState : std::uint8_t
     {
@@ -141,13 +144,39 @@ namespace
         UObject* context{};
         pal_dps::ObjectToken attacker{};
         pal_dps::ObjectToken defender{};
+        pal_dps::ObjectToken action{};
         pal_dps::ObjectToken effect{};
+        pal_dps::ObjectToken parent_effect{};
         pal_dps::ObjectToken filter{};
+        pal_dps::CastToken cast{};
         std::int64_t waza_id{};
         std::string skill_code{};
     };
 
+    struct ActionScope
+    {
+        UFunction* function{};
+        UObject* context{};
+        pal_dps::ObjectToken action{};
+        pal_dps::CastToken cast{};
+    };
+
+    struct EffectSourceRecord
+    {
+        pal_dps::ObjectToken effect{};
+        pal_dps::ObjectToken action{};
+        pal_dps::ObjectToken attacker{};
+        pal_dps::ObjectToken parent_effect{};
+        pal_dps::ObjectToken filter{};
+        pal_dps::CastToken cast{};
+        std::int64_t waza_id{};
+        std::string skill_code{};
+        bool conflicted{};
+        bool initialize_emitted{};
+    };
+
     thread_local std::vector<AttackScope> active_attack_scopes{};
+    thread_local std::vector<ActionScope> active_action_scopes{};
 
     struct WeakObjects
     {
@@ -384,6 +413,25 @@ namespace
             std::chrono::steady_clock::now().time_since_epoch()).count());
     }
 
+    auto is_native_function(UFunction* function) -> bool
+    {
+        if (function == nullptr)
+        {
+            return false;
+        }
+        const auto function_pointer = function->GetFunc();
+        return function_pointer != nullptr
+            && function_pointer != UObject::ProcessInternalInternal.get_function_address()
+            && function->HasAnyFunctionFlags(EFunctionFlags::FUNC_Native);
+    }
+
+    auto is_script_function(UFunction* function) -> bool
+    {
+        return function != nullptr
+            && function->GetFunc() == UObject::ProcessInternalInternal.get_function_address()
+            && !function->HasAnyFunctionFlags(EFunctionFlags::FUNC_Native);
+    }
+
     auto format_pointer(std::uintptr_t value) -> std::string
     {
         char buffer[2 + sizeof(std::uintptr_t) * 2 + 1]{};
@@ -411,6 +459,36 @@ namespace
             if (m_filter_bind_function != nullptr && m_filter_bind_hook_id >= 0)
             {
                 static_cast<void>(m_filter_bind_function->UnregisterHook(m_filter_bind_hook_id));
+            }
+            if (m_effect_initialize_function != nullptr)
+            {
+                if (m_effect_initialize_pre_hook_id >= 0)
+                {
+                    static_cast<void>(m_effect_initialize_function->UnregisterHook(
+                        m_effect_initialize_pre_hook_id
+                    ));
+                }
+                if (m_effect_initialize_post_hook_id >= 0)
+                {
+                    static_cast<void>(m_effect_initialize_function->UnregisterHook(
+                        m_effect_initialize_post_hook_id
+                    ));
+                }
+            }
+            if (m_action_begin_function != nullptr)
+            {
+                if (m_action_begin_pre_hook_id >= 0)
+                {
+                    static_cast<void>(m_action_begin_function->UnregisterHook(
+                        m_action_begin_pre_hook_id
+                    ));
+                }
+                if (m_action_begin_post_hook_id >= 0)
+                {
+                    static_cast<void>(m_action_begin_function->UnregisterHook(
+                        m_action_begin_post_hook_id
+                    ));
+                }
             }
             if (m_script_pre_id != Hook::ERROR_ID)
             {
@@ -618,12 +696,53 @@ namespace
                    << "; event_overflow=" << (event_stats.overflowed ? "true" : "false")
                    << "; damage_path=" << m_damage_function_path
                    << "; script_calls=" << m_script_calls.load()
+                   << "; action_hook="
+                   << (m_action_source_ready.load() ? "true" : "false")
+                   << "; effect_init_hook="
+                   << (m_effect_initialize_ready.load() ? "true" : "false")
+                   << "; filter_bind_hook="
+                   << (m_filter_bind_ready.load() ? "true" : "false")
+                   << "; action_begins=" << m_action_begin_matches.load()
+                   << "; effect_initializes=" << m_effect_initialize_matches.load()
                    << "; attack_matches=" << m_attack_matches.load()
                    << "; attack_without_waza=" << m_attack_without_waza.load()
                    << "; filter_bind_matches=" << m_filter_bind_matches.load()
                    << "; exact_hits=" << m_exact_hits.load()
                    << "; unresolved_hits=" << m_unresolved_hits.load()
+                   << "; source_overflow="
+                   << (m_source_overflow.load() ? "true" : "false")
                    << "; source_errors=" << m_source_errors.load();
+            return output.str();
+        }
+
+        auto capabilities() const -> std::string
+        {
+            std::ostringstream output;
+            const auto stream_ready = event_is_ready();
+            output << "api_version=2"
+                   << ";final_damage=true"
+                   << ";exact_attribution=" << (stream_ready ? "conditional" : "false")
+                   << ";action=" << (m_action_source_ready.load() ? "true" : "false")
+                   << ";effect_init="
+                   << (m_effect_initialize_ready.load() ? "true" : "false")
+                   << ";attack_filter="
+                   << (m_filter_bind_ready.load() ? "true" : "false")
+                   << ";effect_attack=" << (stream_ready ? "true" : "false")
+                   << ";damage_info=false;status=false"
+                   << ";action_observed="
+                   << (m_action_begin_matches.load() > 0 ? "true" : "false")
+                   << ";effect_init_observed="
+                   << (m_effect_initialize_matches.load() > 0 ? "true" : "false")
+                   << ";filter_bind_observed="
+                   << (m_filter_bind_matches.load() > 0 ? "true" : "false")
+                   << ";effect_attack_observed="
+                   << (m_attack_matches.load() > 0 ? "true" : "false")
+                   << ";action_matches=" << m_action_begin_matches.load()
+                   << ";effect_init_matches=" << m_effect_initialize_matches.load()
+                   << ";filter_bind_matches=" << m_filter_bind_matches.load()
+                   << ";effect_attack_matches=" << m_attack_matches.load()
+                   << ";exact_hit_matches=" << m_exact_hits.load()
+                   << ";unresolved_hits=" << m_unresolved_hits.load();
             return output.str();
         }
 
@@ -647,21 +766,25 @@ namespace
             m_attack_filter_class = UObjectGlobals::StaticFindObject<UClass*>(
                 nullptr, nullptr, attack_filter_class_path
             );
-            if (m_skill_effect_base_class == nullptr || m_attack_filter_class == nullptr)
+            m_action_base_class = UObjectGlobals::StaticFindObject<UClass*>(
+                nullptr, nullptr, action_base_class_path
+            );
+            if (m_skill_effect_base_class == nullptr || m_attack_filter_class == nullptr
+                || m_action_base_class == nullptr)
             {
-                log(STR("Pal skill-effect classes were not found"));
+                log(STR("Pal action/skill-effect classes were not found"));
                 return;
             }
 
             Hook::FCallbackOptions pre_options{};
             pre_options.bReadonly = true;
             pre_options.OwnerModName = STR("PalSkillDPSAnalyzer");
-            pre_options.HookName = STR("SkillEffectAttackPre");
+            pre_options.HookName = STR("ExactSkillSourcePre");
             m_script_pre_id = Hook::RegisterProcessLocalScriptFunctionPreCallback(
                 [this](Hook::TCallbackIterationData<void>&, UObject* context, FFrame& stack, void*) {
                     try
                     {
-                        capture_script_attack_pre(context, stack);
+                        capture_script_source_pre(context, stack);
                     }
                     catch (...)
                     {
@@ -674,12 +797,12 @@ namespace
             Hook::FCallbackOptions post_options{};
             post_options.bReadonly = true;
             post_options.OwnerModName = STR("PalSkillDPSAnalyzer");
-            post_options.HookName = STR("SkillEffectAttackPost");
+            post_options.HookName = STR("ExactSkillSourcePost");
             m_script_post_id = Hook::RegisterProcessLocalScriptFunctionPostCallback(
                 [this](Hook::TCallbackIterationData<void>&, UObject* context, FFrame& stack, void*) {
                     try
                     {
-                        capture_script_attack_post(context, stack);
+                        capture_script_source_post(context, stack);
                     }
                     catch (...)
                     {
@@ -689,10 +812,89 @@ namespace
                 post_options
             );
 
+            const auto script_hooks_ready = m_script_pre_id != Hook::ERROR_ID
+                && m_script_post_id != Hook::ERROR_ID;
+
+            m_action_begin_function = UObjectGlobals::StaticFindObject<UFunction*>(
+                nullptr, nullptr, STR("/Script/Pal.PalActionBase:OnBeginAction")
+            );
+            auto action_observable = script_hooks_ready
+                && is_script_function(m_action_begin_function);
+            if (is_native_function(m_action_begin_function))
+            {
+                m_action_begin_pre_hook_id = m_action_begin_function->RegisterPreHook(
+                    [this](UnrealScriptFunctionCallableContext& context, void*) {
+                        try
+                        {
+                            capture_action_begin_pre(
+                                context.Context, m_action_begin_function
+                            );
+                        }
+                        catch (...)
+                        {
+                            ++m_source_errors;
+                        }
+                    }
+                );
+                m_action_begin_post_hook_id = m_action_begin_function->RegisterPostHook(
+                    [this](UnrealScriptFunctionCallableContext& context, void*) {
+                        try
+                        {
+                            capture_action_begin_post(
+                                context.Context, m_action_begin_function
+                            );
+                        }
+                        catch (...)
+                        {
+                            ++m_source_errors;
+                        }
+                    }
+                );
+                action_observable = m_action_begin_pre_hook_id >= 0
+                    && m_action_begin_post_hook_id >= 0;
+            }
+
+            m_effect_initialize_function = UObjectGlobals::StaticFindObject<UFunction*>(
+                nullptr, nullptr, STR("/Script/Pal.PalSkillEffectBase:OnInitialize")
+            );
+            auto effect_initialize_observable = script_hooks_ready
+                && is_script_function(m_effect_initialize_function);
+            if (is_native_function(m_effect_initialize_function))
+            {
+                m_effect_initialize_pre_hook_id = m_effect_initialize_function->RegisterPreHook(
+                    [this](UnrealScriptFunctionCallableContext& context, void*) {
+                        try
+                        {
+                            capture_effect_initialize_pre(context.Context);
+                        }
+                        catch (...)
+                        {
+                            ++m_source_errors;
+                        }
+                    }
+                );
+                m_effect_initialize_post_hook_id = m_effect_initialize_function->RegisterPostHook(
+                    [this](UnrealScriptFunctionCallableContext& context, void*) {
+                        try
+                        {
+                            capture_effect_initialize_post(context.Context);
+                        }
+                        catch (...)
+                        {
+                            ++m_source_errors;
+                        }
+                    }
+                );
+                effect_initialize_observable = m_effect_initialize_pre_hook_id >= 0
+                    && m_effect_initialize_post_hook_id >= 0;
+            }
+
             m_filter_bind_function = UObjectGlobals::StaticFindObject<UFunction*>(
                 nullptr, nullptr, STR("/Script/Pal.PalAttackFilter:BindPrimitiveComponent")
             );
-            if (m_filter_bind_function != nullptr)
+            auto filter_bind_observable = script_hooks_ready
+                && is_script_function(m_filter_bind_function);
+            if (is_native_function(m_filter_bind_function))
             {
                 m_filter_bind_hook_id = m_filter_bind_function->RegisterPreHook(
                     [this](UnrealScriptFunctionCallableContext& context, void*) {
@@ -706,10 +908,21 @@ namespace
                         }
                     }
                 );
+                filter_bind_observable = m_filter_bind_hook_id >= 0;
             }
 
-            const auto script_hooks_ready = m_script_pre_id != Hook::ERROR_ID
-                && m_script_post_id != Hook::ERROR_ID;
+            m_action_source_ready.store(action_observable, std::memory_order_release);
+            m_effect_initialize_ready.store(
+                effect_initialize_observable, std::memory_order_release
+            );
+            m_filter_bind_ready.store(filter_bind_observable, std::memory_order_release);
+            // The global Blueprint script callbacks are the only mandatory
+            // prerequisite for the Event v2 stream. OnAttack can discover the
+            // effect/filter/Waza directly and backfill its source record even
+            // when OnInitialize or BindPrimitiveComponent was not observable
+            // at startup. Keep emitting every final hit and fail closed per hit
+            // instead of disabling the whole stream and falling back to timing
+            // inference.
             m_exact_source_ready.store(script_hooks_ready, std::memory_order_release);
         }
 
@@ -732,18 +945,259 @@ namespace
             {
                 return;
             }
-            std::scoped_lock lock{m_source_mutex};
-            m_effect_filters.insert_or_assign(effect_token, filter_token);
+            auto record = ensure_effect_source(outer, filter);
+            if (!record.has_value())
+            {
+                return;
+            }
+
+            {
+                std::scoped_lock lock{m_source_mutex};
+                const auto known = m_effect_filters.find(effect_token);
+                if (known == m_effect_filters.end())
+                {
+                    m_effect_filters.emplace(effect_token, filter_token);
+                }
+                else if (known->second != filter_token)
+                {
+                    m_ambiguous_effect_filters.insert(effect_token);
+                }
+                m_filter_effects.insert_or_assign(filter_token, effect_token);
+            }
             ++m_filter_bind_matches;
         }
 
-        auto find_attack_filter(UObject* effect) -> UObject*
+        auto read_object_member(
+            UObject* object,
+            std::initializer_list<std::string_view> names
+        ) const -> UObject*
+        {
+            if (object == nullptr || object->GetClassPrivate() == nullptr)
+            {
+                return nullptr;
+            }
+            return find_object_field(object->GetClassPrivate(), names).read(object);
+        }
+
+        auto capture_action_begin_pre(UObject* action, UFunction* function) -> void
+        {
+            if (action == nullptr || function == nullptr || m_action_base_class == nullptr
+                || !action->IsA(m_action_base_class))
+            {
+                return;
+            }
+            const auto action_token = object_token(action);
+            if (!action_token.valid())
+            {
+                return;
+            }
+
+            pal_dps::CastToken cast{};
+            bool emit_cast{};
+            if (!active_action_scopes.empty()
+                && active_action_scopes.back().context == action)
+            {
+                cast = active_action_scopes.back().cast;
+            }
+            else
+            {
+                std::scoped_lock lock{m_source_mutex};
+                cast = {m_next_cast_value++};
+                emit_cast = true;
+            }
+            active_action_scopes.push_back({
+                .function = function,
+                .context = action,
+                .action = action_token,
+                .cast = cast,
+            });
+
+            // Keep lifecycle records internal for now. The public API-v2 queue
+            // remains damage-only so existing Lua consumers stay compatible.
+            if (emit_cast)
+            {
+                ++m_action_begin_matches;
+            }
+        }
+
+        auto capture_action_begin_post(UObject* action, UFunction* function) -> void
+        {
+            if (active_action_scopes.empty())
+            {
+                return;
+            }
+            const auto& scope = active_action_scopes.back();
+            if (scope.function == function && scope.context == action)
+            {
+                active_action_scopes.pop_back();
+                return;
+            }
+            active_action_scopes.clear();
+            ++m_source_errors;
+        }
+
+        auto ensure_effect_source(
+            UObject* effect,
+            UObject* direct_filter = nullptr,
+            std::size_t depth = 0
+        ) -> std::optional<EffectSourceRecord>
+        {
+            if (effect == nullptr || m_skill_effect_base_class == nullptr
+                || !effect->IsA(m_skill_effect_base_class) || depth > 16)
+            {
+                return std::nullopt;
+            }
+            const auto effect_token = object_token(effect);
+            if (!effect_token.valid())
+            {
+                return std::nullopt;
+            }
+
+            auto* owner = read_object_member(effect, {"Owner"});
+            auto* instigator = read_object_member(effect, {"Instigator"});
+            pal_dps::ObjectToken parent_effect{};
+            std::optional<EffectSourceRecord> parent_source{};
+            if (owner != nullptr && owner->IsA(m_skill_effect_base_class))
+            {
+                parent_effect = object_token(owner);
+                parent_source = ensure_effect_source(owner, nullptr, depth + 1);
+            }
+
+            auto* filter = direct_filter != nullptr
+                ? direct_filter
+                : find_attack_filter(effect, nullptr);
+            const auto filter_token = object_token(filter);
+            const auto [waza_id, skill_code] = read_filter_waza(filter);
+
+            EffectSourceRecord result{};
+            {
+                std::scoped_lock lock{m_source_mutex};
+                auto source = m_effect_sources.find(effect_token);
+                if (source == m_effect_sources.end())
+                {
+                    if (m_effect_sources.size() >= maximum_source_records)
+                    {
+                        m_source_overflow.store(true, std::memory_order_release);
+                        m_exact_source_ready.store(false, std::memory_order_release);
+                        m_faulted.store(true, std::memory_order_release);
+                        ++m_source_errors;
+                        return std::nullopt;
+                    }
+                    EffectSourceRecord created{};
+                    created.effect = effect_token;
+                    created.parent_effect = parent_effect;
+                    if (parent_source.has_value() && !parent_source->conflicted)
+                    {
+                        created.action = parent_source->action;
+                        created.attacker = parent_source->attacker;
+                        created.cast = parent_source->cast;
+                    }
+                    else if (!active_action_scopes.empty())
+                    {
+                        created.action = active_action_scopes.back().action;
+                        created.cast = active_action_scopes.back().cast;
+                    }
+                    if (!created.attacker.valid())
+                    {
+                        created.attacker = object_token(instigator);
+                    }
+                    created.filter = filter_token;
+                    created.waza_id = waza_id;
+                    created.skill_code = skill_code;
+                    source = m_effect_sources.emplace(effect_token, std::move(created)).first;
+                }
+
+                auto& record = source->second;
+                if (parent_effect.valid())
+                {
+                    if (record.parent_effect.valid() && record.parent_effect != parent_effect)
+                    {
+                        record.conflicted = true;
+                    }
+                    else
+                    {
+                        record.parent_effect = parent_effect;
+                    }
+                    if (parent_source.has_value() && !parent_source->conflicted)
+                    {
+                        if (record.cast.valid() && parent_source->cast.valid()
+                            && record.cast != parent_source->cast)
+                        {
+                            record.conflicted = true;
+                        }
+                        else if (!record.cast.valid())
+                        {
+                            record.cast = parent_source->cast;
+                            record.action = parent_source->action;
+                        }
+                        if (!record.attacker.valid())
+                        {
+                            record.attacker = parent_source->attacker;
+                        }
+                    }
+                }
+                if (filter_token.valid())
+                {
+                    if (!record.filter.valid())
+                    {
+                        record.filter = filter_token;
+                    }
+                    m_filter_effects.insert_or_assign(filter_token, effect_token);
+                }
+                if (waza_id > 0)
+                {
+                    if (record.waza_id > 0 && record.waza_id != waza_id)
+                    {
+                        record.conflicted = true;
+                    }
+                    else
+                    {
+                        record.waza_id = waza_id;
+                        record.skill_code = skill_code;
+                    }
+                }
+                result = record;
+            }
+            return result;
+        }
+
+        auto capture_effect_initialize_pre(UObject* effect) -> void
+        {
+            static_cast<void>(ensure_effect_source(effect));
+        }
+
+        auto capture_effect_initialize_post(UObject* effect) -> void
+        {
+            auto source = ensure_effect_source(effect);
+            if (!source.has_value())
+            {
+                return;
+            }
+            bool emit_initialize{};
+            {
+                std::scoped_lock lock{m_source_mutex};
+                const auto known = m_effect_sources.find(source->effect);
+                if (known != m_effect_sources.end() && !known->second.initialize_emitted)
+                {
+                    known->second.initialize_emitted = true;
+                    source = known->second;
+                    emit_initialize = true;
+                }
+            }
+            if (emit_initialize)
+            {
+                ++m_effect_initialize_matches;
+            }
+        }
+
+        auto find_attack_filter(UObject* effect, UFunction* handler) -> UObject*
         {
             if (effect == nullptr || effect->GetClassPrivate() == nullptr
                 || m_attack_filter_class == nullptr)
             {
                 return nullptr;
             }
+            std::vector<std::pair<std::string, UObject*>> candidates{};
             for (TFieldIterator<FProperty> iterator{
                      effect->GetClassPrivate(), EFieldIterationFlags::IncludeSuper
                  };
@@ -760,14 +1214,50 @@ namespace
                 auto* candidate = object_property->GetObjectPropertyValue(address);
                 if (candidate != nullptr && candidate->IsA(m_attack_filter_class))
                 {
-                    return candidate;
+                    candidates.emplace_back(field_name(property), candidate);
+                }
+            }
+            if (candidates.size() == 1)
+            {
+                return candidates.front().second;
+            }
+            if (handler != nullptr && !candidates.empty())
+            {
+                const auto handler_name = RC::to_string(handler->GetName());
+                UObject* matched{};
+                for (const auto& [property_name, candidate] : candidates)
+                {
+                    if (!property_name.empty()
+                        && contains_ignore_case(handler_name, property_name))
+                    {
+                        if (matched != nullptr && matched != candidate)
+                        {
+                            return nullptr;
+                        }
+                        matched = candidate;
+                    }
+                }
+                if (matched != nullptr)
+                {
+                    return matched;
                 }
             }
 
             const auto effect_token = object_token(effect);
-            std::scoped_lock lock{m_source_mutex};
-            const auto known = m_effect_filters.find(effect_token);
-            return known == m_effect_filters.end() ? nullptr : resolve_object(known->second);
+            pal_dps::ObjectToken filter_token{};
+            {
+                std::scoped_lock lock{m_source_mutex};
+                if (m_ambiguous_effect_filters.contains(effect_token))
+                {
+                    return nullptr;
+                }
+                const auto known = m_effect_filters.find(effect_token);
+                if (known != m_effect_filters.end())
+                {
+                    filter_token = known->second;
+                }
+            }
+            return resolve_object(filter_token);
         }
 
         auto discover_attack_layout(UFunction* function) -> AttackFunctionLayout
@@ -824,21 +1314,87 @@ namespace
             return layout;
         }
 
-        auto capture_script_attack_pre(UObject* context, FFrame& stack) -> void
+        auto capture_script_source_pre(UObject* context, FFrame& stack) -> void
         {
             auto* function = stack.Node();
             if (function == nullptr)
             {
                 function = stack.CurrentNativeFunction();
             }
-            if (function == nullptr
-                || !contains_ignore_case(
-                    RC::to_string(function->GetName()), "OnAttackDelegate__DelegateSignature"
-                ))
+            if (function == nullptr)
             {
                 return;
             }
-            ++m_script_calls;
+            const auto function_name = RC::to_string(function->GetName());
+            if (equals_ignore_case(function_name, "OnBeginAction")
+                && context != nullptr && m_action_base_class != nullptr
+                && context->IsA(m_action_base_class))
+            {
+                ++m_script_calls;
+                capture_action_begin_pre(context, function);
+                return;
+            }
+            if (equals_ignore_case(function_name, "OnInitialize")
+                && context != nullptr && m_skill_effect_base_class != nullptr
+                && context->IsA(m_skill_effect_base_class))
+            {
+                ++m_script_calls;
+                capture_effect_initialize_pre(context);
+                return;
+            }
+            if (equals_ignore_case(function_name, "BindPrimitiveComponent")
+                && context != nullptr && m_attack_filter_class != nullptr
+                && context->IsA(m_attack_filter_class))
+            {
+                ++m_script_calls;
+                capture_filter_binding(context);
+                return;
+            }
+            if (contains_ignore_case(function_name, "OnAttackDelegate__DelegateSignature"))
+            {
+                ++m_script_calls;
+                capture_script_attack_pre(context, stack, function);
+            }
+        }
+
+        auto capture_script_source_post(UObject* context, FFrame& stack) -> void
+        {
+            auto* function = stack.Node();
+            if (function == nullptr)
+            {
+                function = stack.CurrentNativeFunction();
+            }
+            if (function == nullptr)
+            {
+                return;
+            }
+            const auto function_name = RC::to_string(function->GetName());
+            if (contains_ignore_case(function_name, "OnAttackDelegate__DelegateSignature"))
+            {
+                capture_script_attack_post(context, function);
+                return;
+            }
+            if (equals_ignore_case(function_name, "OnInitialize")
+                && context != nullptr && m_skill_effect_base_class != nullptr
+                && context->IsA(m_skill_effect_base_class))
+            {
+                capture_effect_initialize_post(context);
+                return;
+            }
+            if (equals_ignore_case(function_name, "OnBeginAction")
+                && context != nullptr && m_action_base_class != nullptr
+                && context->IsA(m_action_base_class))
+            {
+                capture_action_begin_post(context, function);
+            }
+        }
+
+        auto capture_script_attack_pre(
+            UObject* context,
+            FFrame& stack,
+            UFunction* function
+        ) -> void
+        {
             if (context == nullptr || stack.Locals() == nullptr
                 || m_skill_effect_base_class == nullptr
                 || context->GetClassPrivate() == nullptr
@@ -847,14 +1403,15 @@ namespace
                 return;
             }
 
+            active_attack_scopes.push_back({
+                .function = function,
+                .context = context,
+                .effect = object_token(context),
+            });
+            auto& attack_scope = active_attack_scopes.back();
+
             auto layout = discover_attack_layout(function);
             if (!layout.ready())
-            {
-                return;
-            }
-            auto* filter = find_attack_filter(context);
-            const auto [waza_id, skill_code] = read_filter_waza(filter);
-            if (filter == nullptr || waza_id <= 0 || skill_code.empty())
             {
                 ++m_attack_without_waza;
                 return;
@@ -864,36 +1421,85 @@ namespace
             auto* damage_info = layout.damage_info->ContainerPtrToValuePtr<void>(parameters);
             auto* attacker = layout.info_attacker.read(damage_info);
             auto* defender = layout.defender.read(parameters);
+            attack_scope.attacker = object_token(attacker);
+            attack_scope.defender = object_token(defender);
             if (defender == nullptr)
             {
+                ++m_attack_without_waza;
                 return;
             }
-            active_attack_scopes.push_back({
-                .function = function,
-                .context = context,
-                .attacker = object_token(attacker),
-                .defender = object_token(defender),
-                .effect = object_token(context),
-                .filter = object_token(filter),
-                .waza_id = waza_id,
-                .skill_code = skill_code,
-            });
+
+            auto* filter = find_attack_filter(context, function);
+            auto source = ensure_effect_source(context, filter);
+            if (!source.has_value() || source->conflicted)
+            {
+                ++m_attack_without_waza;
+                return;
+            }
+
+            auto waza_id = source->waza_id;
+            auto skill_code = source->skill_code;
+            if (filter != nullptr)
+            {
+                const auto filter_waza = read_filter_waza(filter);
+                if (filter_waza.first > 0)
+                {
+                    if (waza_id > 0 && waza_id != filter_waza.first)
+                    {
+                        ++m_source_errors;
+                        return;
+                    }
+                    waza_id = filter_waza.first;
+                    skill_code = filter_waza.second;
+                }
+            }
+            if (waza_id <= 0 || skill_code.empty())
+            {
+                ++m_attack_without_waza;
+                return;
+            }
+
+            const auto attacker_token = object_token(attacker);
+            {
+                std::scoped_lock lock{m_source_mutex};
+                const auto known = m_effect_sources.find(source->effect);
+                if (known == m_effect_sources.end())
+                {
+                    return;
+                }
+                auto& record = known->second;
+                if (record.attacker.valid() && attacker_token.valid()
+                    && record.attacker != attacker_token)
+                {
+                    record.conflicted = true;
+                    ++m_source_errors;
+                    return;
+                }
+                if (!record.attacker.valid())
+                {
+                    record.attacker = attacker_token;
+                }
+                source = record;
+            }
+            attack_scope.action = source->action;
+            attack_scope.effect = source->effect;
+            attack_scope.parent_effect = source->parent_effect;
+            attack_scope.filter = object_token(filter);
+            attack_scope.cast = source->cast;
+            attack_scope.waza_id = waza_id;
+            attack_scope.skill_code = skill_code;
             ++m_attack_matches;
         }
 
-        auto capture_script_attack_post(UObject* context, FFrame& stack) -> void
+        auto capture_script_attack_post(UObject* context, UFunction* function) -> void
         {
-            auto* function = stack.Node();
-            if (function == nullptr)
-            {
-                function = stack.CurrentNativeFunction();
-            }
             if (!active_attack_scopes.empty())
             {
                 const auto& scope = active_attack_scopes.back();
                 if (scope.function == function && scope.context == context)
                 {
                     active_attack_scopes.pop_back();
+                    return;
                 }
             }
         }
@@ -1019,7 +1625,7 @@ namespace
                 native_event.info_attacker = object_token(info_attacker);
                 native_event.damage = damage;
                 native_event.hits = 1;
-                native_event.evidence_kind.assign("unresolved");
+                native_event.evidence_kind.assign("none");
 
                 const auto attacker_token = object_token(attacker);
                 const auto defender_token = object_token(defender);
@@ -1027,7 +1633,7 @@ namespace
                      scope != active_attack_scopes.rend();
                      ++scope)
                 {
-                    if (scope->defender != defender_token)
+                    if (scope->defender.valid() && scope->defender != defender_token)
                     {
                         continue;
                     }
@@ -1036,11 +1642,21 @@ namespace
                     {
                         continue;
                     }
+                    if (!scope->effect.valid() || scope->waza_id <= 0
+                        || scope->skill_code.empty())
+                    {
+                        break;
+                    }
+                    native_event.action = scope->action;
                     native_event.effect = scope->effect;
+                    native_event.parent_effect = scope->parent_effect;
                     native_event.filter = scope->filter;
+                    native_event.cast = scope->cast;
                     native_event.waza_id = scope->waza_id;
                     native_event.skill_code.assign(scope->skill_code);
-                    native_event.evidence_kind.assign("effect_waza");
+                    native_event.evidence_kind.assign(
+                        scope->cast.valid() ? "effect_cast_link" : "effect_waza"
+                    );
                     ++m_exact_hits;
                     break;
                 }
@@ -1247,12 +1863,11 @@ namespace
 
         static auto lua_capabilities(const Lua& lua) -> int
         {
-            const auto exact = s_instance != nullptr && s_instance->event_is_ready();
-            lua.set_string(exact
-                ? "api_version=2;final_damage=true;exact_attribution=true;action=false;"
-                  "effect_init=false;effect_attack=true;damage_info=false;status=false"
-                : "api_version=2;final_damage=true;exact_attribution=false;action=false;"
-                  "effect_init=false;effect_attack=false;damage_info=false;status=false");
+            lua.set_string(s_instance == nullptr
+                ? "api_version=2;final_damage=false;exact_attribution=false;action=false;"
+                  "effect_init=false;attack_filter=false;effect_attack=false;"
+                  "damage_info=false;status=false"
+                : s_instance->capabilities());
             return 1;
         }
 
@@ -1275,19 +1890,32 @@ namespace
         inline static BossDPSNativeCollector* s_instance{};
         ReflectedDamageLayout m_layout{};
         UFunction* m_damage_function{};
+        UFunction* m_action_begin_function{};
+        UFunction* m_effect_initialize_function{};
         UFunction* m_filter_bind_function{};
+        UClass* m_action_base_class{};
         UClass* m_skill_effect_base_class{};
         UClass* m_attack_filter_class{};
         std::string m_damage_function_path{};
         CallbackId m_hook_id{-1};
+        CallbackId m_action_begin_pre_hook_id{-1};
+        CallbackId m_action_begin_post_hook_id{-1};
+        CallbackId m_effect_initialize_pre_hook_id{-1};
+        CallbackId m_effect_initialize_post_hook_id{-1};
         CallbackId m_filter_bind_hook_id{-1};
         Hook::GlobalCallbackId m_script_pre_id{Hook::ERROR_ID};
         Hook::GlobalCallbackId m_script_post_id{Hook::ERROR_ID};
         std::atomic<bool> m_ready{};
         std::atomic<bool> m_faulted{};
         std::atomic<bool> m_exact_source_ready{};
+        std::atomic<bool> m_action_source_ready{};
+        std::atomic<bool> m_effect_initialize_ready{};
+        std::atomic<bool> m_filter_bind_ready{};
+        std::atomic<bool> m_source_overflow{};
         std::atomic<std::uint64_t> m_capture_errors{};
         std::atomic<std::uint64_t> m_script_calls{};
+        std::atomic<std::uint64_t> m_action_begin_matches{};
+        std::atomic<std::uint64_t> m_effect_initialize_matches{};
         std::atomic<std::uint64_t> m_attack_matches{};
         std::atomic<std::uint64_t> m_attack_without_waza{};
         std::atomic<std::uint64_t> m_filter_bind_matches{};
@@ -1305,6 +1933,13 @@ namespace
         std::unordered_map<std::uintptr_t, TargetClassification> m_target_states;
         std::unordered_map<pal_dps::ObjectToken, pal_dps::ObjectToken, pal_dps::ObjectTokenHash>
             m_effect_filters;
+        std::unordered_map<pal_dps::ObjectToken, pal_dps::ObjectToken, pal_dps::ObjectTokenHash>
+            m_filter_effects;
+        std::unordered_map<pal_dps::ObjectToken, EffectSourceRecord, pal_dps::ObjectTokenHash>
+            m_effect_sources;
+        std::unordered_set<pal_dps::ObjectToken, pal_dps::ObjectTokenHash>
+            m_ambiguous_effect_filters;
+        std::uint64_t m_next_cast_value{1};
         std::uint64_t m_skipped_nonboss{};
         std::uint64_t m_overflow_buckets{};
     };

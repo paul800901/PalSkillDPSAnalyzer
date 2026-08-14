@@ -1899,6 +1899,25 @@ local function attach_runtime_skill_evidence(event, source_actor, source_kind, s
             event.diagnostic_fields["attribution.Source"] = "damage_causer_asset"
         end
     end
+
+    -- Native Event v2 is the fail-closed attribution lane. If the collector
+    -- could not carry an exact effect/cast/Waza source into this final hit,
+    -- never let current-action or recent-action timing relabel it. Sustained
+    -- fields routinely land after another move has started, which is exactly
+    -- how IceAge/Apocalypse/SandTwister damage used to steal one another.
+    if math.floor(to_number(event.api_version)) >= 2 then
+        if event.diagnostic_fields["waza.ID"] == nil
+            and event.diagnostic_fields["waza.Name"] == nil then
+            event.diagnostic_fields["attribution.Source"] = "native_unresolved"
+            event.diagnostic_fields["attribution.Confidence"] = "unresolved"
+            trace_skill_event(string.format(
+                "native-hit-unresolved sequence=%s evidence=%s",
+                tostring(event.sequence or "none"),
+                tostring(event.evidence_kind or "none")
+            ))
+        end
+        return
+    end
     local pair_key, attacker_key = waza_pair_key(event.attacker, event.defender)
     local marker, marker_conflict = select_waza_marker(
         pair_key ~= nil and recent_waza_by_pair[pair_key] or nil, event)
@@ -3880,7 +3899,11 @@ local function drain_native_damage()
                 log("native event payload was invalid")
                 return
             end
-            if event.evidence_kind == "effect_waza"
+            local native_exact_evidence = event.evidence_kind == "effect_waza"
+                or event.evidence_kind == "effect_cast_link"
+                or event.evidence_kind == "damage_info_cast_link"
+                or event.evidence_kind == "direct_waza_token"
+            if native_exact_evidence
                 and math.floor(to_number(event.waza_id)) > 0 then
                 local native_waza_id = math.floor(to_number(event.waza_id))
                 local native_code = tostring(event.skill_code or "")
@@ -4600,6 +4623,16 @@ local function register_hooks()
         if not status_ok then
             log("native event collector readiness check failed: " .. tostring(status))
         end
+        if not native_event_ready then
+            local native_status = type(BossDPSNativeStatus) == "function"
+                and select(2, pcall(BossDPSNativeStatus))
+                or "status-unavailable"
+            local capabilities = type(BossDPSNativeCapabilities) == "function"
+                and select(2, pcall(BossDPSNativeCapabilities))
+                or "capabilities-unavailable"
+            log("native event collector not ready: status=" .. tostring(native_status)
+                .. " capabilities=" .. tostring(capabilities))
+        end
     end
     if not native_event_ready and config.PreferNativeCollector ~= false
         and config.AllowLegacyNativeAggregate == true
@@ -4777,7 +4810,7 @@ local function register_hooks()
 
     if hooks.damage and hooks.death then
         log(string.format(
-            "loaded v0.5.13-hybrid-attribution; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s chat_mode=%s waza_hook=%s action_hooks=%s/%s effect_hook=%s filter_hook=%s effect_attack_hooks=%d local_only=%s; captured_hooks=%d",
+            "loaded v0.5.14-native-exact-attribution; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s chat_mode=%s waza_hook=%s action_hooks=%s/%s effect_hook=%s filter_hook=%s effect_attack_hooks=%d local_only=%s; captured_hooks=%d",
             hooks.damage_mode,
             tostring(config.EnableDPSRecording ~= false),
             tostring(config.EnableSkillDiagnostics == true),

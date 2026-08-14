@@ -23,7 +23,7 @@ config.IncludePlayerDamage = true
 Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\config.lua
 ```
 
-這是 v0.5.13 混合歸因診斷版。精確 DamageInfo／效果／Waza 來源仍優先；來源缺失時，才用帕魯即時三格技能、action 開始／結束，以及三格內唯一的倍率＋元素作有限推定。三格外補招標為普攻，同時多招或無法唯一判斷時維持「未辨識傷害」。推定結果不會污染精確規則。預設採手動測試區間並接受所有野生帕魯；按 F2 可隨時歸零。灼燒與中毒若沒有施加來源仍不會冒充某個技能。即時儀表是固定尺寸、不可點擊的純顯示層；舊 F1 外部設定窗仍停用。只需要 UE4SS Experimental；PalSchema 不是必要依賴。
+這是 v0.5.14 原生精確歸因診斷版。原生 Event v2 會沿 action／cast、技能效果、AttackFilter Waza、Blueprint OnAttack 連到最終 OnDamage；缺少精確來源的命中維持「未辨識傷害」，不再用目前動作、最近施放或倍率＋元素猜測。預設採手動測試區間並接受所有野生帕魯；按 F2 可隨時歸零。灼燒與中毒若沒有施加來源仍不會冒充某個技能。即時儀表是固定尺寸、不可點擊的純顯示層；舊 F1 外部設定窗仍停用。只需要 UE4SS Experimental；PalSchema 不是必要依賴。原生 DLL 的正式 Workshop 套件化與本版實機驗收仍在進行中。
 
 專案：https://github.com/paul800901/PalSkillDPSAnalyzer
 

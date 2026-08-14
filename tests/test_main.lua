@@ -302,6 +302,9 @@ local waza_names = {
     [131] = "EPalWazaID::DarkLaser",
     [135] = "EPalWazaID::PoisonShot",
     [161] = "EPalWazaID::DarkLegion",
+    [701] = "EPalWazaID::IceAge",
+    [702] = "EPalWazaID::Apocalypse",
+    [703] = "EPalWazaID::SandTwister",
 }
 local waza_enum = object({}, {
     GetNameByValue = function(_, value)
@@ -2477,6 +2480,143 @@ run_game_tasks()
 run_delayed_tasks()
 end
 
+-- Native exact overlap proof: final hits from sustained skills may arrive
+-- after newer casts have started. The collector's per-hit exact Waza/effect
+-- source must survive the positional Lua bridge without being rewritten by
+-- event order. A hit without that exact source must stay unresolved.
+do
+local exact_parameter = object({
+    SaveParameter = { EquipWaza = { 701, 702, 703 } },
+})
+local exact_current_action = actor("BP_ActionApocalypse_C_2147999503", {
+    GetWazaID = function() return 702 end,
+    GetSimpleName = function() return "BP_ActionApocalypse_C_2147999503" end,
+})
+local exact_action_component = object({}, {
+    GetCurrentAction = function() return exact_current_action end,
+})
+local exact_pal = actor("BP_CatVampire_C_502", {
+    CharacterParameterComponent = object({ IndividualParameter = exact_parameter }),
+    ActionComponent = exact_action_component,
+})
+trainer_by_actor[exact_pal] = player_two
+local exact_overlap = {
+    boss = boss_actor("BP_RaidBoss_NativeExactOverlap_C_503"),
+    index = 0,
+    events = {
+        -- IceAge lands after Apocalypse begins.
+        { damage = 80, code = "IceAge", waza = 701, cast = "ice:1", effect = "ice-effect:1" },
+        { damage = 101, code = "Apocalypse", waza = 702, cast = "apocalypse:1", effect = "apocalypse-effect:1" },
+        { damage = 40, code = "GravityShot", waza = 137, cast = "gravity:1", effect = "gravity-effect:1" },
+        -- Apocalypse tail lands after GravityShot begins.
+        { damage = 103, code = "Apocalypse", waza = 702, cast = "apocalypse:1", effect = "apocalypse-effect:1" },
+        { damage = 55, code = "SandTwister", waza = 703, cast = "sand:1", effect = "sand-effect:1" },
+        -- Both sustained skills keep landing after SandTwister begins.
+        { damage = 82, code = "IceAge", waza = 701, cast = "ice:1", effect = "ice-effect:1" },
+        { damage = 107, code = "Apocalypse", waza = 702, cast = "apocalypse:1", effect = "apocalypse-effect:1" },
+        -- Same encounter/signature timing but no exact token.
+        { damage = 17, code = "", waza = 0, cast = "", effect = "", unresolved = true },
+    },
+    expected = {
+        IceAge = { damage = 162, hits = 2 },
+        Apocalypse = { damage = 311, hits = 3 },
+        GravityShot = { damage = 40, hits = 1 },
+        SandTwister = { damage = 55, hits = 1 },
+    },
+}
+BossDPSNativeDrainEventOne = function()
+    exact_overlap.index = exact_overlap.index + 1
+    local event = exact_overlap.events[exact_overlap.index]
+    if event == nil then return false end
+    return true,
+        2,                                          -- api_version (1)
+        "damage",                                   -- kind (2)
+        8000 + exact_overlap.index,                  -- sequence (3)
+        8000000 + exact_overlap.index,               -- captured_ns (4)
+        event.damage,                                -- damage (5)
+        1,                                           -- hits (6)
+        event.unresolved and "unresolved" or "effect_waza", -- evidence_kind (7)
+        exact_pal,                                   -- attacker (8)
+        exact_overlap.boss,                          -- defender (9)
+        nil,                                         -- damage_causer (10)
+        nil,                                         -- override_network_owner (11)
+        nil,                                         -- info_attacker (12)
+        "3:1",                                       -- attacker_id (13)
+        "503:1",                                     -- defender_id (14)
+        "0:0",                                       -- damage_causer_id (15)
+        "0:0",                                       -- override_network_owner_id (16)
+        "0:0",                                       -- info_attacker_id (17)
+        "",                                          -- damage_info_id (18)
+        "",                                          -- action_id (19)
+        event.cast,                                  -- cast_id (20)
+        event.effect,                                -- effect_id (21)
+        event.unresolved and "" or ("filter:" .. event.code), -- filter_id (22)
+        "0:0",                                       -- status_application_id (23)
+        "0xEXACT-OVERLAP",                           -- target_key (24)
+        event.waza,                                  -- waza_id (25)
+        event.code,                                  -- skill_code (26)
+        ""                                           -- status_code (27)
+end
+BossDPSBroadcastTestApi.hooks.damage_mode = "native-event"
+exact_overlap.events_before = BossDPSBroadcastTestApi.metrics.native_events
+exact_overlap.hits_before = BossDPSBroadcastTestApi.metrics.native_hits
+phase = "game"
+BossDPSBroadcastTestApi.drain_native_damage()
+phase = "bootstrap"
+for _, candidate in pairs(BossDPSBroadcastTestApi.sessions) do
+    if candidate.name == "RaidBoss_NativeExactOverlap" then
+        exact_overlap.session = candidate
+        break
+    end
+end
+assert(exact_overlap.session ~= nil and exact_overlap.session.total_damage == 585,
+    "native exact overlap stream changed final damage total")
+for _, source in pairs(exact_overlap.session.diagnostic_sources) do
+    if source.kind == "pal" then
+        exact_overlap.source = source
+        break
+    end
+end
+assert(exact_overlap.source ~= nil,
+    "native exact overlap stream did not retain the Pal source")
+exact_overlap.damage_sum = 0
+exact_overlap.hit_sum = 0
+exact_overlap.unresolved_damage = 0
+exact_overlap.unresolved_hits = 0
+for key, candidate in pairs(exact_overlap.source.skill_candidates) do
+    exact_overlap.damage_sum = exact_overlap.damage_sum + candidate.damage
+    exact_overlap.hit_sum = exact_overlap.hit_sum + candidate.hits
+    if exact_overlap.expected[candidate.name] == nil then
+        assert(string.find(key, "UNRESOLVED", 1, true) ~= nil
+                or string.find(key, "UNKNOWN", 1, true) ~= nil,
+            "native exact overlap created an unexpected skill bucket " .. tostring(key))
+        exact_overlap.unresolved_damage = exact_overlap.unresolved_damage + candidate.damage
+        exact_overlap.unresolved_hits = exact_overlap.unresolved_hits + candidate.hits
+        assert(candidate.exact_damage == 0,
+            "missing exact token entered a certain skill bucket")
+    end
+end
+for code, expected in pairs(exact_overlap.expected) do
+    local candidate = exact_overlap.source.skill_candidates["skill:" .. code]
+    assert(candidate ~= nil
+            and candidate.damage == expected.damage
+            and candidate.hits == expected.hits,
+        "native exact overlap changed " .. code .. " damage/hits")
+end
+assert(exact_overlap.unresolved_damage == 17 and exact_overlap.unresolved_hits == 1,
+    "missing exact token did not remain unresolved")
+assert(exact_overlap.damage_sum == exact_overlap.session.total_damage
+        and exact_overlap.hit_sum == 8,
+    "native exact overlap violated per-skill damage/hit conservation")
+assert(BossDPSBroadcastTestApi.metrics.native_events - exact_overlap.events_before == 8,
+    "native exact overlap changed event conservation")
+assert(BossDPSBroadcastTestApi.metrics.native_hits - exact_overlap.hits_before == 8,
+    "native exact overlap changed hit conservation")
+death(exact_overlap.boss)
+run_game_tasks()
+run_delayed_tasks()
+end
+
 -- Native bridge simulation: one aggregated bucket represents many hits. Lua
 -- must preserve the exact damage while carrying the hit count into tie-break
 -- metadata, and it must classify the target for the C++ fast path.
@@ -2556,4 +2696,4 @@ assert(#delivered_by_uid[test_guid_key(uid_spectator)] == 0, "spectator received
 
 assert(#BossDPSBroadcastTestApi.sessions == 0, "sessions table must be map-like")
 assert(original_os_time ~= nil)
-print("PalSkillDPSAnalyzer v0.5.13 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed")
+print("PalSkillDPSAnalyzer v0.5.14 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed")
