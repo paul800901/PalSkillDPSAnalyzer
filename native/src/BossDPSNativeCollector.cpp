@@ -1,5 +1,6 @@
 #include "CollectorCore.hpp"
 #include "NativeEventQueue.hpp"
+#include "PendingFingerprintMatcher.hpp"
 
 #include <LuaMadeSimple/LuaMadeSimple.hpp>
 #include <LuaType/LuaUObject.hpp>
@@ -17,6 +18,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -129,6 +131,7 @@ namespace
         ObjectField defender{};
         FStructProperty* damage_info{};
         ObjectField info_attacker{};
+        NumericField hit_count{};
 
         [[nodiscard]] auto ready() const -> bool
         {
@@ -136,6 +139,13 @@ namespace
                 && damage_info != nullptr
                 && info_attacker.property != nullptr;
         }
+    };
+
+    struct DamageFingerprintLayout
+    {
+        std::array<FProperty*, static_cast<std::size_t>(pal_dps::FingerprintField::count)> fields{};
+        ObjectField damage_causer{};
+        ObjectField override_network_owner{};
     };
 
     struct AttackScope
@@ -258,6 +268,102 @@ namespace
     auto find_numeric_field(UStruct* owner, std::initializer_list<std::string_view> names) -> NumericField
     {
         return {CastField<FNumericProperty>(find_property(owner, names))};
+    }
+
+    auto object_token(UObject* object) -> pal_dps::ObjectToken;
+
+    auto build_fingerprint_layout(UStruct* owner) -> DamageFingerprintLayout
+    {
+        DamageFingerprintLayout layout{};
+        if (owner == nullptr)
+        {
+            return layout;
+        }
+        auto set = [&layout, owner](
+            const pal_dps::FingerprintField field,
+            const std::initializer_list<std::string_view> names
+        ) {
+            layout.fields[static_cast<std::size_t>(field)] = find_property(owner, names);
+        };
+        set(pal_dps::FingerprintField::base_power, {"BasePower"});
+        set(pal_dps::FingerprintField::element,
+            {"AttackElementType", "AttackElement", "ElementType"});
+        set(pal_dps::FingerprintField::skill,
+            {"SkillID", "SkillId", "AttackSkillID", "AttackSkillId", "SkillType"});
+        set(pal_dps::FingerprintField::attack_type, {"AttackType"});
+        set(pal_dps::FingerprintField::attack_attribute,
+            {"AttackAttribute", "DamageAttribute"});
+        set(pal_dps::FingerprintField::damage_type, {"DamageType"});
+        set(pal_dps::FingerprintField::weapon_type, {"WeaponType"});
+        set(pal_dps::FingerprintField::waza, {"Waza", "WazaID", "WazaId", "WazaType"});
+        set(pal_dps::FingerprintField::action, {"ActionID", "ActionId"});
+        set(pal_dps::FingerprintField::bullet, {"BulletID", "BulletId"});
+        layout.damage_causer = find_object_field(owner, {"DamageCauser", "damageCauser"});
+        layout.override_network_owner = find_object_field(owner, {"OverrideNetworkOwner"});
+        return layout;
+    }
+
+    auto read_fingerprint_value(FProperty* property, void* container)
+        -> pal_dps::FingerprintValue
+    {
+        if (property == nullptr || container == nullptr)
+        {
+            return {};
+        }
+        auto* address = property->ContainerPtrToValuePtr<void>(container);
+        if (auto* enum_property = CastField<FEnumProperty>(property))
+        {
+            if (auto* numeric = enum_property->GetUnderlyingProperty())
+            {
+                return {
+                    .kind = pal_dps::FingerprintValueKind::integer,
+                    .value = numeric->GetUnsignedIntPropertyValue(address),
+                };
+            }
+        }
+        auto* numeric = CastField<FNumericProperty>(property);
+        if (numeric == nullptr)
+        {
+            return {};
+        }
+        if (numeric->IsInteger())
+        {
+            return {
+                .kind = pal_dps::FingerprintValueKind::integer,
+                .value = static_cast<std::uint64_t>(numeric->GetSignedIntPropertyValue(address)),
+            };
+        }
+        if (numeric->IsFloatingPoint())
+        {
+            auto value = numeric->GetFloatingPointPropertyValue(address);
+            if (!std::isfinite(value))
+            {
+                return {};
+            }
+            if (value == 0.0) value = 0.0;
+            return {
+                .kind = pal_dps::FingerprintValueKind::floating_bits,
+                .value = std::bit_cast<std::uint64_t>(value),
+            };
+        }
+        return {};
+    }
+
+    auto build_damage_fingerprint(
+        const DamageFingerprintLayout& layout,
+        void* container
+    ) -> pal_dps::DamageFingerprint
+    {
+        pal_dps::DamageFingerprint fingerprint{};
+        for (std::size_t index = 0; index < layout.fields.size(); ++index)
+        {
+            fingerprint.values[index] = read_fingerprint_value(layout.fields[index], container);
+        }
+        fingerprint.damage_causer = object_token(layout.damage_causer.read(container));
+        fingerprint.override_network_owner = object_token(
+            layout.override_network_owner.read(container)
+        );
+        return fingerprint;
     }
 
     auto contains_ignore_case(std::string_view value, std::string_view needle) -> bool
@@ -445,8 +551,8 @@ namespace
         BossDPSNativeCollector()
         {
             ModName = STR("BossDPSNativeCollector");
-            ModVersion = STR("3.4.1-diagnostic");
-            ModDescription = STR("Native exact Pal skill source collector with fail-closed diagnostics");
+            ModVersion = STR("3.4.2-fingerprint-probe");
+            ModDescription = STR("Native exact Pal skill source collector with fail-closed damage fingerprint diagnostics");
             ModAuthors = STR("AsahiChan-Game");
         }
 
@@ -670,6 +776,8 @@ namespace
         auto reset_events() -> void
         {
             m_event_queue.reset();
+            std::scoped_lock lock{m_fingerprint_mutex};
+            m_pending_fingerprints.reset();
         }
 
         auto status() -> std::string
@@ -711,14 +819,27 @@ namespace
                    << "; attack_missing_source=" << m_attack_missing_source.load()
                    << "; attack_source_conflicts=" << m_attack_source_conflicts.load()
                    << "; attack_missing_waza=" << m_attack_missing_waza.load()
+                   << "; attack_fingerprints_recorded="
+                   << m_attack_fingerprints_recorded.load()
+                   << "; attack_fingerprint_weak=" << m_attack_fingerprint_weak.load()
+                   << "; attack_fingerprint_missing_actor="
+                   << m_attack_fingerprint_missing_actor.load()
                    << "; filter_bind_matches=" << m_filter_bind_matches.load()
                    << "; exact_hits=" << m_exact_hits.load()
+                   << "; fingerprint_candidate_hits="
+                   << m_fingerprint_candidate_hits.load()
+                   << "; final_fingerprint_weak=" << m_final_fingerprint_weak.load()
+                   << "; final_fingerprint_missing=" << m_final_fingerprint_missing.load()
+                   << "; final_fingerprint_ambiguous="
+                   << m_final_fingerprint_ambiguous.load()
                    << "; unresolved_hits=" << m_unresolved_hits.load()
                    << "; final_no_attack_scope=" << m_final_no_attack_scope.load()
                    << "; final_pair_misses=" << m_final_pair_misses.load()
                    << "; final_incomplete_scope=" << m_final_incomplete_scope.load()
                    << "; source_overflow="
                    << (m_source_overflow.load() ? "true" : "false")
+                   << "; fingerprint_overflow="
+                   << (m_fingerprint_overflow.load() ? "true" : "false")
                    << "; source_errors=" << m_source_errors.load();
             return output.str();
         }
@@ -749,7 +870,14 @@ namespace
                    << ";effect_init_matches=" << m_effect_initialize_matches.load()
                    << ";filter_bind_matches=" << m_filter_bind_matches.load()
                    << ";effect_attack_matches=" << m_attack_matches.load()
+                   << ";attack_fingerprints_recorded="
+                   << m_attack_fingerprints_recorded.load()
+                   << ";attack_fingerprint_weak=" << m_attack_fingerprint_weak.load()
                    << ";exact_hit_matches=" << m_exact_hits.load()
+                   << ";fingerprint_candidate_hits="
+                   << m_fingerprint_candidate_hits.load()
+                   << ";fingerprint_ambiguous_hits="
+                   << m_final_fingerprint_ambiguous.load()
                    << ";unresolved_hits=" << m_unresolved_hits.load()
                    << ";final_no_attack_scope=" << m_final_no_attack_scope.load()
                    << ";final_pair_misses=" << m_final_pair_misses.load()
@@ -1307,6 +1435,17 @@ namespace
                     }
                     continue;
                 }
+                if (layout.hit_count.property == nullptr
+                    && (equals_ignore_case(name, "hitCount")
+                        || equals_ignore_case(name, "HitCount")))
+                {
+                    if (auto* numeric = CastField<FNumericProperty>(property);
+                        numeric != nullptr && numeric->IsInteger())
+                    {
+                        layout.hit_count = {numeric};
+                    }
+                    continue;
+                }
                 auto* structure = CastField<FStructProperty>(property);
                 if (structure == nullptr || structure->GetStruct().Get() == nullptr)
                 {
@@ -1506,6 +1645,7 @@ namespace
                 }
                 source = record;
             }
+            attack_scope.attacker = attacker_token.valid() ? attacker_token : source->attacker;
             attack_scope.action = source->action;
             attack_scope.effect = source->effect;
             attack_scope.parent_effect = source->parent_effect;
@@ -1514,6 +1654,50 @@ namespace
             attack_scope.waza_id = waza_id;
             attack_scope.skill_code = skill_code;
             ++m_attack_matches;
+
+            const auto* info_struct = layout.damage_info->GetStruct().Get();
+            const auto fingerprint = build_damage_fingerprint(
+                build_fingerprint_layout(const_cast<UScriptStruct*>(info_struct)), damage_info
+            );
+            if (!fingerprint.usable())
+            {
+                ++m_attack_fingerprint_weak;
+                return;
+            }
+            if (!attack_scope.attacker.valid() || !attack_scope.defender.valid())
+            {
+                ++m_attack_fingerprint_missing_actor;
+                return;
+            }
+            pal_dps::FingerprintSource fingerprint_source{
+                .action = attack_scope.action,
+                .effect = attack_scope.effect,
+                .parent_effect = attack_scope.parent_effect,
+                .filter = attack_scope.filter,
+                .cast = attack_scope.cast,
+                .waza_id = attack_scope.waza_id,
+                .skill_code = attack_scope.skill_code,
+            };
+            bool recorded{};
+            {
+                std::scoped_lock lock{m_fingerprint_mutex};
+                recorded = m_pending_fingerprints.record(
+                    attack_scope.attacker,
+                    attack_scope.defender,
+                    fingerprint,
+                    std::move(fingerprint_source)
+                );
+            }
+            if (recorded)
+            {
+                ++m_attack_fingerprints_recorded;
+            }
+            else
+            {
+                m_fingerprint_overflow.store(true, std::memory_order_release);
+                m_faulted.store(true, std::memory_order_release);
+                ++m_source_errors;
+            }
         }
 
         auto capture_script_attack_post(UObject* context, UFunction* function) -> void
@@ -1654,10 +1838,66 @@ namespace
 
                 const auto attacker_token = object_token(attacker);
                 const auto defender_token = object_token(defender);
+                pal_dps::FingerprintMatch fingerprint_match{};
+                if (nested != nullptr && m_layout.damage_info != nullptr
+                    && m_layout.damage_info->GetStruct().Get() != nullptr)
+                {
+                    const auto fingerprint = build_damage_fingerprint(
+                        build_fingerprint_layout(const_cast<UScriptStruct*>(
+                            m_layout.damage_info->GetStruct().Get()
+                        )),
+                        nested
+                    );
+                    {
+                        std::scoped_lock lock{m_fingerprint_mutex};
+                        fingerprint_match = m_pending_fingerprints.resolve(
+                            attacker_token, defender_token, fingerprint
+                        );
+                    }
+                    if (fingerprint_match.kind == pal_dps::FingerprintMatchKind::exact)
+                    {
+                        const auto& source = fingerprint_match.source;
+                        native_event.action = source.action;
+                        native_event.effect = source.effect;
+                        native_event.parent_effect = source.parent_effect;
+                        native_event.filter = source.filter;
+                        native_event.cast = source.cast;
+                        native_event.waza_id = source.waza_id;
+                        native_event.skill_code.assign(source.skill_code);
+                        // Equality across canonical DamageInfo fields is a
+                        // diagnostic candidate, not object identity. Keep the
+                        // source on the event for logging, but do not promote
+                        // it to a confirmed skill bucket until live evidence
+                        // proves this path stable across overlapping skills.
+                        native_event.evidence_kind.assign(
+                            "damage_info_fingerprint_candidate"
+                        );
+                        ++m_fingerprint_candidate_hits;
+                    }
+                    else if (fingerprint_match.kind
+                             == pal_dps::FingerprintMatchKind::fingerprint_weak)
+                    {
+                        ++m_final_fingerprint_weak;
+                    }
+                    else if (fingerprint_match.kind
+                             == pal_dps::FingerprintMatchKind::source_ambiguous)
+                    {
+                        ++m_final_fingerprint_ambiguous;
+                    }
+                    else
+                    {
+                        ++m_final_fingerprint_missing;
+                    }
+                }
+                else
+                {
+                    fingerprint_match.kind = pal_dps::FingerprintMatchKind::fingerprint_weak;
+                    ++m_final_fingerprint_weak;
+                }
                 bool matched_pair{};
                 bool matched_incomplete_scope{};
                 for (auto scope = active_attack_scopes.rbegin();
-                     scope != active_attack_scopes.rend();
+                     native_event.waza_id <= 0 && scope != active_attack_scopes.rend();
                      ++scope)
                 {
                     if (scope->defender.valid() && scope->defender != defender_token)
@@ -1693,7 +1933,24 @@ namespace
                 {
                     if (active_attack_scopes.empty())
                     {
-                        native_event.evidence_kind.assign("unresolved_no_attack_scope");
+                        if (fingerprint_match.kind
+                            == pal_dps::FingerprintMatchKind::source_ambiguous)
+                        {
+                            native_event.evidence_kind.assign(
+                                "unresolved_fingerprint_ambiguous"
+                            );
+                        }
+                        else if (fingerprint_match.kind
+                                 == pal_dps::FingerprintMatchKind::fingerprint_weak)
+                        {
+                            native_event.evidence_kind.assign("unresolved_fingerprint_weak");
+                        }
+                        else
+                        {
+                            native_event.evidence_kind.assign(
+                                "unresolved_fingerprint_no_candidate"
+                            );
+                        }
                         ++m_final_no_attack_scope;
                     }
                     else if (matched_incomplete_scope)
@@ -1716,7 +1973,13 @@ namespace
                                    << " attack_without_waza=" << m_attack_without_waza.load()
                                    << " no_scope=" << m_final_no_attack_scope.load()
                                    << " pair_miss=" << m_final_pair_misses.load()
-                                   << " incomplete_scope=" << m_final_incomplete_scope.load();
+                                   << " incomplete_scope=" << m_final_incomplete_scope.load()
+                                   << " fp_recorded=" << m_attack_fingerprints_recorded.load()
+                                   << " fp_candidate="
+                                   << m_fingerprint_candidate_hits.load()
+                                   << " fp_weak=" << m_final_fingerprint_weak.load()
+                                   << " fp_missing=" << m_final_fingerprint_missing.load()
+                                   << " fp_ambiguous=" << m_final_fingerprint_ambiguous.load();
                         log(RC::to_wstring(checkpoint.str()));
                     }
                 }
@@ -1979,17 +2242,27 @@ namespace
         std::atomic<std::uint64_t> m_attack_missing_source{};
         std::atomic<std::uint64_t> m_attack_source_conflicts{};
         std::atomic<std::uint64_t> m_attack_missing_waza{};
+        std::atomic<std::uint64_t> m_attack_fingerprints_recorded{};
+        std::atomic<std::uint64_t> m_attack_fingerprint_weak{};
+        std::atomic<std::uint64_t> m_attack_fingerprint_missing_actor{};
         std::atomic<std::uint64_t> m_filter_bind_matches{};
         std::atomic<std::uint64_t> m_exact_hits{};
+        std::atomic<std::uint64_t> m_fingerprint_candidate_hits{};
+        std::atomic<std::uint64_t> m_final_fingerprint_weak{};
+        std::atomic<std::uint64_t> m_final_fingerprint_missing{};
+        std::atomic<std::uint64_t> m_final_fingerprint_ambiguous{};
         std::atomic<std::uint64_t> m_unresolved_hits{};
         std::atomic<std::uint64_t> m_final_no_attack_scope{};
         std::atomic<std::uint64_t> m_final_pair_misses{};
         std::atomic<std::uint64_t> m_final_incomplete_scope{};
         std::atomic<std::uint64_t> m_source_errors{};
+        std::atomic<bool> m_fingerprint_overflow{};
         std::mutex m_mutex;
         std::mutex m_source_mutex;
+        std::mutex m_fingerprint_mutex;
         boss_dps::CollectorCore m_collector;
         pal_dps::NativeEventQueue m_event_queue{maximum_pending_events};
+        pal_dps::PendingFingerprintMatcher m_pending_fingerprints{maximum_source_records};
         std::unordered_map<boss_dps::DamageKey, WeakObjects, boss_dps::DamageKeyHash>
             m_bucket_objects;
         std::deque<PendingRecord> m_drained_records;

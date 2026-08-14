@@ -191,7 +191,11 @@ if ($LASTEXITCODE -ne 0) {
     throw "Native stress test failed with exit code $LASTEXITCODE"
 }
 
-foreach ($testName in @("attribution_event_core_test", "native_event_queue_test")) {
+foreach ($testName in @(
+    "attribution_event_core_test",
+    "native_event_queue_test",
+    "pending_fingerprint_matcher_test"
+)) {
     $sourcePath = Join-Path $PSScriptRoot "tests\$testName.cpp"
     $testArguments = @(
         "/nologo", "/std:c++latest", "/EHsc", "/MD", "/O2", "/W4", "/WX", "/utf-8",

@@ -1911,9 +1911,12 @@ local function attach_runtime_skill_evidence(event, source_actor, source_kind, s
             event.diagnostic_fields["attribution.Source"] = "native_unresolved"
             event.diagnostic_fields["attribution.Confidence"] = "unresolved"
             trace_skill_event(string.format(
-                "native-hit-unresolved sequence=%s evidence=%s",
+                "native-hit-unresolved sequence=%s evidence=%s candidate=%s waza=%s effect=%s",
                 tostring(event.sequence or "none"),
-                tostring(event.evidence_kind or "none")
+                tostring(event.evidence_kind or "none"),
+                tostring(event.skill_code or "none"),
+                tostring(event.waza_id or "none"),
+                tostring(event.effect_id or "none")
             ))
         end
         return
