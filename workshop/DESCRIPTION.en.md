@@ -35,7 +35,7 @@ Enable player damage in config.lua, restart the game, and use one weapon for the
 [h2]Scope[/h2]
 [list]
 [*][b]Target:[/b] Windows single-player worlds
-[*][b]Current status:[/b] v0.5.14 native exact-attribution diagnostic; missing exact sources remain unresolved, old external F1 settings disabled, safe F2 reset; native DLL packaging and live validation are still in progress
+[*][b]Current status:[/b] v0.5.15 native pair-link diagnostic; only unique or fully agreeing engine effect sources enter named skills, conflicts and missing sources remain unresolved, old external F1 settings disabled, safe F2 reset; native DLL packaging and live validation are still in progress
 [*][b]Required dependency:[/b] UE4SS Experimental; PalSchema is not required
 [*][b]Not a goal:[/b] comparing players or producing a competitive DPS leaderboard
 [/list]

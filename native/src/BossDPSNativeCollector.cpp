@@ -397,6 +397,33 @@ namespace
         return false;
     }
 
+    auto looks_like_damage_handler(const std::string_view function_name) -> bool
+    {
+        // Several Pal effects do not call their FPalDamageInfo callback
+        // "Attack" or "Damage". Blast/impact/projectile Blueprints commonly
+        // use hit, overlap, collision, impact, burst or explode. The caller
+        // still requires an effect context plus the reflected Defender,
+        // FPalDamageInfo and Attacker fields, so unrelated Blueprint events
+        // cannot become attribution evidence from the name alone.
+        constexpr std::array handler_tokens{
+            std::string_view{"attack"},
+            std::string_view{"damage"},
+            std::string_view{"hit"},
+            std::string_view{"overlap"},
+            std::string_view{"collision"},
+            std::string_view{"impact"},
+            std::string_view{"burst"},
+            std::string_view{"explode"},
+            std::string_view{"explosion"},
+        };
+        return std::any_of(
+            handler_tokens.begin(), handler_tokens.end(),
+            [function_name](const std::string_view token) {
+                return contains_ignore_case(function_name, token);
+            }
+        );
+    }
+
     auto read_integer_property(FProperty* property, void* container) -> std::optional<std::int64_t>
     {
         if (property == nullptr || container == nullptr)
@@ -557,7 +584,7 @@ namespace
         BossDPSNativeCollector()
         {
             ModName = STR("BossDPSNativeCollector");
-            ModVersion = STR("3.6.0-pair-candidate");
+            ModVersion = STR("3.7.0-pair-link");
             ModDescription = STR("Native fail-closed Pal skill handler discovery probe");
             ModAuthors = STR("AsahiChan-Game");
         }
@@ -1574,8 +1601,7 @@ namespace
                 return;
             }
             const auto function_name = RC::to_string(function->GetName());
-            if (!contains_ignore_case(function_name, "attack")
-                && !contains_ignore_case(function_name, "damage"))
+            if (!looks_like_damage_handler(function_name))
             {
                 return;
             }
@@ -1712,8 +1738,7 @@ namespace
                 && m_skill_effect_base_class != nullptr
                 && context->GetClassPrivate() != nullptr
                 && context->GetClassPrivate()->IsChildOf(m_skill_effect_base_class);
-            const auto damage_handler_name = contains_ignore_case(function_name, "attack")
-                || contains_ignore_case(function_name, "damage");
+            const auto damage_handler_name = looks_like_damage_handler(function_name);
             if (context_is_effect && damage_handler_name
                 && cached_attack_layout(function).ready())
             {
@@ -2228,9 +2253,17 @@ namespace
                         native_event.evidence_kind.assign(
                             pending_attack_match.kind
                                     == pal_dps::PendingAttackMatchKind::single_candidate
-                                ? "effect_pair_single_candidate"
-                                : "effect_pair_agreed_candidate"
+                                ? "effect_pair_single_link"
+                                : "effect_pair_agreed_link"
                         );
+                        // One engine OnAttack source, or several sources that
+                        // all agree on the same action/effect/Waza, is a
+                        // deterministic pair link. Different simultaneous
+                        // sources are source_ambiguous below and remain
+                        // unresolved; no current-action, time-window,
+                        // BasePower or element guess participates here.
+                        confirmed_exact = true;
+                        ++m_exact_hits;
                     }
                     else if (pending_attack_match.kind
                              == pal_dps::PendingAttackMatchKind::source_ambiguous)

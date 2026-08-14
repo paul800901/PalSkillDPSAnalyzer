@@ -6,8 +6,8 @@ Palworld 1.0 單人世界傷害驗證 Mod。預設只計算帕魯，依實際帕
 
 1. 訂閱並啟用本 Mod 與 `UE4SS Experimental (Palworld)`。
 2. 進入單人世界後按 F2 開始新測試（傷害歸零）；第一筆有效傷害才會開始計時。
-4. 可同時測試一般野生帕魯、野外／石板 Boss 與基地多帕魯群戰。
-5. 從即時儀表查看帕魯與技能，並保留 `Palworld\Mods\NativeMods\UE4SS\UE4SS.log`。
+3. 攻擊競技場／塔／石板 Boss，或有 Boss／Alpha 標記的大世界頭目；普通野怪不納入預設正式統計。
+4. 從即時儀表查看帕魯與技能，並保留 `Palworld\Mods\NativeMods\UE4SS\UE4SS.log`。
 
 人物傷害預設關閉。要測試武器時，修改：
 
@@ -23,7 +23,7 @@ config.IncludePlayerDamage = true
 Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\config.lua
 ```
 
-這是 v0.5.14 原生精確歸因診斷版。原生 Event v2 會沿 action／cast、技能效果、AttackFilter Waza、Blueprint OnAttack 連到最終 OnDamage；缺少精確來源的命中維持「未辨識傷害」，不再用目前動作、最近施放或倍率＋元素猜測。預設採手動測試區間並接受所有野生帕魯；按 F2 可隨時歸零。灼燒與中毒若沒有施加來源仍不會冒充某個技能。即時儀表是固定尺寸、不可點擊的純顯示層；舊 F1 外部設定窗仍停用。只需要 UE4SS Experimental；PalSchema 不是必要依賴。原生 DLL 的正式 Workshop 套件化與本版實機驗收仍在進行中。
+這是 v0.5.15 原生來源配對版。原生 Event v2 只有在同一攻擊者＋Boss 目標找到唯一技能效果來源，或同時間來源全部同意同一 Waza 時才歸因；衝突或缺少來源的命中維持「未辨識傷害」，不使用目前動作、最近施放或倍率＋元素猜測。預設採手動 Boss 測試區間；按 F2 可隨時歸零。灼燒與中毒若沒有施加來源仍不會冒充某個技能。即時儀表是固定尺寸、不可點擊的純顯示層；舊 F1 外部設定窗仍停用。只需要 UE4SS Experimental；PalSchema 不是必要依賴。原生 DLL 的正式 Workshop 套件化與本版實機驗收仍在進行中。
 
 專案：https://github.com/paul800901/PalSkillDPSAnalyzer
 

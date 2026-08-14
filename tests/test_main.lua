@@ -2450,6 +2450,30 @@ BossDPSNativeDrainEventOne = function()
             "3:1", "502:1", "0:0", "0:0", "0:0", "",
             "", "", "402:9", "403:9", "0:0", "0xEXACT",
             602, "DiamondFall", ""
+    elseif exact_native.index == 3 then
+        return true,
+            2, "damage", 7003, 7003000, 222, 1,
+            "effect_pair_single_link",
+            player_two_pal, exact_native.boss, nil, nil, nil,
+            "3:1", "502:1", "0:0", "0:0", "0:0", "",
+            "action:single", "cast:single", "404:9", "405:9", "0:0", "0xEXACT",
+            602, "DiamondFall", ""
+    elseif exact_native.index == 4 then
+        return true,
+            2, "damage", 7004, 7004000, 333, 1,
+            "effect_pair_agreed_link",
+            player_two_pal, exact_native.boss, nil, nil, nil,
+            "3:1", "502:1", "0:0", "0:0", "0:0", "",
+            "action:agreed", "cast:agreed", "406:9", "407:9", "0:0", "0xEXACT",
+            602, "DiamondFall", ""
+    elseif exact_native.index == 5 then
+        return true,
+            2, "damage", 7005, 7005000, 111, 1,
+            "unresolved_effect_pair_ambiguous",
+            player_two_pal, exact_native.boss, nil, nil, nil,
+            "3:1", "502:1", "0:0", "0:0", "0:0", "",
+            "", "", "", "", "0:0", "0xEXACT",
+            602, "DiamondFall", ""
     end
     return false
 end
@@ -2463,7 +2487,7 @@ for _, candidate in pairs(BossDPSBroadcastTestApi.sessions) do
         break
     end
 end
-assert(exact_native.session ~= nil and exact_native.session.total_damage == 900,
+assert(exact_native.session ~= nil and exact_native.session.total_damage == 1566,
     "exact native effect/fingerprint events did not preserve final damage")
 for _, source in pairs(exact_native.session.diagnostic_sources) do
     if source.kind == "pal" then
@@ -2475,10 +2499,10 @@ assert(exact_native.source ~= nil,
     "exact native effect/Waza event did not retain the Pal source")
 exact_native.skill = exact_native.source.skill_candidates["skill:DiamondFall"]
 assert(exact_native.skill ~= nil
-        and exact_native.skill.damage == 777
-        and exact_native.skill.hits == 2
+        and exact_native.skill.damage == 1332
+        and exact_native.skill.hits == 4
         and exact_native.skill.waza_id == 602,
-    "exact native effect event did not enter the DiamondFall bucket")
+    "exact native effect/pair links did not enter the DiamondFall bucket")
 exact_native.unresolved_damage = 0
 for key in pairs(exact_native.source.skill_candidates) do
     if string.find(key, "UNRESOLVED", 1, true) ~= nil
@@ -2487,8 +2511,8 @@ for key in pairs(exact_native.source.skill_candidates) do
             + exact_native.source.skill_candidates[key].damage
     end
 end
-assert(exact_native.unresolved_damage == 123,
-    "fingerprint probe candidate was promoted instead of failing closed")
+assert(exact_native.unresolved_damage == 234,
+    "fingerprint or ambiguous pair evidence was promoted instead of failing closed")
 death(exact_native.boss)
 run_game_tasks()
 run_delayed_tasks()
@@ -2710,4 +2734,4 @@ assert(#delivered_by_uid[test_guid_key(uid_spectator)] == 0, "spectator received
 
 assert(#BossDPSBroadcastTestApi.sessions == 0, "sessions table must be map-like")
 assert(original_os_time ~= nil)
-print("PalSkillDPSAnalyzer v0.5.14 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed")
+print("PalSkillDPSAnalyzer v0.5.15 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed")

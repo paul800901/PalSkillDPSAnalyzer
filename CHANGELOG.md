@@ -1,5 +1,13 @@
 # 更新日志
 
+## 0.5.15-native-pair-link — 引擎命中配對正式歸因
+
+- 將實機驗證的 `PalSkillEffect OnAttack` 攻擊者＋Boss 目標配對正式接入技能桶：只有唯一來源，或同時間多筆來源全部同意同一 action／effect／Waza 時才歸因。
+- 來源互相衝突、缺失、DamageInfo 指紋候選與技能倍率／元素仍一律留在「未辨識傷害」，不使用目前動作、最近施放或時間窗猜技能。
+- 擴充原生 Blueprint 傷害處理器辨識到 hit／overlap／collision／impact／burst／explode 名稱，針對 BlastCannon 類投射物與爆炸路徑收集同樣的 Defender＋FPalDamageInfo＋Attacker 強結構證據。
+- 兩組實機 Boss 測試共 251 次命中中，唯一或一致來源為 212 次、歧義 0 次；其餘 39 次仍保留未歸屬。本版將這 212 類型由診斷候選提升為正式歸因。
+- 原生收集器版本更新為 `3.7.0-pair-link`；新增唯一配對、一致配對、歧義 fail-closed 與傷害守恆回歸。原生每次排空上限維持 512。
+
 ## 0.5.14-native-exact-attribution — 原生逐擊精確來源鏈
 
 - 原生 C++ 收集器改為逐擊 Event v2，沿 action／cast、技能效果與子效果、AttackFilter Waza、Blueprint OnAttack 連到最終 OnDamage；歸因完成前不先聚合。

@@ -3932,6 +3932,13 @@ local function drain_native_damage()
                 or event.evidence_kind == "effect_cast_link"
                 or event.evidence_kind == "damage_info_cast_link"
                 or event.evidence_kind == "direct_waza_token"
+                or event.evidence_kind == "effect_pair_single_link"
+                or event.evidence_kind == "effect_pair_agreed_link"
+                -- Backward compatibility for the immediately preceding
+                -- collector build. Its pair matcher is identical; only the
+                -- evidence label changed after the live zero-ambiguity audit.
+                or event.evidence_kind == "effect_pair_single_candidate"
+                or event.evidence_kind == "effect_pair_agreed_candidate"
             if native_exact_evidence
                 and math.floor(to_number(event.waza_id)) > 0 then
                 local native_waza_id = math.floor(to_number(event.waza_id))
@@ -4853,7 +4860,7 @@ local function register_hooks()
 
     if hooks.damage and hooks.death then
         log(string.format(
-            "loaded v0.5.14-native-exact-attribution; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s chat_mode=%s waza_hook=%s action_hooks=%s/%s effect_hook=%s filter_hook=%s effect_attack_hooks=%d local_only=%s; captured_hooks=%d",
+            "loaded v0.5.15-native-pair-link; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s chat_mode=%s waza_hook=%s action_hooks=%s/%s effect_hook=%s filter_hook=%s effect_attack_hooks=%d local_only=%s; captured_hooks=%d",
             hooks.damage_mode,
             tostring(config.EnableDPSRecording ~= false),
             tostring(config.EnableSkillDiagnostics == true),
