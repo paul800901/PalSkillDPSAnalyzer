@@ -1,4 +1,5 @@
 #include "AttributionEventCore.hpp"
+#include "FilterCallbackScopeMatcher.hpp"
 
 #include <cmath>
 #include <cstdlib>
@@ -15,6 +16,8 @@ namespace
     using pal_dps::EffectLink;
     using pal_dps::EvidenceKind;
     using pal_dps::FinalHit;
+    using pal_dps::FilterCallbackMatchKind;
+    using pal_dps::FilterCallbackScopeLink;
     using pal_dps::LinkResult;
     using pal_dps::ObjectToken;
     using pal_dps::Snapshot;
@@ -408,6 +411,42 @@ namespace
         const auto stale = core.on_hit({pal, boss, effect, {}, {}, {}, 9, 10, 1});
         expect(stale.kind == AttributionKind::unresolved, "reset retained stale effect identity");
     }
+
+    auto filter_callback_scope_guard_test() -> void
+    {
+        const auto pal = token(500, 1);
+        const auto other_pal = token(501, 1);
+        const auto boss = token(510, 1);
+        const auto other_boss = token(511, 1);
+        FilterCallbackScopeLink scope{
+            .attacker = pal,
+            .defender = boss,
+            .filter = token(520, 1),
+            .effect = token(521, 1),
+            .waza_id = 88,
+            .skill_code = "GravityShot",
+        };
+
+        expect(pal_dps::match_filter_callback_scope(scope, pal, boss)
+                == FilterCallbackMatchKind::exact,
+            "nested filter callback exact identity was rejected");
+        expect(pal_dps::match_filter_callback_scope(scope, other_pal, boss)
+                == FilterCallbackMatchKind::attacker_mismatch,
+            "nested filter callback crossed attacker identity");
+        expect(pal_dps::match_filter_callback_scope(scope, pal, other_boss)
+                == FilterCallbackMatchKind::defender_mismatch,
+            "nested filter callback crossed defender identity");
+
+        scope.waza_id = 0;
+        expect(pal_dps::match_filter_callback_scope(scope, pal, boss)
+                == FilterCallbackMatchKind::incomplete,
+            "filter callback without direct Waza became exact");
+        scope.waza_id = 88;
+        scope.source_conflicted = true;
+        expect(pal_dps::match_filter_callback_scope(scope, pal, boss)
+                == FilterCallbackMatchKind::source_conflict,
+            "conflicting filter and DamageInfo attackers became exact");
+    }
 }
 
 auto main() -> int
@@ -420,6 +459,7 @@ auto main() -> int
     status_bucket_test();
     conflict_and_actor_guard_test();
     bounded_ring_test();
+    filter_callback_scope_guard_test();
     std::cout << "attribution event core tests passed\n";
     return 0;
 }

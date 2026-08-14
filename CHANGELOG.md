@@ -1,5 +1,12 @@
 # 更新日志
 
+## 0.5.16-native-filter-callback-probe — 技能主命中來源診斷
+
+- 新增原生 `PalAttackFilter:CallBackOnAttackDelegate` Pre／Post 探針，直接從 Filter 讀取 Waza、攻擊者與 OwnerActionId，驗證技能本體主命中是否在同一引擎呼叫鏈內進入最終 OnDamage。
+- 只有 Filter 回呼與 final damage 同步巢狀、攻擊者／Boss 目標一致且 Waza 完整時，才允許成為精確來源；未通過者維持「未辨識傷害」。
+- 對前 24 筆未歸屬 final hit 加入有限診斷：最多 8 層 Blueprint 呼叫堆疊、實際 UObject／FWeakObject 來源欄位與直接 Waza／Skill／Action／Effect ID；不讀取目前動作、最近施放、時間、倍率或元素來猜技能。
+- 上一版受控 Boss 場確認逐擊事件無掉落、無溢位且 128 次命中守恆；98 次已有精確／一致來源，剩餘 30 次皆為沒有 OnAttack scope 的第二條主命中路徑。本版用於確認該路徑後再決定正式接入方式。
+
 ## 0.5.15-native-pair-link — 引擎命中配對正式歸因
 
 - 將實機驗證的 `PalSkillEffect OnAttack` 攻擊者＋Boss 目標配對正式接入技能桶：只有唯一來源，或同時間多筆來源全部同意同一 action／effect／Waza 時才歸因。

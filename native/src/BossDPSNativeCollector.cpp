@@ -1,4 +1,5 @@
 #include "CollectorCore.hpp"
+#include "FilterCallbackScopeMatcher.hpp"
 #include "NativeEventQueue.hpp"
 #include "PendingAttackMatcher.hpp"
 #include "PendingFingerprintMatcher.hpp"
@@ -54,6 +55,13 @@ namespace
     constexpr std::size_t maximum_damage_handler_probe_functions = 128;
     constexpr std::size_t maximum_damage_handler_probe_samples = 3;
     constexpr std::size_t maximum_damage_handler_probe_reports = 24;
+    constexpr std::size_t maximum_final_source_probe_samples = 24;
+    constexpr std::size_t maximum_final_source_probe_fields = 48;
+    constexpr std::size_t maximum_final_source_probe_visited_fields = 192;
+    constexpr std::size_t maximum_final_source_schema_fields = 96;
+    constexpr std::size_t maximum_final_source_stack_depth = 8;
+    constexpr std::size_t maximum_final_source_log_bytes = 4096;
+    constexpr std::size_t maximum_filter_attack_callback_probe_samples = 16;
     constexpr std::uint64_t maximum_pending_attack_age_ns = 1'000'000'000ULL;
 
     enum class TargetState : std::uint8_t
@@ -137,6 +145,7 @@ namespace
         ObjectField defender{};
         FStructProperty* damage_info{};
         ObjectField info_attacker{};
+        ObjectField attacker_component{};
         NumericField hit_count{};
 
         [[nodiscard]] auto ready() const -> bool
@@ -177,6 +186,17 @@ namespace
         pal_dps::CastToken cast{};
     };
 
+    struct FilterAttackScope
+    {
+        UFunction* function{};
+        UObject* context{};
+        pal_dps::FilterCallbackScopeLink link{};
+        pal_dps::ObjectToken info_attacker{};
+        pal_dps::ObjectToken attacker_component{};
+        std::optional<std::int64_t> owner_action_id{};
+        double hit_count{};
+    };
+
     struct EffectSourceRecord
     {
         pal_dps::ObjectToken effect{};
@@ -193,6 +213,7 @@ namespace
 
     thread_local std::vector<AttackScope> active_attack_scopes{};
     thread_local std::vector<ActionScope> active_action_scopes{};
+    thread_local std::vector<FilterAttackScope> active_filter_attack_scopes{};
 
     struct WeakObjects
     {
@@ -578,6 +599,48 @@ namespace
         return buffer;
     }
 
+    auto is_direct_source_identifier(const std::string_view name) -> bool
+    {
+        constexpr std::array identifiers{
+            std::string_view{"Waza"},
+            std::string_view{"WazaID"},
+            std::string_view{"WazaId"},
+            std::string_view{"WazaType"},
+            std::string_view{"SkillID"},
+            std::string_view{"SkillId"},
+            std::string_view{"AttackSkillID"},
+            std::string_view{"AttackSkillId"},
+            std::string_view{"SkillType"},
+            std::string_view{"ActionID"},
+            std::string_view{"ActionId"},
+            std::string_view{"BulletID"},
+            std::string_view{"BulletId"},
+            std::string_view{"ProjectileID"},
+            std::string_view{"ProjectileId"},
+            std::string_view{"EffectID"},
+            std::string_view{"EffectId"},
+        };
+        return std::any_of(
+            identifiers.begin(), identifiers.end(),
+            [name](const std::string_view candidate) {
+                return equals_ignore_case(name, candidate);
+            }
+        );
+    }
+
+    auto bounded_log_payload(std::string payload, bool& truncated) -> std::string
+    {
+        if (payload.size() <= maximum_final_source_log_bytes)
+        {
+            return payload;
+        }
+        constexpr std::string_view suffix{"...[truncated]"};
+        payload.resize(maximum_final_source_log_bytes - suffix.size());
+        payload.append(suffix);
+        truncated = true;
+        return payload;
+    }
+
     class BossDPSNativeCollector final : public RC::CppUserModBase
     {
       public:
@@ -598,6 +661,21 @@ namespace
             if (m_filter_bind_function != nullptr && m_filter_bind_hook_id >= 0)
             {
                 static_cast<void>(m_filter_bind_function->UnregisterHook(m_filter_bind_hook_id));
+            }
+            if (m_filter_attack_callback_function != nullptr)
+            {
+                if (m_filter_attack_callback_pre_hook_id >= 0)
+                {
+                    static_cast<void>(m_filter_attack_callback_function->UnregisterHook(
+                        m_filter_attack_callback_pre_hook_id
+                    ));
+                }
+                if (m_filter_attack_callback_post_hook_id >= 0)
+                {
+                    static_cast<void>(m_filter_attack_callback_function->UnregisterHook(
+                        m_filter_attack_callback_post_hook_id
+                    ));
+                }
             }
             if (m_effect_initialize_function != nullptr)
             {
@@ -810,6 +888,7 @@ namespace
         auto reset_events() -> void
         {
             m_event_queue.reset();
+            active_filter_attack_scopes.clear();
             {
                 std::scoped_lock lock{m_fingerprint_mutex};
                 m_pending_fingerprints.reset();
@@ -822,6 +901,7 @@ namespace
                 std::scoped_lock lock{m_probe_mutex};
                 m_probe_reports.clear();
                 m_probe_samples_by_function.clear();
+                m_final_source_probe_reports.clear();
             }
             m_probe_damage_callbacks.store(0, std::memory_order_release);
             m_probe_damage_functions.store(0, std::memory_order_release);
@@ -830,6 +910,39 @@ namespace
             m_probe_other_contexts.store(0, std::memory_order_release);
             m_probe_waza_samples.store(0, std::memory_order_release);
             m_probe_cache_overflow.store(false, std::memory_order_release);
+            m_final_source_probe_claims.store(0, std::memory_order_release);
+            m_final_source_probe_samples.store(0, std::memory_order_release);
+            m_final_source_probe_dropped.store(0, std::memory_order_release);
+            m_final_source_probe_object_fields.store(0, std::memory_order_release);
+            m_final_source_probe_direct_ids.store(0, std::memory_order_release);
+            m_final_source_probe_stack_frames.store(0, std::memory_order_release);
+            m_final_source_probe_effect_frames.store(0, std::memory_order_release);
+            m_final_source_probe_action_frames.store(0, std::memory_order_release);
+            m_final_source_probe_empty_fields.store(0, std::memory_order_release);
+            m_final_source_probe_field_truncated.store(0, std::memory_order_release);
+            m_final_source_probe_payload_truncated.store(0, std::memory_order_release);
+            m_final_source_schema_samples.store(0, std::memory_order_release);
+            m_final_source_schema_truncated.store(0, std::memory_order_release);
+            m_final_source_schema_emitted.store(false, std::memory_order_release);
+            m_filter_attack_callback_calls.store(0, std::memory_order_release);
+            m_filter_attack_callback_layout_misses.store(0, std::memory_order_release);
+            m_filter_attack_callback_missing_attacker.store(0, std::memory_order_release);
+            m_filter_attack_callback_missing_defender.store(0, std::memory_order_release);
+            m_filter_attack_callback_missing_waza.store(0, std::memory_order_release);
+            m_filter_attack_callback_source_conflicts.store(0, std::memory_order_release);
+            m_filter_attack_callback_nested_finals.store(0, std::memory_order_release);
+            m_filter_attack_callback_nested_exact.store(0, std::memory_order_release);
+            m_filter_attack_callback_nested_conflicts.store(0, std::memory_order_release);
+            m_filter_attack_callback_nested_attacker_misses.store(0, std::memory_order_release);
+            m_filter_attack_callback_nested_defender_misses.store(0, std::memory_order_release);
+            m_filter_attack_callback_nested_incomplete.store(0, std::memory_order_release);
+            m_filter_attack_callback_outside_scope_finals.store(0, std::memory_order_release);
+            m_filter_attack_callback_scope_errors.store(0, std::memory_order_release);
+            m_filter_attack_callback_errors.store(0, std::memory_order_release);
+            m_filter_attack_callback_probe_claims.store(0, std::memory_order_release);
+            m_filter_attack_callback_probe_samples.store(0, std::memory_order_release);
+            m_filter_attack_callback_probe_dropped.store(0, std::memory_order_release);
+            m_filter_attack_callback_probe_truncated.store(0, std::memory_order_release);
             m_pending_attack_recorded.store(0, std::memory_order_release);
             m_pending_attack_single.store(0, std::memory_order_release);
             m_pending_attack_agreed.store(0, std::memory_order_release);
@@ -843,7 +956,7 @@ namespace
         auto probe_report() -> std::string
         {
             std::scoped_lock lock{m_probe_mutex};
-            if (m_probe_reports.empty())
+            if (m_probe_reports.empty() && m_final_source_probe_reports.empty())
             {
                 return "none";
             }
@@ -855,6 +968,14 @@ namespace
                     output << " || ";
                 }
                 output << m_probe_reports[index];
+            }
+            for (const auto& report : m_final_source_probe_reports)
+            {
+                if (output.tellp() > 0)
+                {
+                    output << " || ";
+                }
+                output << report;
             }
             return output.str();
         }
@@ -890,6 +1011,22 @@ namespace
                    << (m_effect_initialize_ready.load() ? "true" : "false")
                    << "; filter_bind_hook="
                    << (m_filter_bind_ready.load() ? "true" : "false")
+                   << "; filter_attack_callback_hook="
+                   << (m_filter_attack_callback_ready.load() ? "true" : "false")
+                   << "; filter_attack_callback_calls="
+                   << m_filter_attack_callback_calls.load()
+                   << "; filter_attack_callback_nested_finals="
+                   << m_filter_attack_callback_nested_finals.load()
+                   << "; filter_attack_callback_nested_exact="
+                   << m_filter_attack_callback_nested_exact.load()
+                   << "; filter_attack_callback_nested_conflicts="
+                   << m_filter_attack_callback_nested_conflicts.load()
+                   << "; filter_attack_callback_nested_incomplete="
+                   << m_filter_attack_callback_nested_incomplete.load()
+                   << "; filter_attack_callback_outside_scope_finals="
+                   << m_filter_attack_callback_outside_scope_finals.load()
+                   << "; filter_attack_callback_errors="
+                   << m_filter_attack_callback_errors.load()
                    << "; action_begins=" << m_action_begin_matches.load()
                    << "; effect_initializes=" << m_effect_initialize_matches.load()
                    << "; attack_matches=" << m_attack_matches.load()
@@ -921,6 +1058,30 @@ namespace
                    << "; probe_waza_samples=" << m_probe_waza_samples.load()
                    << "; probe_cache_overflow="
                    << (m_probe_cache_overflow.load() ? "true" : "false")
+                   << "; final_source_probe_samples="
+                   << m_final_source_probe_samples.load()
+                   << "; final_source_probe_dropped="
+                   << m_final_source_probe_dropped.load()
+                   << "; final_source_probe_object_fields="
+                   << m_final_source_probe_object_fields.load()
+                   << "; final_source_probe_direct_ids="
+                   << m_final_source_probe_direct_ids.load()
+                   << "; final_source_probe_stack_frames="
+                   << m_final_source_probe_stack_frames.load()
+                   << "; final_source_probe_effect_frames="
+                   << m_final_source_probe_effect_frames.load()
+                   << "; final_source_probe_action_frames="
+                   << m_final_source_probe_action_frames.load()
+                   << "; final_source_probe_empty_fields="
+                   << m_final_source_probe_empty_fields.load()
+                   << "; final_source_probe_field_truncated="
+                   << m_final_source_probe_field_truncated.load()
+                   << "; final_source_probe_payload_truncated="
+                   << m_final_source_probe_payload_truncated.load()
+                   << "; final_source_schema_samples="
+                   << m_final_source_schema_samples.load()
+                   << "; final_source_schema_truncated="
+                   << m_final_source_schema_truncated.load()
                    << "; filter_bind_matches=" << m_filter_bind_matches.load()
                    << "; exact_hits=" << m_exact_hits.load()
                    << "; fingerprint_candidate_hits="
@@ -953,8 +1114,12 @@ namespace
                    << (m_effect_initialize_ready.load() ? "true" : "false")
                    << ";attack_filter="
                    << (m_filter_bind_ready.load() ? "true" : "false")
+                   << ";filter_attack_callback="
+                   << (m_filter_attack_callback_ready.load() ? "true" : "false")
                    << ";effect_attack=" << (stream_ready ? "true" : "false")
                    << ";damage_info=false;status=false"
+                   << ";final_source_probe=diagnostic_only"
+                   << ";final_source_probe_limit=" << maximum_final_source_probe_samples
                    << ";action_observed="
                    << (m_action_begin_matches.load() > 0 ? "true" : "false")
                    << ";effect_init_observed="
@@ -966,6 +1131,10 @@ namespace
                    << ";action_matches=" << m_action_begin_matches.load()
                    << ";effect_init_matches=" << m_effect_initialize_matches.load()
                    << ";filter_bind_matches=" << m_filter_bind_matches.load()
+                   << ";filter_attack_callback_calls="
+                   << m_filter_attack_callback_calls.load()
+                   << ";filter_attack_callback_nested_exact="
+                   << m_filter_attack_callback_nested_exact.load()
                    << ";effect_attack_matches=" << m_attack_matches.load()
                    << ";attack_fingerprints_recorded="
                    << m_attack_fingerprints_recorded.load()
@@ -982,6 +1151,16 @@ namespace
                    << ";probe_effect_contexts=" << m_probe_effect_contexts.load()
                    << ";probe_other_contexts=" << m_probe_other_contexts.load()
                    << ";probe_waza_samples=" << m_probe_waza_samples.load()
+                   << ";final_source_probe_samples="
+                   << m_final_source_probe_samples.load()
+                   << ";final_source_probe_dropped="
+                   << m_final_source_probe_dropped.load()
+                   << ";final_source_probe_direct_ids="
+                   << m_final_source_probe_direct_ids.load()
+                   << ";final_source_probe_effect_frames="
+                   << m_final_source_probe_effect_frames.load()
+                   << ";final_source_probe_action_frames="
+                   << m_final_source_probe_action_frames.load()
                    << ";exact_hit_matches=" << m_exact_hits.load()
                    << ";fingerprint_candidate_hits="
                    << m_fingerprint_candidate_hits.load()
@@ -1004,6 +1183,305 @@ namespace
                 message.data()
             );
             std::fflush(stderr);
+        }
+
+        auto append_final_source_schema(
+            UStruct* owner,
+            const std::string& prefix,
+            const std::size_t depth,
+            std::size_t& field_count,
+            bool& truncated,
+            std::ostringstream& output,
+            FProperty* skip_property = nullptr
+        ) const -> void
+        {
+            if (owner == nullptr || depth > 2 || truncated)
+            {
+                return;
+            }
+            for (TFieldIterator<FProperty> iterator{
+                     owner, EFieldIterationFlags::IncludeSuper
+                 };
+                 iterator;
+                 ++iterator)
+            {
+                if (field_count >= maximum_final_source_schema_fields)
+                {
+                    truncated = true;
+                    return;
+                }
+                auto* property = *iterator;
+                if (property == skip_property)
+                {
+                    continue;
+                }
+                const auto name = field_name(property);
+                const auto path = prefix.empty() ? name : prefix + "." + name;
+                if (field_count++ > 0)
+                {
+                    output << ',';
+                }
+                output << path << ':' << RC::to_string(property->GetClass().GetName());
+                if (auto* structure = CastField<FStructProperty>(property);
+                    structure != nullptr && structure->GetStruct().Get() != nullptr)
+                {
+                    append_final_source_schema(
+                        structure->GetStruct().Get(), path, depth + 1,
+                        field_count, truncated, output
+                    );
+                }
+            }
+        }
+
+        auto append_final_source_values(
+            UStruct* owner,
+            void* container,
+            const std::string& prefix,
+            const std::size_t depth,
+            std::size_t& visited_count,
+            std::size_t& field_count,
+            bool& truncated,
+            std::ostringstream& output,
+            FProperty* skip_property = nullptr
+        ) -> void
+        {
+            if (owner == nullptr || container == nullptr || depth > 2 || truncated)
+            {
+                return;
+            }
+            for (TFieldIterator<FProperty> iterator{
+                     owner, EFieldIterationFlags::IncludeSuper
+                 };
+                 iterator;
+                 ++iterator)
+            {
+                auto* property = *iterator;
+                if (property == skip_property)
+                {
+                    continue;
+                }
+                if (visited_count++ >= maximum_final_source_probe_visited_fields)
+                {
+                    truncated = true;
+                    return;
+                }
+                const auto name = field_name(property);
+                const auto path = prefix.empty() ? name : prefix + "." + name;
+                const auto object_property = CastField<FObjectPropertyBase>(property) != nullptr
+                    || CastField<FWeakObjectProperty>(property) != nullptr;
+                if (object_property)
+                {
+                    auto* object = ObjectField{property}.read(container);
+                    if (object == nullptr)
+                    {
+                        continue;
+                    }
+                    if (field_count >= maximum_final_source_probe_fields)
+                    {
+                        truncated = true;
+                        return;
+                    }
+                    if (field_count++ > 0)
+                    {
+                        output << ',';
+                    }
+                    output << path << "=object(" << token_text(object_token(object));
+                    if (object->GetClassPrivate() != nullptr)
+                    {
+                        output << '@' << RC::to_string(object->GetClassPrivate()->GetFullName());
+                    }
+                    output << ')';
+                    ++m_final_source_probe_object_fields;
+                    continue;
+                }
+
+                if (is_direct_source_identifier(name))
+                {
+                    const auto value = read_integer_property(property, container);
+                    if (value.has_value())
+                    {
+                        if (field_count >= maximum_final_source_probe_fields)
+                        {
+                            truncated = true;
+                            return;
+                        }
+                        if (field_count++ > 0)
+                        {
+                            output << ',';
+                        }
+                        output << path << "=id(" << value.value();
+                        const auto code = enum_code(property, value.value());
+                        if (!code.empty())
+                        {
+                            output << '@' << code;
+                        }
+                        output << ')';
+                        ++m_final_source_probe_direct_ids;
+                        continue;
+                    }
+                }
+
+                if (auto* structure = CastField<FStructProperty>(property);
+                    structure != nullptr && structure->GetStruct().Get() != nullptr)
+                {
+                    auto* nested = structure->ContainerPtrToValuePtr<void>(container);
+                    append_final_source_values(
+                        structure->GetStruct().Get(), nested, path, depth + 1,
+                        visited_count, field_count, truncated, output
+                    );
+                }
+            }
+        }
+
+        auto probe_final_damage_source(
+            UnrealScriptFunctionCallableContext& context,
+            void* result,
+            const std::uint64_t unresolved,
+            const std::string_view reason
+        ) -> void
+        {
+            const auto slot = m_final_source_probe_claims.fetch_add(
+                1, std::memory_order_relaxed
+            );
+            if (slot >= maximum_final_source_probe_samples)
+            {
+                ++m_final_source_probe_dropped;
+                return;
+            }
+            ++m_final_source_probe_samples;
+
+            if (!m_final_source_schema_emitted.exchange(true, std::memory_order_acq_rel))
+            {
+                std::ostringstream schema;
+                schema << "final-source-schema diagnostic_only=true result_struct="
+                       << (m_layout.result_struct != nullptr
+                           ? RC::to_string(m_layout.result_struct->GetFullName())
+                           : std::string{"none"})
+                       << " fields=[";
+                std::size_t schema_fields{};
+                bool schema_truncated{};
+                if (m_layout.damage_info != nullptr
+                    && m_layout.damage_info->GetStruct().Get() != nullptr)
+                {
+                    const auto info_prefix = "result."
+                        + field_name(m_layout.damage_info);
+                    append_final_source_schema(
+                        m_layout.damage_info->GetStruct().Get(), info_prefix, 0,
+                        schema_fields, schema_truncated, schema
+                    );
+                }
+                append_final_source_schema(
+                    m_layout.result_struct, "result", 0,
+                    schema_fields, schema_truncated, schema, m_layout.damage_info
+                );
+                schema << ']';
+                auto payload = bounded_log_payload(schema.str(), schema_truncated);
+                if (schema_truncated)
+                {
+                    ++m_final_source_schema_truncated;
+                }
+                ++m_final_source_schema_samples;
+                log(RC::to_wstring(payload));
+            }
+
+            std::ostringstream message;
+            message << "final-source-probe diagnostic_only=true sample=" << (slot + 1)
+                    << " unresolved=" << unresolved
+                    << " reason=" << reason
+                    << " hook="
+                    << (m_damage_function != nullptr
+                        ? RC::to_string(m_damage_function->GetFullName())
+                        : std::string{"none"})
+                    << " context=" << token_text(object_token(context.Context)) << '@'
+                    << (context.Context != nullptr
+                            && context.Context->GetClassPrivate() != nullptr
+                        ? RC::to_string(context.Context->GetClassPrivate()->GetFullName())
+                        : std::string{"none"});
+
+            message << " stack=[";
+            auto* frame = &context.TheStack;
+            std::size_t stack_depth{};
+            while (frame != nullptr && stack_depth < maximum_final_source_stack_depth)
+            {
+                if (stack_depth > 0)
+                {
+                    message << ';';
+                }
+                auto* node = frame->Node();
+                auto* native_function = frame->CurrentNativeFunction();
+                auto* frame_object = frame->Object();
+                message << stack_depth << "{node="
+                        << (node != nullptr
+                            ? RC::to_string(node->GetFullName())
+                            : std::string{"none"})
+                        << ",native="
+                        << (native_function != nullptr
+                            ? RC::to_string(native_function->GetFullName())
+                            : std::string{"none"})
+                        << ",object=" << token_text(object_token(frame_object)) << '@'
+                        << (frame_object != nullptr
+                                && frame_object->GetClassPrivate() != nullptr
+                            ? RC::to_string(frame_object->GetClassPrivate()->GetFullName())
+                            : std::string{"none"})
+                        << '}';
+                ++m_final_source_probe_stack_frames;
+                if (frame_object != nullptr && m_skill_effect_base_class != nullptr
+                    && frame_object->IsA(m_skill_effect_base_class))
+                {
+                    ++m_final_source_probe_effect_frames;
+                }
+                if (frame_object != nullptr && m_action_base_class != nullptr
+                    && frame_object->IsA(m_action_base_class))
+                {
+                    ++m_final_source_probe_action_frames;
+                }
+                frame = frame->PreviousFrame();
+                ++stack_depth;
+            }
+            message << "] source_fields=[";
+
+            std::size_t source_fields{};
+            std::size_t visited_source_fields{};
+            bool source_truncated{};
+            if (m_layout.damage_info != nullptr
+                && m_layout.damage_info->GetStruct().Get() != nullptr)
+            {
+                auto* damage_info = m_layout.damage_info->ContainerPtrToValuePtr<void>(result);
+                const auto info_prefix = "result." + field_name(m_layout.damage_info);
+                append_final_source_values(
+                    m_layout.damage_info->GetStruct().Get(), damage_info, info_prefix, 0,
+                    visited_source_fields, source_fields, source_truncated, message
+                );
+            }
+            append_final_source_values(
+                m_layout.result_struct, result, "result", 0,
+                visited_source_fields, source_fields, source_truncated, message,
+                m_layout.damage_info
+            );
+            message << ']';
+            if (source_fields == 0)
+            {
+                ++m_final_source_probe_empty_fields;
+            }
+            if (source_truncated)
+            {
+                ++m_final_source_probe_field_truncated;
+            }
+            bool payload_truncated{};
+            auto payload = bounded_log_payload(message.str(), payload_truncated);
+            if (payload_truncated)
+            {
+                ++m_final_source_probe_payload_truncated;
+            }
+            {
+                std::scoped_lock lock{m_probe_mutex};
+                if (m_final_source_probe_reports.size()
+                    < maximum_final_source_probe_samples)
+                {
+                    m_final_source_probe_reports.push_back(payload);
+                }
+            }
+            log(RC::to_wstring(payload));
         }
 
         auto initialize_skill_source_hooks() -> void
@@ -1159,11 +1637,60 @@ namespace
                 filter_bind_observable = m_filter_bind_hook_id >= 0;
             }
 
+            m_filter_attack_callback_function = UObjectGlobals::StaticFindObject<UFunction*>(
+                nullptr, nullptr,
+                STR("/Script/Pal.PalAttackFilter:CallBackOnAttackDelegate")
+            );
+            auto filter_attack_callback_observable = script_hooks_ready
+                && is_script_function(m_filter_attack_callback_function);
+            if (is_native_function(m_filter_attack_callback_function))
+            {
+                m_filter_attack_callback_pre_hook_id =
+                    m_filter_attack_callback_function->RegisterPreHook(
+                        [this](UnrealScriptFunctionCallableContext& context, void*) {
+                            try
+                            {
+                                capture_filter_attack_callback_pre(
+                                    context.Context, context.TheStack,
+                                    m_filter_attack_callback_function
+                                );
+                            }
+                            catch (...)
+                            {
+                                ++m_filter_attack_callback_errors;
+                                ++m_source_errors;
+                            }
+                        }
+                    );
+                m_filter_attack_callback_post_hook_id =
+                    m_filter_attack_callback_function->RegisterPostHook(
+                        [this](UnrealScriptFunctionCallableContext& context, void*) {
+                            try
+                            {
+                                capture_filter_attack_callback_post(
+                                    context.Context, m_filter_attack_callback_function
+                                );
+                            }
+                            catch (...)
+                            {
+                                ++m_filter_attack_callback_errors;
+                                ++m_source_errors;
+                            }
+                        }
+                    );
+                filter_attack_callback_observable =
+                    m_filter_attack_callback_pre_hook_id >= 0
+                    && m_filter_attack_callback_post_hook_id >= 0;
+            }
+
             m_action_source_ready.store(action_observable, std::memory_order_release);
             m_effect_initialize_ready.store(
                 effect_initialize_observable, std::memory_order_release
             );
             m_filter_bind_ready.store(filter_bind_observable, std::memory_order_release);
+            m_filter_attack_callback_ready.store(
+                filter_attack_callback_observable, std::memory_order_release
+            );
             // The global Blueprint script callbacks are the only mandatory
             // prerequisite for the Event v2 stream. OnAttack can discover the
             // effect/filter/Waza directly and backfill its source record even
@@ -1529,6 +2056,16 @@ namespace
                     continue;
                 }
                 const auto name = field_name(property);
+                if (layout.attacker_component.property == nullptr
+                    && equals_ignore_case(name, "AttackerComponent"))
+                {
+                    if (CastField<FObjectPropertyBase>(property) != nullptr
+                        || CastField<FWeakObjectProperty>(property) != nullptr)
+                    {
+                        layout.attacker_component = {property};
+                    }
+                    continue;
+                }
                 if (layout.defender.property == nullptr
                     && (equals_ignore_case(name, "Defencer") || equals_ignore_case(name, "Defender")))
                 {
@@ -1588,6 +2125,135 @@ namespace
             const auto layout = discover_attack_layout(function);
             m_attack_layout_cache.emplace(function, layout);
             return layout;
+        }
+
+        auto capture_filter_attack_callback_pre(
+            UObject* filter,
+            FFrame& stack,
+            UFunction* function
+        ) -> void
+        {
+            if (filter == nullptr || function == nullptr || stack.Locals() == nullptr
+                || m_attack_filter_class == nullptr || !filter->IsA(m_attack_filter_class))
+            {
+                return;
+            }
+
+            ++m_filter_attack_callback_calls;
+            active_filter_attack_scopes.push_back({
+                .function = function,
+                .context = filter,
+            });
+            auto& scope = active_filter_attack_scopes.back();
+            scope.link.filter = object_token(filter);
+
+            const auto layout = cached_attack_layout(function);
+            if (!layout.ready())
+            {
+                ++m_filter_attack_callback_layout_misses;
+                return;
+            }
+
+            auto* parameters = reinterpret_cast<std::byte*>(stack.Locals());
+            auto* damage_info = layout.damage_info->ContainerPtrToValuePtr<void>(parameters);
+            auto* filter_attacker = read_object_member(filter, {"Attacker"});
+            auto* info_attacker = layout.info_attacker.read(damage_info);
+            auto* defender = layout.defender.read(parameters);
+            auto* attacker_component = layout.attacker_component.read(parameters);
+            const auto [waza_id, skill_code] = read_filter_waza(filter);
+            auto* owner = filter->GetOuterPrivate();
+
+            scope.link.attacker = object_token(filter_attacker);
+            scope.link.defender = object_token(defender);
+            scope.link.effect = owner != nullptr && m_skill_effect_base_class != nullptr
+                    && owner->IsA(m_skill_effect_base_class)
+                ? object_token(owner)
+                : pal_dps::ObjectToken{};
+            scope.link.waza_id = waza_id;
+            scope.link.skill_code = skill_code;
+            scope.info_attacker = object_token(info_attacker);
+            scope.attacker_component = object_token(attacker_component);
+            scope.owner_action_id = read_integer_property(
+                find_property(filter->GetClassPrivate(), {"OwnerActionId", "OwnerActionID"}),
+                filter
+            );
+            scope.hit_count = layout.hit_count.read(parameters);
+            if (scope.info_attacker.valid() && scope.link.attacker.valid()
+                && scope.info_attacker != scope.link.attacker)
+            {
+                scope.link.source_conflicted = true;
+                ++m_filter_attack_callback_source_conflicts;
+            }
+            if (!scope.link.attacker.valid())
+            {
+                ++m_filter_attack_callback_missing_attacker;
+            }
+            if (!scope.link.defender.valid())
+            {
+                ++m_filter_attack_callback_missing_defender;
+            }
+            if (scope.link.waza_id <= 0 || scope.link.skill_code.empty())
+            {
+                ++m_filter_attack_callback_missing_waza;
+            }
+
+            const auto sample = m_filter_attack_callback_probe_claims.fetch_add(
+                1, std::memory_order_relaxed
+            );
+            if (sample < maximum_filter_attack_callback_probe_samples)
+            {
+                std::ostringstream message;
+                message << "filter-attack-callback diagnostic_only=true sample="
+                        << (sample + 1)
+                        << " function=" << RC::to_string(function->GetFullName())
+                        << " filter=" << token_text(scope.link.filter)
+                        << " attacker=" << token_text(scope.link.attacker)
+                        << " info_attacker=" << token_text(scope.info_attacker)
+                        << " defender=" << token_text(scope.link.defender)
+                        << " attacker_component="
+                        << token_text(scope.attacker_component)
+                        << " effect=" << token_text(scope.link.effect)
+                        << " owner_action_id="
+                        << (scope.owner_action_id.has_value()
+                            ? std::to_string(scope.owner_action_id.value())
+                            : std::string{"none"})
+                        << " waza=" << scope.link.waza_id
+                        << " code=" << scope.link.skill_code
+                        << " hit_count=" << scope.hit_count
+                        << " source_conflicted="
+                        << (scope.link.source_conflicted ? "true" : "false");
+                bool truncated{};
+                const auto payload = bounded_log_payload(message.str(), truncated);
+                if (truncated)
+                {
+                    ++m_filter_attack_callback_probe_truncated;
+                }
+                ++m_filter_attack_callback_probe_samples;
+                log(RC::to_wstring(payload));
+            }
+            else
+            {
+                ++m_filter_attack_callback_probe_dropped;
+            }
+        }
+
+        auto capture_filter_attack_callback_post(
+            UObject* filter,
+            UFunction* function
+        ) -> void
+        {
+            if (!active_filter_attack_scopes.empty())
+            {
+                const auto& scope = active_filter_attack_scopes.back();
+                if (scope.function == function && scope.context == filter)
+                {
+                    active_filter_attack_scopes.pop_back();
+                    return;
+                }
+            }
+            active_filter_attack_scopes.clear();
+            ++m_filter_attack_callback_scope_errors;
+            ++m_source_errors;
         }
 
         auto probe_script_damage_handler(
@@ -1708,8 +2374,16 @@ namespace
                 return;
             }
             ++m_script_callbacks_seen;
-            probe_script_damage_handler(context, stack, function);
             const auto function_name = RC::to_string(function->GetName());
+            if (equals_ignore_case(function_name, "CallBackOnAttackDelegate")
+                && context != nullptr && m_attack_filter_class != nullptr
+                && context->IsA(m_attack_filter_class))
+            {
+                ++m_script_calls;
+                capture_filter_attack_callback_pre(context, stack, function);
+                return;
+            }
+            probe_script_damage_handler(context, stack, function);
             if (equals_ignore_case(function_name, "OnBeginAction")
                 && context != nullptr && m_action_base_class != nullptr
                 && context->IsA(m_action_base_class))
@@ -1758,12 +2432,19 @@ namespace
             {
                 return;
             }
+            const auto function_name = RC::to_string(function->GetName());
+            if (equals_ignore_case(function_name, "CallBackOnAttackDelegate")
+                && context != nullptr && m_attack_filter_class != nullptr
+                && context->IsA(m_attack_filter_class))
+            {
+                capture_filter_attack_callback_post(context, function);
+                return;
+            }
             // The pre-hook accepts reflected Pal effect handlers such as the
             // plain Blueprint "OnAttack" used by GravityShot, not only the
             // delegate-signature spelling. Pop by exact function/context so
             // unrelated script callbacks remain untouched.
             capture_script_attack_post(context, function);
-            const auto function_name = RC::to_string(function->GetName());
             if (equals_ignore_case(function_name, "OnInitialize")
                 && context != nullptr && m_skill_effect_base_class != nullptr
                 && context->IsA(m_skill_effect_base_class))
@@ -2198,9 +2879,51 @@ namespace
                     fingerprint_match.kind = pal_dps::FingerprintMatchKind::fingerprint_weak;
                     ++m_final_fingerprint_weak;
                 }
+                bool confirmed_exact{};
+                if (!active_filter_attack_scopes.empty())
+                {
+                    ++m_filter_attack_callback_nested_finals;
+                    const auto& callback_scope = active_filter_attack_scopes.back();
+                    const auto callback_match = pal_dps::match_filter_callback_scope(
+                        callback_scope.link, attacker_token, defender_token
+                    );
+                    switch (callback_match)
+                    {
+                    case pal_dps::FilterCallbackMatchKind::exact:
+                        native_event.effect = callback_scope.link.effect;
+                        native_event.filter = callback_scope.link.filter;
+                        native_event.waza_id = callback_scope.link.waza_id;
+                        native_event.skill_code.assign(callback_scope.link.skill_code);
+                        // The filter is executing its own attack delegate on
+                        // this thread, and its direct Attacker/Defender/Waza
+                        // all match the final damage event. This is an engine
+                        // identity chain, not a time/signature inference.
+                        native_event.evidence_kind.assign("direct_waza_token");
+                        confirmed_exact = true;
+                        ++m_filter_attack_callback_nested_exact;
+                        ++m_exact_hits;
+                        break;
+                    case pal_dps::FilterCallbackMatchKind::source_conflict:
+                        ++m_filter_attack_callback_nested_conflicts;
+                        break;
+                    case pal_dps::FilterCallbackMatchKind::attacker_mismatch:
+                        ++m_filter_attack_callback_nested_attacker_misses;
+                        break;
+                    case pal_dps::FilterCallbackMatchKind::defender_mismatch:
+                        ++m_filter_attack_callback_nested_defender_misses;
+                        break;
+                    case pal_dps::FilterCallbackMatchKind::incomplete:
+                        ++m_filter_attack_callback_nested_incomplete;
+                        break;
+                    }
+                }
+                else
+                {
+                    ++m_filter_attack_callback_outside_scope_finals;
+                }
+
                 bool matched_pair{};
                 bool matched_incomplete_scope{};
-                bool confirmed_exact{};
                 for (auto scope = active_attack_scopes.rbegin();
                      !confirmed_exact && scope != active_attack_scopes.rend();
                      ++scope)
@@ -2329,6 +3052,9 @@ namespace
                         ++m_final_pair_misses;
                     }
                     const auto unresolved = ++m_unresolved_hits;
+                    probe_final_damage_source(
+                        context, result, unresolved, native_event.evidence_kind.view()
+                    );
                     if (unresolved == 1 || unresolved % 64 == 0)
                     {
                         std::ostringstream checkpoint;
@@ -2587,6 +3313,7 @@ namespace
         UFunction* m_action_begin_function{};
         UFunction* m_effect_initialize_function{};
         UFunction* m_filter_bind_function{};
+        UFunction* m_filter_attack_callback_function{};
         UClass* m_action_base_class{};
         UClass* m_skill_effect_base_class{};
         UClass* m_attack_filter_class{};
@@ -2597,6 +3324,8 @@ namespace
         CallbackId m_effect_initialize_pre_hook_id{-1};
         CallbackId m_effect_initialize_post_hook_id{-1};
         CallbackId m_filter_bind_hook_id{-1};
+        CallbackId m_filter_attack_callback_pre_hook_id{-1};
+        CallbackId m_filter_attack_callback_post_hook_id{-1};
         Hook::GlobalCallbackId m_script_pre_id{Hook::ERROR_ID};
         Hook::GlobalCallbackId m_script_post_id{Hook::ERROR_ID};
         std::atomic<bool> m_ready{};
@@ -2605,6 +3334,7 @@ namespace
         std::atomic<bool> m_action_source_ready{};
         std::atomic<bool> m_effect_initialize_ready{};
         std::atomic<bool> m_filter_bind_ready{};
+        std::atomic<bool> m_filter_attack_callback_ready{};
         std::atomic<bool> m_source_overflow{};
         std::atomic<std::uint64_t> m_capture_errors{};
         std::atomic<std::uint64_t> m_script_calls{};
@@ -2636,7 +3366,40 @@ namespace
         std::atomic<std::uint64_t> m_probe_other_contexts{};
         std::atomic<std::uint64_t> m_probe_waza_samples{};
         std::atomic<bool> m_probe_cache_overflow{};
+        std::atomic<std::uint64_t> m_final_source_probe_claims{};
+        std::atomic<std::uint64_t> m_final_source_probe_samples{};
+        std::atomic<std::uint64_t> m_final_source_probe_dropped{};
+        std::atomic<std::uint64_t> m_final_source_probe_object_fields{};
+        std::atomic<std::uint64_t> m_final_source_probe_direct_ids{};
+        std::atomic<std::uint64_t> m_final_source_probe_stack_frames{};
+        std::atomic<std::uint64_t> m_final_source_probe_effect_frames{};
+        std::atomic<std::uint64_t> m_final_source_probe_action_frames{};
+        std::atomic<std::uint64_t> m_final_source_probe_empty_fields{};
+        std::atomic<std::uint64_t> m_final_source_probe_field_truncated{};
+        std::atomic<std::uint64_t> m_final_source_probe_payload_truncated{};
+        std::atomic<std::uint64_t> m_final_source_schema_samples{};
+        std::atomic<std::uint64_t> m_final_source_schema_truncated{};
+        std::atomic<bool> m_final_source_schema_emitted{};
         std::atomic<std::uint64_t> m_filter_bind_matches{};
+        std::atomic<std::uint64_t> m_filter_attack_callback_calls{};
+        std::atomic<std::uint64_t> m_filter_attack_callback_layout_misses{};
+        std::atomic<std::uint64_t> m_filter_attack_callback_missing_attacker{};
+        std::atomic<std::uint64_t> m_filter_attack_callback_missing_defender{};
+        std::atomic<std::uint64_t> m_filter_attack_callback_missing_waza{};
+        std::atomic<std::uint64_t> m_filter_attack_callback_source_conflicts{};
+        std::atomic<std::uint64_t> m_filter_attack_callback_nested_finals{};
+        std::atomic<std::uint64_t> m_filter_attack_callback_nested_exact{};
+        std::atomic<std::uint64_t> m_filter_attack_callback_nested_conflicts{};
+        std::atomic<std::uint64_t> m_filter_attack_callback_nested_attacker_misses{};
+        std::atomic<std::uint64_t> m_filter_attack_callback_nested_defender_misses{};
+        std::atomic<std::uint64_t> m_filter_attack_callback_nested_incomplete{};
+        std::atomic<std::uint64_t> m_filter_attack_callback_outside_scope_finals{};
+        std::atomic<std::uint64_t> m_filter_attack_callback_scope_errors{};
+        std::atomic<std::uint64_t> m_filter_attack_callback_errors{};
+        std::atomic<std::uint64_t> m_filter_attack_callback_probe_claims{};
+        std::atomic<std::uint64_t> m_filter_attack_callback_probe_samples{};
+        std::atomic<std::uint64_t> m_filter_attack_callback_probe_dropped{};
+        std::atomic<std::uint64_t> m_filter_attack_callback_probe_truncated{};
         std::atomic<std::uint64_t> m_exact_hits{};
         std::atomic<std::uint64_t> m_fingerprint_candidate_hits{};
         std::atomic<std::uint64_t> m_final_fingerprint_weak{};
@@ -2673,6 +3436,7 @@ namespace
         std::unordered_map<UFunction*, AttackFunctionLayout> m_attack_layout_cache;
         std::unordered_map<UFunction*, std::size_t> m_probe_samples_by_function;
         std::vector<std::string> m_probe_reports;
+        std::vector<std::string> m_final_source_probe_reports;
         std::uint64_t m_next_cast_value{1};
         std::uint64_t m_skipped_nonboss{};
         std::uint64_t m_overflow_buckets{};
