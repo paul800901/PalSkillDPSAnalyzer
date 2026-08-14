@@ -1,4 +1,4 @@
-# PalSkillDPSAnalyzer v0.5.16-native-filter-callback-probe
+# PalSkillDPSAnalyzer v0.5.17-native-damage-utility-probe
 
 Palworld 1.0 單機用 UE4SS 傷害驗證 Mod。它不是玩家排行榜，而是專門測量帕魯對 Boss 造成的技能傷害：預設接受競技場／高塔／地城／石板等封閉戰鬥 Boss，以及大世界有 Boss／Alpha 標記的頭目；普通野怪與基地混戰不納入預設正式統計。輸出包含總傷害、整場 DPS、占比、命中、每次施放傷害、完整動作時間、單次施放 DPS、實際施放間隔與 AI／再用空窗。
 
@@ -12,7 +12,7 @@ Palworld 1.0 單機用 UE4SS 傷害驗證 Mod。它不是玩家排行榜，而�
 
 實機已確認目前 Palworld／UE4SS 會在 Lua 動態 UMG 與 `PrintString` 路徑造成 GameThread 存取違規。顯示層因此隔離成隨附的 Windows WPF 程序：Lua 只寫入本機 UTF-8 結構化狀態檔，不再從傷害回呼呼叫 Unreal UI。面板只在 Palworld 位於前景時顯示，遊戲關閉後約 10 秒自行退出。
 
-目前 `v0.5.16` 延續原生逐擊來源配對，並針對仍未涵蓋的技能本體主命中加入 `PalAttackFilter` 原生回呼與有限 final-source 診斷。只有 Filter 回呼與最終傷害位於同一引擎呼叫鏈、攻擊者／Boss 目標一致且 Waza 完整時才可正式歸因；其餘維持「未辨識傷害」。診斷不使用目前動作、最近施放、時間、`BasePower`＋元素或面板倍率猜測。上一版受控 Boss 場的 128 次命中全部守恆，98 次已有精確／一致來源，剩餘 30 次屬於第二條主命中路徑；本版用來確認其可靠來源。灼燒與中毒維持獨立狀態傷害方向，不會假裝屬於某個技能。F1 外部互動設定維持暫停；使用 `F2` 隨時開始新測試（傷害歸零），其他選項修改 `Scripts/config.lua` 後完整重開遊戲：
+目前 `v0.5.17` 延續原生逐擊來源配對，並改由 `PalUtility:ProcessDamageAndPlayEffectsByDamageInfo` 的實際傷害處理呼叫鏈，尋找技能本體主命中的 `PalAttackFilter`／效果與 Waza。只有該呼叫與最終傷害同步巢狀、攻擊者／Boss 目標一致且 Waza 完整時才可正式歸因；其餘維持「未辨識傷害」。診斷不使用目前動作、最近施放、時間、`BasePower`＋元素或面板倍率猜測。上一版實機已證明 `PalAttackFilter:CallBackOnAttackDelegate` 不是這批主命中的入口；本版用來驗證更接近最終傷害處理的引擎路徑。灼燒與中毒維持獨立狀態傷害方向，不會假裝屬於某個技能。F1 外部互動設定維持暫停；使用 `F2` 隨時開始新測試（傷害歸零），其他選項修改 `Scripts/config.lua` 後完整重開遊戲：
 
 - 顯示語言（跟隨遊戲／17 種指定語言）
 - 技能 DPS 面板開關
@@ -68,7 +68,7 @@ Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\
 powershell -ExecutionPolicy Bypass -File .\workshop\build_workshop.ps1
 ```
 
-輸出位於 `workshop/dist/PalSkillDPSAnalyzerSP-Workshop-v0.5.16.zip`。專案已保留獨立的 `Info.json`、PackageName 與空白 Workshop Published File ID，不會覆蓋上游 Mod。原生來源收集器目前隨專案本機建置；正式 Workshop 發布前仍需完成原生 DLL 的套件化與實機驗收。
+輸出位於 `workshop/dist/PalSkillDPSAnalyzerSP-Workshop-v0.5.17.zip`。專案已保留獨立的 `Info.json`、PackageName 與空白 Workshop Published File ID，不會覆蓋上游 Mod。原生來源收集器目前隨專案本機建置；正式 Workshop 發布前仍需完成原生 DLL 的套件化與實機驗收。
 
 ## 驗證流程
 
@@ -87,7 +87,7 @@ powershell -ExecutionPolicy Bypass -File .\workshop\build_workshop.ps1
 - 「面板 CD」來自遊戲技能資料庫；「實際開始間隔」是相鄰施放開始到開始，會包含 AI 選招、移動、距離與其他技能造成的等待，不等同純冷卻。
 - 「完整動作」只統計成功捕捉開始與結束的施放。報表的 `完整計時 n/m` 是覆蓋率；未完整捕捉時只保留首末命中窗，不把它冒充動作時間。
 - 原生 Event v2 逐擊事件在歸因前不聚合；若原生收集器不可用，Lua 相容模式仍可統計總傷，但不保證重疊持續技能的精確歸因。
-- v0.5.16 暫不提供 F1 互動設定；HUD／語言／人物傷害等選項需編輯 `config.lua` 並完整重開 Palworld。
+- v0.5.17 暫不提供 F1 互動設定；HUD／語言／人物傷害等選項需編輯 `config.lua` 並完整重開 Palworld。
 - 外部 HUD 會以本機心跳自我檢查並在中止後重新啟動；例外記錄位於 `Scripts/skill_dps_hud_overlay.log`。
 - 外部 HUD 需要 Windows PowerShell 5.1 與 WPF（Windows 10／11 內建）；若安全軟體阻擋 PowerShell，統計核心與 `UE4SS.log` 仍可運作，但畫面面板不會出現。
 

@@ -1,5 +1,13 @@
 # 更新日志
 
+## 0.5.17-native-damage-utility-probe — 技能主命中傷害處理鏈診斷
+
+- 實機證實上一版 `PalAttackFilter:CallBackOnAttackDelegate` 雖可註冊，但受控 Boss 場的呼叫次數為 0；因此不再把它視為技能本體主命中的來源入口。
+- 新增原生 `PalUtility:ProcessDamageAndPlayEffectsByDamageInfo` Pre／Post 探針，沿當下引擎呼叫堆疊尋找實際 `PalAttackFilter`／技能效果，直接讀取 Filter 的 Waza、攻擊者與目標。
+- 只有傷害處理呼叫與 final damage 同步巢狀、Filter Waza 完整、攻擊者與 Boss 目標全部一致時，才輸出精確技能；多個來源衝突、欄位缺失或呼叫鏈未接上時仍保留「未辨識傷害」。
+- 不使用目前動作、最近施放、時間窗、傷害倍率、元素或面板技能組來填補歸因；新增的診斷資料有固定樣本、堆疊深度與輸出大小上限。
+- 原生建置、200 萬命中壓力測試、事件佇列與來源鏈回歸已通過；這個新入口是否涵蓋遊戲內技能主命中，仍需本版實機測試確認。
+
 ## 0.5.16-native-filter-callback-probe — 技能主命中來源診斷
 
 - 新增原生 `PalAttackFilter:CallBackOnAttackDelegate` Pre／Post 探針，直接從 Filter 讀取 Waza、攻擊者與 OwnerActionId，驗證技能本體主命中是否在同一引擎呼叫鏈內進入最終 OnDamage。

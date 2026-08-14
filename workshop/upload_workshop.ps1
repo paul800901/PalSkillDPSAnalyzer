@@ -58,7 +58,7 @@ $vdf = @(
     ('    "visibility" "{0}"' -f $Visibility)
     ('    "title" "{0}"' -f (ConvertTo-VdfValue $workshopTitle))
     ('    "description" "{0}"' -f (ConvertTo-VdfValue $description))
-    '    "changenote" "v0.5.16: probes the native PalAttackFilter callback and bounded final-damage source chain; missing sources remain unresolved."'
+    '    "changenote" "v0.5.17: probes the native Pal damage utility call chain for exact Filter/Waza attribution; missing sources remain unresolved."'
     '}'
 ) -join "`r`n"
 [System.IO.File]::WriteAllText($vdfPath, $vdf, [System.Text.UTF8Encoding]::new($false))
@@ -76,8 +76,8 @@ if (-not $match.Success -or $match.Groups[1].Value -eq "0") {
 }
 
 $metadata.publishedfileid = $match.Groups[1].Value
-$metadata.changenote = "v0.5.16: probes the native PalAttackFilter callback and bounded final-damage source chain; missing sources remain unresolved."
-$metadata.last_published_version = "0.5.16"
+$metadata.changenote = "v0.5.17: probes the native Pal damage utility call chain for exact Filter/Waza attribution; missing sources remain unresolved."
+$metadata.last_published_version = "0.5.17"
 $metadataJson = $metadata | ConvertTo-Json -Depth 4
 [System.IO.File]::WriteAllText($metadataPath, $metadataJson + "`r`n", [System.Text.UTF8Encoding]::new($false))
 

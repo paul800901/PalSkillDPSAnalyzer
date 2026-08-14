@@ -4860,7 +4860,7 @@ local function register_hooks()
 
     if hooks.damage and hooks.death then
         log(string.format(
-            "loaded v0.5.16-native-filter-callback-probe; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s chat_mode=%s waza_hook=%s action_hooks=%s/%s effect_hook=%s filter_hook=%s effect_attack_hooks=%d local_only=%s; captured_hooks=%d",
+            "loaded v0.5.17-native-damage-utility-probe; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s chat_mode=%s waza_hook=%s action_hooks=%s/%s effect_hook=%s filter_hook=%s effect_attack_hooks=%d local_only=%s; captured_hooks=%d",
             hooks.damage_mode,
             tostring(config.EnableDPSRecording ~= false),
             tostring(config.EnableSkillDiagnostics == true),

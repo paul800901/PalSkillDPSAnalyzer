@@ -48,6 +48,8 @@ namespace
     constexpr auto skill_effect_base_class_path = STR("/Script/Pal.PalSkillEffectBase");
     constexpr auto attack_filter_class_path = STR("/Script/Pal.PalAttackFilter");
     constexpr auto action_base_class_path = STR("/Script/Pal.PalActionBase");
+    constexpr auto damage_utility_function_path =
+        STR("/Script/Pal.PalUtility:ProcessDamageAndPlayEffectsByDamageInfo");
     constexpr std::size_t maximum_pending_buckets = 4096;
     constexpr std::size_t maximum_pending_events = 16384;
     constexpr std::size_t maximum_source_records = 32768;
@@ -62,6 +64,7 @@ namespace
     constexpr std::size_t maximum_final_source_stack_depth = 8;
     constexpr std::size_t maximum_final_source_log_bytes = 4096;
     constexpr std::size_t maximum_filter_attack_callback_probe_samples = 16;
+    constexpr std::size_t maximum_damage_utility_probe_samples = 24;
     constexpr std::uint64_t maximum_pending_attack_age_ns = 1'000'000'000ULL;
 
     enum class TargetState : std::uint8_t
@@ -197,6 +200,16 @@ namespace
         double hit_count{};
     };
 
+    struct DamageUtilityScope
+    {
+        UFunction* function{};
+        UObject* context{};
+        pal_dps::FilterCallbackScopeLink link{};
+        pal_dps::ObjectToken info_attacker{};
+        pal_dps::ObjectToken stack_effect{};
+        std::size_t stack_depth{};
+    };
+
     struct EffectSourceRecord
     {
         pal_dps::ObjectToken effect{};
@@ -214,6 +227,7 @@ namespace
     thread_local std::vector<AttackScope> active_attack_scopes{};
     thread_local std::vector<ActionScope> active_action_scopes{};
     thread_local std::vector<FilterAttackScope> active_filter_attack_scopes{};
+    thread_local std::vector<DamageUtilityScope> active_damage_utility_scopes{};
 
     struct WeakObjects
     {
@@ -647,8 +661,8 @@ namespace
         BossDPSNativeCollector()
         {
             ModName = STR("BossDPSNativeCollector");
-            ModVersion = STR("3.7.0-pair-link");
-            ModDescription = STR("Native fail-closed Pal skill handler discovery probe");
+            ModVersion = STR("3.10.0-damage-utility-probe");
+            ModDescription = STR("Native fail-closed Pal damage utility attribution probe");
             ModAuthors = STR("AsahiChan-Game");
         }
 
@@ -674,6 +688,21 @@ namespace
                 {
                     static_cast<void>(m_filter_attack_callback_function->UnregisterHook(
                         m_filter_attack_callback_post_hook_id
+                    ));
+                }
+            }
+            if (m_damage_utility_function != nullptr)
+            {
+                if (m_damage_utility_pre_hook_id >= 0)
+                {
+                    static_cast<void>(m_damage_utility_function->UnregisterHook(
+                        m_damage_utility_pre_hook_id
+                    ));
+                }
+                if (m_damage_utility_post_hook_id >= 0)
+                {
+                    static_cast<void>(m_damage_utility_function->UnregisterHook(
+                        m_damage_utility_post_hook_id
                     ));
                 }
             }
@@ -889,6 +918,7 @@ namespace
         {
             m_event_queue.reset();
             active_filter_attack_scopes.clear();
+            active_damage_utility_scopes.clear();
             {
                 std::scoped_lock lock{m_fingerprint_mutex};
                 m_pending_fingerprints.reset();
@@ -943,6 +973,26 @@ namespace
             m_filter_attack_callback_probe_samples.store(0, std::memory_order_release);
             m_filter_attack_callback_probe_dropped.store(0, std::memory_order_release);
             m_filter_attack_callback_probe_truncated.store(0, std::memory_order_release);
+            m_damage_utility_calls.store(0, std::memory_order_release);
+            m_damage_utility_layout_misses.store(0, std::memory_order_release);
+            m_damage_utility_missing_filter.store(0, std::memory_order_release);
+            m_damage_utility_missing_attacker.store(0, std::memory_order_release);
+            m_damage_utility_missing_defender.store(0, std::memory_order_release);
+            m_damage_utility_missing_waza.store(0, std::memory_order_release);
+            m_damage_utility_source_conflicts.store(0, std::memory_order_release);
+            m_damage_utility_nested_finals.store(0, std::memory_order_release);
+            m_damage_utility_nested_exact.store(0, std::memory_order_release);
+            m_damage_utility_nested_conflicts.store(0, std::memory_order_release);
+            m_damage_utility_nested_attacker_misses.store(0, std::memory_order_release);
+            m_damage_utility_nested_defender_misses.store(0, std::memory_order_release);
+            m_damage_utility_nested_incomplete.store(0, std::memory_order_release);
+            m_damage_utility_outside_scope_finals.store(0, std::memory_order_release);
+            m_damage_utility_scope_errors.store(0, std::memory_order_release);
+            m_damage_utility_errors.store(0, std::memory_order_release);
+            m_damage_utility_probe_claims.store(0, std::memory_order_release);
+            m_damage_utility_probe_samples.store(0, std::memory_order_release);
+            m_damage_utility_probe_dropped.store(0, std::memory_order_release);
+            m_damage_utility_probe_truncated.store(0, std::memory_order_release);
             m_pending_attack_recorded.store(0, std::memory_order_release);
             m_pending_attack_single.store(0, std::memory_order_release);
             m_pending_attack_agreed.store(0, std::memory_order_release);
@@ -1027,6 +1077,28 @@ namespace
                    << m_filter_attack_callback_outside_scope_finals.load()
                    << "; filter_attack_callback_errors="
                    << m_filter_attack_callback_errors.load()
+                   << "; damage_utility_hook="
+                   << (m_damage_utility_ready.load() ? "true" : "false")
+                   << "; damage_utility_calls=" << m_damage_utility_calls.load()
+                   << "; damage_utility_layout_misses="
+                   << m_damage_utility_layout_misses.load()
+                   << "; damage_utility_missing_filter="
+                   << m_damage_utility_missing_filter.load()
+                   << "; damage_utility_missing_waza="
+                   << m_damage_utility_missing_waza.load()
+                   << "; damage_utility_nested_finals="
+                   << m_damage_utility_nested_finals.load()
+                   << "; damage_utility_nested_exact="
+                   << m_damage_utility_nested_exact.load()
+                   << "; damage_utility_nested_conflicts="
+                   << m_damage_utility_nested_conflicts.load()
+                   << "; damage_utility_nested_incomplete="
+                   << m_damage_utility_nested_incomplete.load()
+                   << "; damage_utility_outside_scope_finals="
+                   << m_damage_utility_outside_scope_finals.load()
+                   << "; damage_utility_scope_errors="
+                   << m_damage_utility_scope_errors.load()
+                   << "; damage_utility_errors=" << m_damage_utility_errors.load()
                    << "; action_begins=" << m_action_begin_matches.load()
                    << "; effect_initializes=" << m_effect_initialize_matches.load()
                    << "; attack_matches=" << m_attack_matches.load()
@@ -1116,6 +1188,8 @@ namespace
                    << (m_filter_bind_ready.load() ? "true" : "false")
                    << ";filter_attack_callback="
                    << (m_filter_attack_callback_ready.load() ? "true" : "false")
+                   << ";damage_utility="
+                   << (m_damage_utility_ready.load() ? "true" : "false")
                    << ";effect_attack=" << (stream_ready ? "true" : "false")
                    << ";damage_info=false;status=false"
                    << ";final_source_probe=diagnostic_only"
@@ -1135,6 +1209,11 @@ namespace
                    << m_filter_attack_callback_calls.load()
                    << ";filter_attack_callback_nested_exact="
                    << m_filter_attack_callback_nested_exact.load()
+                   << ";damage_utility_calls=" << m_damage_utility_calls.load()
+                   << ";damage_utility_nested_finals="
+                   << m_damage_utility_nested_finals.load()
+                   << ";damage_utility_nested_exact="
+                   << m_damage_utility_nested_exact.load()
                    << ";effect_attack_matches=" << m_attack_matches.load()
                    << ";attack_fingerprints_recorded="
                    << m_attack_fingerprints_recorded.load()
@@ -1637,6 +1716,47 @@ namespace
                 filter_bind_observable = m_filter_bind_hook_id >= 0;
             }
 
+            m_damage_utility_function = UObjectGlobals::StaticFindObject<UFunction*>(
+                nullptr, nullptr, damage_utility_function_path
+            );
+            auto damage_utility_observable = script_hooks_ready
+                && is_script_function(m_damage_utility_function);
+            if (is_native_function(m_damage_utility_function))
+            {
+                m_damage_utility_pre_hook_id = m_damage_utility_function->RegisterPreHook(
+                    [this](UnrealScriptFunctionCallableContext& context, void*) {
+                        try
+                        {
+                            capture_damage_utility_pre(
+                                context.Context, context.TheStack, m_damage_utility_function
+                            );
+                        }
+                        catch (...)
+                        {
+                            ++m_damage_utility_errors;
+                            ++m_source_errors;
+                        }
+                    }
+                );
+                m_damage_utility_post_hook_id = m_damage_utility_function->RegisterPostHook(
+                    [this](UnrealScriptFunctionCallableContext& context, void*) {
+                        try
+                        {
+                            capture_damage_utility_post(
+                                context.Context, m_damage_utility_function
+                            );
+                        }
+                        catch (...)
+                        {
+                            ++m_damage_utility_errors;
+                            ++m_source_errors;
+                        }
+                    }
+                );
+                damage_utility_observable = m_damage_utility_pre_hook_id >= 0
+                    && m_damage_utility_post_hook_id >= 0;
+            }
+
             m_filter_attack_callback_function = UObjectGlobals::StaticFindObject<UFunction*>(
                 nullptr, nullptr,
                 STR("/Script/Pal.PalAttackFilter:CallBackOnAttackDelegate")
@@ -1690,6 +1810,9 @@ namespace
             m_filter_bind_ready.store(filter_bind_observable, std::memory_order_release);
             m_filter_attack_callback_ready.store(
                 filter_attack_callback_observable, std::memory_order_release
+            );
+            m_damage_utility_ready.store(
+                damage_utility_observable, std::memory_order_release
             );
             // The global Blueprint script callbacks are the only mandatory
             // prerequisite for the Event v2 stream. OnAttack can discover the
@@ -2127,6 +2250,243 @@ namespace
             return layout;
         }
 
+        auto capture_damage_utility_pre(
+            UObject* context,
+            FFrame& stack,
+            UFunction* function
+        ) -> void
+        {
+            if (function == nullptr)
+            {
+                return;
+            }
+
+            ++m_damage_utility_calls;
+            active_damage_utility_scopes.push_back({
+                .function = function,
+                .context = context,
+            });
+            auto& scope = active_damage_utility_scopes.back();
+
+            const auto layout = cached_attack_layout(function);
+            if (!layout.ready() || stack.Locals() == nullptr)
+            {
+                ++m_damage_utility_layout_misses;
+                return;
+            }
+
+            auto* parameters = reinterpret_cast<std::byte*>(stack.Locals());
+            auto* damage_info = layout.damage_info->ContainerPtrToValuePtr<void>(parameters);
+            auto* info_attacker = layout.info_attacker.read(damage_info);
+            auto* defender = layout.defender.read(parameters);
+            scope.info_attacker = object_token(info_attacker);
+            scope.link.defender = object_token(defender);
+
+            UObject* selected_filter{};
+            UObject* selected_effect{};
+            auto selected_filter_token = pal_dps::ObjectToken{};
+            auto selected_effect_token = pal_dps::ObjectToken{};
+            bool source_conflicted{};
+
+            auto accept_source = [&](UObject* candidate_filter, UObject* candidate_effect) {
+                const auto candidate_filter_token = object_token(candidate_filter);
+                if (!candidate_filter_token.valid())
+                {
+                    return;
+                }
+                if (selected_filter_token.valid()
+                    && selected_filter_token != candidate_filter_token)
+                {
+                    source_conflicted = true;
+                    return;
+                }
+                selected_filter = candidate_filter;
+                selected_filter_token = candidate_filter_token;
+                const auto candidate_effect_token = object_token(candidate_effect);
+                if (!candidate_effect_token.valid())
+                {
+                    return;
+                }
+                if (selected_effect_token.valid()
+                    && selected_effect_token != candidate_effect_token)
+                {
+                    // More than one effect may legitimately share a filter.
+                    // Keep the direct filter/Waza identity and omit the
+                    // ambiguous effect token instead of selecting one.
+                    selected_effect = nullptr;
+                    selected_effect_token = {};
+                    return;
+                }
+                selected_effect = candidate_effect;
+                selected_effect_token = candidate_effect_token;
+            };
+
+            auto* frame = &stack;
+            for (std::size_t depth = 0;
+                 frame != nullptr && depth < maximum_final_source_stack_depth;
+                 frame = frame->PreviousFrame(), ++depth)
+            {
+                auto* frame_object = frame->Object();
+                auto* frame_function = frame->Node();
+                if (frame_function == nullptr)
+                {
+                    frame_function = frame->CurrentNativeFunction();
+                }
+                if (frame_object == nullptr)
+                {
+                    continue;
+                }
+
+                UObject* candidate_filter{};
+                UObject* candidate_effect{};
+                if (m_attack_filter_class != nullptr
+                    && frame_object->IsA(m_attack_filter_class))
+                {
+                    candidate_filter = frame_object;
+                    const auto filter_token = object_token(frame_object);
+                    pal_dps::ObjectToken effect_token{};
+                    {
+                        std::scoped_lock lock{m_source_mutex};
+                        const auto known = m_filter_effects.find(filter_token);
+                        if (known != m_filter_effects.end())
+                        {
+                            effect_token = known->second;
+                        }
+                    }
+                    candidate_effect = resolve_object(effect_token);
+                }
+                else if (m_skill_effect_base_class != nullptr
+                         && frame_object->IsA(m_skill_effect_base_class))
+                {
+                    candidate_effect = frame_object;
+                    candidate_filter = find_attack_filter(frame_object, frame_function);
+                }
+                else
+                {
+                    auto* outer = frame_object->GetOuterPrivate();
+                    for (std::size_t outer_depth = 0;
+                         outer != nullptr && outer_depth < 8;
+                         outer = outer->GetOuterPrivate(), ++outer_depth)
+                    {
+                        if (m_attack_filter_class != nullptr
+                            && outer->IsA(m_attack_filter_class))
+                        {
+                            candidate_filter = outer;
+                            break;
+                        }
+                        if (m_skill_effect_base_class != nullptr
+                            && outer->IsA(m_skill_effect_base_class))
+                        {
+                            candidate_effect = outer;
+                            candidate_filter = find_attack_filter(outer, frame_function);
+                            break;
+                        }
+                    }
+                }
+                if (candidate_filter != nullptr)
+                {
+                    accept_source(candidate_filter, candidate_effect);
+                    scope.stack_depth = depth;
+                }
+            }
+
+            scope.link.filter = selected_filter_token;
+            scope.link.effect = selected_effect_token;
+            scope.stack_effect = selected_effect_token;
+            scope.link.source_conflicted = source_conflicted;
+            if (selected_filter != nullptr)
+            {
+                auto* filter_attacker = read_object_member(selected_filter, {"Attacker"});
+                scope.link.attacker = object_token(filter_attacker);
+                const auto [waza_id, skill_code] = read_filter_waza(selected_filter);
+                scope.link.waza_id = waza_id;
+                scope.link.skill_code = skill_code;
+                if (scope.info_attacker.valid() && scope.link.attacker.valid()
+                    && scope.info_attacker != scope.link.attacker)
+                {
+                    scope.link.source_conflicted = true;
+                }
+            }
+
+            if (!scope.link.filter.valid())
+            {
+                ++m_damage_utility_missing_filter;
+            }
+            if (!scope.link.attacker.valid())
+            {
+                ++m_damage_utility_missing_attacker;
+            }
+            if (!scope.link.defender.valid())
+            {
+                ++m_damage_utility_missing_defender;
+            }
+            if (scope.link.waza_id <= 0 || scope.link.skill_code.empty())
+            {
+                ++m_damage_utility_missing_waza;
+            }
+            if (scope.link.source_conflicted)
+            {
+                ++m_damage_utility_source_conflicts;
+            }
+
+            const auto sample = m_damage_utility_probe_claims.fetch_add(
+                1, std::memory_order_relaxed
+            );
+            if (sample < maximum_damage_utility_probe_samples)
+            {
+                std::ostringstream message;
+                message << "damage-utility-probe diagnostic_only=true sample="
+                        << (sample + 1)
+                        << " function=" << RC::to_string(function->GetFullName())
+                        << " context=" << token_text(object_token(context))
+                        << " filter=" << token_text(scope.link.filter)
+                        << " effect=" << token_text(scope.link.effect)
+                        << " attacker=" << token_text(scope.link.attacker)
+                        << " info_attacker=" << token_text(scope.info_attacker)
+                        << " defender=" << token_text(scope.link.defender)
+                        << " waza=" << scope.link.waza_id
+                        << " code=" << scope.link.skill_code
+                        << " stack_depth=" << scope.stack_depth
+                        << " source_conflicted="
+                        << (scope.link.source_conflicted ? "true" : "false");
+                bool truncated{};
+                const auto payload = bounded_log_payload(message.str(), truncated);
+                if (truncated)
+                {
+                    ++m_damage_utility_probe_truncated;
+                }
+                ++m_damage_utility_probe_samples;
+                {
+                    std::scoped_lock lock{m_probe_mutex};
+                    if (m_probe_reports.size() < maximum_damage_handler_probe_reports)
+                    {
+                        m_probe_reports.push_back(payload);
+                    }
+                }
+                log(RC::to_wstring(payload));
+            }
+            else
+            {
+                ++m_damage_utility_probe_dropped;
+            }
+        }
+
+        auto capture_damage_utility_post(UObject* context, UFunction* function) -> void
+        {
+            if (!active_damage_utility_scopes.empty())
+            {
+                const auto& scope = active_damage_utility_scopes.back();
+                if (scope.function == function && scope.context == context)
+                {
+                    active_damage_utility_scopes.pop_back();
+                    return;
+                }
+            }
+            active_damage_utility_scopes.clear();
+            ++m_damage_utility_scope_errors;
+            ++m_source_errors;
+        }
+
         auto capture_filter_attack_callback_pre(
             UObject* filter,
             FFrame& stack,
@@ -2375,6 +2735,12 @@ namespace
             }
             ++m_script_callbacks_seen;
             const auto function_name = RC::to_string(function->GetName());
+            if (function == m_damage_utility_function)
+            {
+                ++m_script_calls;
+                capture_damage_utility_pre(context, stack, function);
+                return;
+            }
             if (equals_ignore_case(function_name, "CallBackOnAttackDelegate")
                 && context != nullptr && m_attack_filter_class != nullptr
                 && context->IsA(m_attack_filter_class))
@@ -2433,6 +2799,11 @@ namespace
                 return;
             }
             const auto function_name = RC::to_string(function->GetName());
+            if (function == m_damage_utility_function)
+            {
+                capture_damage_utility_post(context, function);
+                return;
+            }
             if (equals_ignore_case(function_name, "CallBackOnAttackDelegate")
                 && context != nullptr && m_attack_filter_class != nullptr
                 && context->IsA(m_attack_filter_class))
@@ -2880,7 +3251,53 @@ namespace
                     ++m_final_fingerprint_weak;
                 }
                 bool confirmed_exact{};
-                if (!active_filter_attack_scopes.empty())
+                if (!active_damage_utility_scopes.empty())
+                {
+                    ++m_damage_utility_nested_finals;
+                    const auto& utility_scope = active_damage_utility_scopes.back();
+                    const auto utility_match = pal_dps::match_filter_callback_scope(
+                        utility_scope.link, attacker_token, defender_token
+                    );
+                    switch (utility_match)
+                    {
+                    case pal_dps::FilterCallbackMatchKind::exact:
+                        native_event.action = {};
+                        native_event.parent_effect = {};
+                        native_event.cast = {};
+                        native_event.effect = utility_scope.link.effect;
+                        native_event.filter = utility_scope.link.filter;
+                        native_event.waza_id = utility_scope.link.waza_id;
+                        native_event.skill_code.assign(utility_scope.link.skill_code);
+                        // The final hit is synchronously nested under the
+                        // engine damage utility, whose caller stack contains a
+                        // concrete PalAttackFilter with matching
+                        // Attacker/Defender/Waza. No timing, power, element or
+                        // current-action inference participates.
+                        native_event.evidence_kind.assign("direct_waza_token");
+                        confirmed_exact = true;
+                        ++m_damage_utility_nested_exact;
+                        ++m_exact_hits;
+                        break;
+                    case pal_dps::FilterCallbackMatchKind::source_conflict:
+                        ++m_damage_utility_nested_conflicts;
+                        break;
+                    case pal_dps::FilterCallbackMatchKind::attacker_mismatch:
+                        ++m_damage_utility_nested_attacker_misses;
+                        break;
+                    case pal_dps::FilterCallbackMatchKind::defender_mismatch:
+                        ++m_damage_utility_nested_defender_misses;
+                        break;
+                    case pal_dps::FilterCallbackMatchKind::incomplete:
+                        ++m_damage_utility_nested_incomplete;
+                        break;
+                    }
+                }
+                else
+                {
+                    ++m_damage_utility_outside_scope_finals;
+                }
+
+                if (!confirmed_exact && !active_filter_attack_scopes.empty())
                 {
                     ++m_filter_attack_callback_nested_finals;
                     const auto& callback_scope = active_filter_attack_scopes.back();
@@ -2917,7 +3334,7 @@ namespace
                         break;
                     }
                 }
-                else
+                else if (active_filter_attack_scopes.empty())
                 {
                     ++m_filter_attack_callback_outside_scope_finals;
                 }
@@ -3314,6 +3731,7 @@ namespace
         UFunction* m_effect_initialize_function{};
         UFunction* m_filter_bind_function{};
         UFunction* m_filter_attack_callback_function{};
+        UFunction* m_damage_utility_function{};
         UClass* m_action_base_class{};
         UClass* m_skill_effect_base_class{};
         UClass* m_attack_filter_class{};
@@ -3326,6 +3744,8 @@ namespace
         CallbackId m_filter_bind_hook_id{-1};
         CallbackId m_filter_attack_callback_pre_hook_id{-1};
         CallbackId m_filter_attack_callback_post_hook_id{-1};
+        CallbackId m_damage_utility_pre_hook_id{-1};
+        CallbackId m_damage_utility_post_hook_id{-1};
         Hook::GlobalCallbackId m_script_pre_id{Hook::ERROR_ID};
         Hook::GlobalCallbackId m_script_post_id{Hook::ERROR_ID};
         std::atomic<bool> m_ready{};
@@ -3335,6 +3755,7 @@ namespace
         std::atomic<bool> m_effect_initialize_ready{};
         std::atomic<bool> m_filter_bind_ready{};
         std::atomic<bool> m_filter_attack_callback_ready{};
+        std::atomic<bool> m_damage_utility_ready{};
         std::atomic<bool> m_source_overflow{};
         std::atomic<std::uint64_t> m_capture_errors{};
         std::atomic<std::uint64_t> m_script_calls{};
@@ -3400,6 +3821,26 @@ namespace
         std::atomic<std::uint64_t> m_filter_attack_callback_probe_samples{};
         std::atomic<std::uint64_t> m_filter_attack_callback_probe_dropped{};
         std::atomic<std::uint64_t> m_filter_attack_callback_probe_truncated{};
+        std::atomic<std::uint64_t> m_damage_utility_calls{};
+        std::atomic<std::uint64_t> m_damage_utility_layout_misses{};
+        std::atomic<std::uint64_t> m_damage_utility_missing_filter{};
+        std::atomic<std::uint64_t> m_damage_utility_missing_attacker{};
+        std::atomic<std::uint64_t> m_damage_utility_missing_defender{};
+        std::atomic<std::uint64_t> m_damage_utility_missing_waza{};
+        std::atomic<std::uint64_t> m_damage_utility_source_conflicts{};
+        std::atomic<std::uint64_t> m_damage_utility_nested_finals{};
+        std::atomic<std::uint64_t> m_damage_utility_nested_exact{};
+        std::atomic<std::uint64_t> m_damage_utility_nested_conflicts{};
+        std::atomic<std::uint64_t> m_damage_utility_nested_attacker_misses{};
+        std::atomic<std::uint64_t> m_damage_utility_nested_defender_misses{};
+        std::atomic<std::uint64_t> m_damage_utility_nested_incomplete{};
+        std::atomic<std::uint64_t> m_damage_utility_outside_scope_finals{};
+        std::atomic<std::uint64_t> m_damage_utility_scope_errors{};
+        std::atomic<std::uint64_t> m_damage_utility_errors{};
+        std::atomic<std::uint64_t> m_damage_utility_probe_claims{};
+        std::atomic<std::uint64_t> m_damage_utility_probe_samples{};
+        std::atomic<std::uint64_t> m_damage_utility_probe_dropped{};
+        std::atomic<std::uint64_t> m_damage_utility_probe_truncated{};
         std::atomic<std::uint64_t> m_exact_hits{};
         std::atomic<std::uint64_t> m_fingerprint_candidate_hits{};
         std::atomic<std::uint64_t> m_final_fingerprint_weak{};
