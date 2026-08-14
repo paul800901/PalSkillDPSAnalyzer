@@ -2,6 +2,7 @@
 #include "FilterCallbackScopeMatcher.hpp"
 #include "NativeEventQueue.hpp"
 #include "PendingAttackMatcher.hpp"
+#include "PendingFinalDamageMatcher.hpp"
 #include "PendingFingerprintMatcher.hpp"
 
 #include <LuaMadeSimple/LuaMadeSimple.hpp>
@@ -66,6 +67,7 @@ namespace
     constexpr std::size_t maximum_filter_attack_callback_probe_samples = 16;
     constexpr std::size_t maximum_damage_utility_probe_samples = 24;
     constexpr std::uint64_t maximum_pending_attack_age_ns = 1'000'000'000ULL;
+    constexpr std::uint64_t maximum_pending_final_damage_age_ns = 1'000'000'000ULL;
 
     enum class TargetState : std::uint8_t
     {
@@ -661,8 +663,8 @@ namespace
         BossDPSNativeCollector()
         {
             ModName = STR("BossDPSNativeCollector");
-            ModVersion = STR("3.10.0-damage-utility-probe");
-            ModDescription = STR("Native fail-closed Pal damage utility attribution probe");
+            ModVersion = STR("3.11.0-reverse-pair-probe");
+            ModDescription = STR("Native fail-closed Pal reverse source pairing probe");
             ModAuthors = STR("AsahiChan-Game");
         }
 
@@ -906,6 +908,7 @@ namespace
 
         auto drain_event_one() -> std::optional<pal_dps::NativeEvent>
         {
+            flush_expired_pending_final_damage();
             pal_dps::NativeEvent event{};
             if (!m_event_queue.drain_one(event))
             {
@@ -926,6 +929,10 @@ namespace
             {
                 std::scoped_lock lock{m_attack_matcher_mutex};
                 m_pending_attacks.reset();
+            }
+            {
+                std::scoped_lock lock{m_final_damage_matcher_mutex};
+                m_pending_final_damage.reset();
             }
             {
                 std::scoped_lock lock{m_probe_mutex};
@@ -1001,6 +1008,12 @@ namespace
             m_pending_attack_expired.store(0, std::memory_order_release);
             m_pending_attack_overflow.store(0, std::memory_order_release);
             m_pending_attack_missing_actor.store(0, std::memory_order_release);
+            m_reverse_pair_recorded.store(0, std::memory_order_release);
+            m_reverse_pair_promoted.store(0, std::memory_order_release);
+            m_reverse_pair_ambiguous.store(0, std::memory_order_release);
+            m_reverse_pair_expired.store(0, std::memory_order_release);
+            m_reverse_pair_overflow.store(0, std::memory_order_release);
+            m_reverse_pair_source_consumed.store(0, std::memory_order_release);
         }
 
         auto probe_report() -> std::string
@@ -1122,6 +1135,13 @@ namespace
                    << "; pending_attack_overflow=" << m_pending_attack_overflow.load()
                    << "; pending_attack_missing_actor="
                    << m_pending_attack_missing_actor.load()
+                   << "; reverse_pair_recorded=" << m_reverse_pair_recorded.load()
+                   << "; reverse_pair_promoted=" << m_reverse_pair_promoted.load()
+                   << "; reverse_pair_ambiguous=" << m_reverse_pair_ambiguous.load()
+                   << "; reverse_pair_expired=" << m_reverse_pair_expired.load()
+                   << "; reverse_pair_overflow=" << m_reverse_pair_overflow.load()
+                   << "; reverse_pair_source_consumed="
+                   << m_reverse_pair_source_consumed.load()
                    << "; probe_damage_callbacks=" << m_probe_damage_callbacks.load()
                    << "; probe_damage_functions=" << m_probe_damage_functions.load()
                    << "; probe_action_contexts=" << m_probe_action_contexts.load()
@@ -1224,6 +1244,12 @@ namespace
                    << ";pending_attack_ambiguous=" << m_pending_attack_ambiguous.load()
                    << ";pending_attack_missing=" << m_pending_attack_missing.load()
                    << ";pending_attack_expired=" << m_pending_attack_expired.load()
+                   << ";reverse_pair=experimental_unique_only"
+                   << ";reverse_pair_recorded=" << m_reverse_pair_recorded.load()
+                   << ";reverse_pair_promoted=" << m_reverse_pair_promoted.load()
+                   << ";reverse_pair_ambiguous=" << m_reverse_pair_ambiguous.load()
+                   << ";reverse_pair_expired=" << m_reverse_pair_expired.load()
+                   << ";reverse_pair_overflow=" << m_reverse_pair_overflow.load()
                    << ";probe_damage_callbacks=" << m_probe_damage_callbacks.load()
                    << ";probe_damage_functions=" << m_probe_damage_functions.load()
                    << ";probe_action_contexts=" << m_probe_action_contexts.load()
@@ -1253,6 +1279,66 @@ namespace
         }
 
       private:
+        static auto apply_pending_attack_source(
+            pal_dps::NativeEvent& event,
+            const pal_dps::PendingAttackSource& source,
+            const std::string_view evidence_kind
+        ) -> void
+        {
+            event.action = source.action;
+            event.effect = source.effect;
+            event.parent_effect = source.parent_effect;
+            event.filter = source.filter;
+            event.cast = source.cast;
+            event.waza_id = source.waza_id;
+            event.skill_code.assign(source.skill_code);
+            event.evidence_kind.assign(evidence_kind);
+        }
+
+        auto decrement_unresolved_if_positive() -> void
+        {
+            auto value = m_unresolved_hits.load(std::memory_order_relaxed);
+            while (value > 0 && !m_unresolved_hits.compare_exchange_weak(
+                value, value - 1, std::memory_order_relaxed
+            ))
+            {
+            }
+        }
+
+        auto enqueue_released_pending_final_damage(
+            std::vector<pal_dps::NativeEvent> events,
+            const std::size_t expired_count
+        ) -> void
+        {
+            for (std::size_t index = 0; index < events.size(); ++index)
+            {
+                events[index].evidence_kind.assign(
+                    index < expired_count
+                        ? "unresolved_post_effect_timeout"
+                        : "unresolved_post_effect_pair_ambiguous"
+                );
+                static_cast<void>(m_event_queue.enqueue(std::move(events[index])));
+            }
+        }
+
+        auto flush_expired_pending_final_damage() -> void
+        {
+            std::vector<pal_dps::NativeEvent> expired{};
+            {
+                std::scoped_lock lock{m_final_damage_matcher_mutex};
+                expired = m_pending_final_damage.flush_expired(
+                    captured_nanoseconds(), maximum_pending_final_damage_age_ns
+                );
+            }
+            if (expired.empty())
+            {
+                return;
+            }
+            const auto expired_count = expired.size();
+            m_reverse_pair_expired.fetch_add(expired_count, std::memory_order_relaxed);
+            enqueue_released_pending_final_damage(std::move(expired), expired_count);
+        }
+
         auto log(RC::StringViewType message) const -> void
         {
             std::fwprintf(
@@ -2959,23 +3045,74 @@ namespace
                     .skill_code = attack_scope.skill_code,
                     .captured_ns = captured_nanoseconds(),
                 };
-                bool recorded{};
+                pal_dps::PendingFinalDamageMatch reverse_match{};
                 {
-                    std::scoped_lock lock{m_attack_matcher_mutex};
-                    recorded = m_pending_attacks.record(
-                        attack_scope.attacker, attack_scope.defender, pending_source
+                    std::scoped_lock lock{m_final_damage_matcher_mutex};
+                    reverse_match = m_pending_final_damage.resolve(
+                        attack_scope.attacker,
+                        attack_scope.defender,
+                        pending_source,
+                        pending_source.captured_ns,
+                        maximum_pending_final_damage_age_ns
                     );
                 }
-                if (recorded)
+                if (reverse_match.expired_count > 0)
                 {
-                    ++m_pending_attack_recorded;
+                    m_reverse_pair_expired.fetch_add(
+                        reverse_match.expired_count, std::memory_order_relaxed
+                    );
+                }
+                if (reverse_match.kind
+                    == pal_dps::PendingFinalDamageMatchKind::pending_ambiguous)
+                {
+                    m_reverse_pair_ambiguous.fetch_add(
+                        reverse_match.candidate_count, std::memory_order_relaxed
+                    );
+                }
+                enqueue_released_pending_final_damage(
+                    std::move(reverse_match.released), reverse_match.expired_count
+                );
+
+                auto source_consumed = reverse_match.pair_expired_count > 0
+                    || reverse_match.kind
+                        != pal_dps::PendingFinalDamageMatchKind::no_pending;
+                if (reverse_match.kind
+                        == pal_dps::PendingFinalDamageMatchKind::unique_pending
+                    && reverse_match.matched.has_value())
+                {
+                    auto matched = std::move(reverse_match.matched.value());
+                    apply_pending_attack_source(
+                        matched, pending_source, "post_effect_pair_single_link"
+                    );
+                    ++m_reverse_pair_promoted;
+                    ++m_exact_hits;
+                    decrement_unresolved_if_positive();
+                    static_cast<void>(m_event_queue.enqueue(std::move(matched)));
+                }
+                if (source_consumed)
+                {
+                    ++m_reverse_pair_source_consumed;
                 }
                 else
                 {
-                    ++m_pending_attack_overflow;
-                    m_source_overflow.store(true, std::memory_order_release);
-                    m_faulted.store(true, std::memory_order_release);
-                    ++m_source_errors;
+                    bool recorded{};
+                    {
+                        std::scoped_lock lock{m_attack_matcher_mutex};
+                        recorded = m_pending_attacks.record(
+                            attack_scope.attacker, attack_scope.defender, pending_source
+                        );
+                    }
+                    if (recorded)
+                    {
+                        ++m_pending_attack_recorded;
+                    }
+                    else
+                    {
+                        ++m_pending_attack_overflow;
+                        m_source_overflow.store(true, std::memory_order_release);
+                        m_faulted.store(true, std::memory_order_release);
+                        ++m_source_errors;
+                    }
                 }
             }
             else
@@ -3495,7 +3632,30 @@ namespace
                         log(RC::to_wstring(checkpoint.str()));
                     }
                 }
-                static_cast<void>(m_event_queue.enqueue(std::move(native_event)));
+                if (confirmed_exact)
+                {
+                    static_cast<void>(m_event_queue.enqueue(std::move(native_event)));
+                }
+                else
+                {
+                    bool buffered{};
+                    {
+                        std::scoped_lock lock{m_final_damage_matcher_mutex};
+                        buffered = m_pending_final_damage.record(native_event);
+                    }
+                    if (buffered)
+                    {
+                        ++m_reverse_pair_recorded;
+                    }
+                    else
+                    {
+                        ++m_reverse_pair_overflow;
+                        native_event.evidence_kind.assign(
+                            "unresolved_post_effect_buffer_overflow"
+                        );
+                        static_cast<void>(m_event_queue.enqueue(std::move(native_event)));
+                    }
+                }
             }
 
             const boss_dps::DamageKey key{
@@ -3780,6 +3940,12 @@ namespace
         std::atomic<std::uint64_t> m_pending_attack_expired{};
         std::atomic<std::uint64_t> m_pending_attack_overflow{};
         std::atomic<std::uint64_t> m_pending_attack_missing_actor{};
+        std::atomic<std::uint64_t> m_reverse_pair_recorded{};
+        std::atomic<std::uint64_t> m_reverse_pair_promoted{};
+        std::atomic<std::uint64_t> m_reverse_pair_ambiguous{};
+        std::atomic<std::uint64_t> m_reverse_pair_expired{};
+        std::atomic<std::uint64_t> m_reverse_pair_overflow{};
+        std::atomic<std::uint64_t> m_reverse_pair_source_consumed{};
         std::atomic<std::uint64_t> m_probe_damage_callbacks{};
         std::atomic<std::uint64_t> m_probe_damage_functions{};
         std::atomic<std::uint64_t> m_probe_action_contexts{};
@@ -3856,11 +4022,13 @@ namespace
         std::mutex m_source_mutex;
         std::mutex m_fingerprint_mutex;
         std::mutex m_attack_matcher_mutex;
+        std::mutex m_final_damage_matcher_mutex;
         std::mutex m_probe_mutex;
         boss_dps::CollectorCore m_collector;
         pal_dps::NativeEventQueue m_event_queue{maximum_pending_events};
         pal_dps::PendingFingerprintMatcher m_pending_fingerprints{maximum_source_records};
         pal_dps::PendingAttackMatcher m_pending_attacks{maximum_source_records};
+        pal_dps::PendingFinalDamageMatcher m_pending_final_damage{maximum_source_records};
         std::unordered_map<boss_dps::DamageKey, WeakObjects, boss_dps::DamageKeyHash>
             m_bucket_objects;
         std::deque<PendingRecord> m_drained_records;

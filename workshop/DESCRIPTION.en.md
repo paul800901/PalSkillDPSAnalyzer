@@ -35,7 +35,7 @@ Enable player damage in config.lua, restart the game, and use one weapon for the
 [h2]Scope[/h2]
 [list]
 [*][b]Target:[/b] Windows single-player worlds
-[*][b]Current status:[/b] v0.5.17 native damage-utility call-chain probe; only direct Filter/Waza evidence with matching attacker and Boss target enters named skills, conflicts and missing sources remain unresolved, old external F1 settings disabled, safe F2 reset; native DLL packaging and live validation are still in progress
+[*][b]Current status:[/b] v0.5.18 unique reverse-pairing test build; direct engine Filter/Waza evidence remains preferred. When final damage arrives before its source event, reverse pairing is allowed only for the same attacker, same Boss, and exactly one pending hit. Ambiguous, expired, or conflicting cases remain unresolved; damage values, power rates, and current actions are never used to guess. Old external F1 settings remain disabled, F2 safely resets; native DLL packaging and live validation are still in progress
 [*][b]Required dependency:[/b] UE4SS Experimental; PalSchema is not required
 [*][b]Not a goal:[/b] comparing players or producing a competitive DPS leaderboard
 [/list]

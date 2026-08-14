@@ -2474,6 +2474,14 @@ BossDPSNativeDrainEventOne = function()
             "3:1", "502:1", "0:0", "0:0", "0:0", "",
             "", "", "", "", "0:0", "0xEXACT",
             602, "DiamondFall", ""
+    elseif exact_native.index == 6 then
+        return true,
+            2, "damage", 7006, 7006000, 444, 1,
+            "post_effect_pair_single_link",
+            player_two_pal, exact_native.boss, nil, nil, nil,
+            "3:1", "502:1", "0:0", "0:0", "0:0", "",
+            "action:reverse", "cast:reverse", "408:9", "409:9", "0:0", "0xEXACT",
+            602, "DiamondFall", ""
     end
     return false
 end
@@ -2487,7 +2495,7 @@ for _, candidate in pairs(BossDPSBroadcastTestApi.sessions) do
         break
     end
 end
-assert(exact_native.session ~= nil and exact_native.session.total_damage == 1566,
+assert(exact_native.session ~= nil and exact_native.session.total_damage == 2010,
     "exact native effect/fingerprint events did not preserve final damage")
 for _, source in pairs(exact_native.session.diagnostic_sources) do
     if source.kind == "pal" then
@@ -2499,8 +2507,8 @@ assert(exact_native.source ~= nil,
     "exact native effect/Waza event did not retain the Pal source")
 exact_native.skill = exact_native.source.skill_candidates["skill:DiamondFall"]
 assert(exact_native.skill ~= nil
-        and exact_native.skill.damage == 1332
-        and exact_native.skill.hits == 4
+        and exact_native.skill.damage == 1776
+        and exact_native.skill.hits == 5
         and exact_native.skill.waza_id == 602,
     "exact native effect/pair links did not enter the DiamondFall bucket")
 exact_native.unresolved_damage = 0
@@ -2734,4 +2742,4 @@ assert(#delivered_by_uid[test_guid_key(uid_spectator)] == 0, "spectator received
 
 assert(#BossDPSBroadcastTestApi.sessions == 0, "sessions table must be map-like")
 assert(original_os_time ~= nil)
-print("PalSkillDPSAnalyzer v0.5.17 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed")
+print("PalSkillDPSAnalyzer v0.5.18 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed")

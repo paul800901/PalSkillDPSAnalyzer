@@ -3934,6 +3934,7 @@ local function drain_native_damage()
                 or event.evidence_kind == "direct_waza_token"
                 or event.evidence_kind == "effect_pair_single_link"
                 or event.evidence_kind == "effect_pair_agreed_link"
+                or event.evidence_kind == "post_effect_pair_single_link"
                 -- Backward compatibility for the immediately preceding
                 -- collector build. Its pair matcher is identical; only the
                 -- evidence label changed after the live zero-ambiguity audit.
@@ -4860,7 +4861,7 @@ local function register_hooks()
 
     if hooks.damage and hooks.death then
         log(string.format(
-            "loaded v0.5.17-native-damage-utility-probe; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s chat_mode=%s waza_hook=%s action_hooks=%s/%s effect_hook=%s filter_hook=%s effect_attack_hooks=%d local_only=%s; captured_hooks=%d",
+            "loaded v0.5.18-reverse-pair-probe; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s chat_mode=%s waza_hook=%s action_hooks=%s/%s effect_hook=%s filter_hook=%s effect_attack_hooks=%d local_only=%s; captured_hooks=%d",
             hooks.damage_mode,
             tostring(config.EnableDPSRecording ~= false),
             tostring(config.EnableSkillDiagnostics == true),

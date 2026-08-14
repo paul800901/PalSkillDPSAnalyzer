@@ -23,7 +23,7 @@ config.IncludePlayerDamage = true
 Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\config.lua
 ```
 
-這是 v0.5.17 原生傷害處理鏈診斷版。原生 Event v2 只有在 `PalUtility:ProcessDamageAndPlayEffectsByDamageInfo` 的當下呼叫鏈直接找到 `PalAttackFilter`／效果與 Waza，而且攻擊者與 Boss 目標一致時才歸因；衝突或缺少來源的命中維持「未辨識傷害」，不使用目前動作、最近施放、時間或倍率＋元素猜測。預設採手動 Boss 測試區間；按 F2 可隨時歸零。灼燒與中毒若沒有施加來源仍不會冒充某個技能。即時儀表是固定尺寸、不可點擊的純顯示層；舊 F1 外部設定窗仍停用。只需要 UE4SS Experimental；PalSchema 不是必要依賴。原生 DLL 的正式 Workshop 套件化與本版實機驗收仍在進行中。
+這是 v0.5.18 唯一反向配對實測版。部分 Boss 實際傷害會早於技能 OnAttack 來源；未歸屬傷害最多暫存 1 秒，只有攻擊者與 Boss 目標完全相同且待配傷害恰好一筆時才補回技能。多筆候選、衝突或逾時仍顯示「未辨識傷害」，不使用傷害大小、目前動作、最近施放、倍率＋元素或三格技能猜測。預設採手動 Boss 測試區間；按 F2 可隨時歸零。灼燒與中毒若沒有施加來源仍不會冒充某個技能。即時儀表是固定尺寸、不可點擊的純顯示層；舊 F1 外部設定窗仍停用。只需要 UE4SS Experimental；PalSchema 不是必要依賴。原生 DLL 的正式 Workshop 套件化與本版實機驗收仍在進行中。
 
 專案：https://github.com/paul800901/PalSkillDPSAnalyzer
 
