@@ -1,5 +1,6 @@
 #include "CollectorCore.hpp"
 #include "NativeEventQueue.hpp"
+#include "PendingAttackMatcher.hpp"
 #include "PendingFingerprintMatcher.hpp"
 
 #include <LuaMadeSimple/LuaMadeSimple.hpp>
@@ -53,6 +54,7 @@ namespace
     constexpr std::size_t maximum_damage_handler_probe_functions = 128;
     constexpr std::size_t maximum_damage_handler_probe_samples = 3;
     constexpr std::size_t maximum_damage_handler_probe_reports = 24;
+    constexpr std::uint64_t maximum_pending_attack_age_ns = 1'000'000'000ULL;
 
     enum class TargetState : std::uint8_t
     {
@@ -555,7 +557,7 @@ namespace
         BossDPSNativeCollector()
         {
             ModName = STR("BossDPSNativeCollector");
-            ModVersion = STR("3.5.0-handler-discovery");
+            ModVersion = STR("3.6.0-pair-candidate");
             ModDescription = STR("Native fail-closed Pal skill handler discovery probe");
             ModAuthors = STR("AsahiChan-Game");
         }
@@ -786,6 +788,10 @@ namespace
                 m_pending_fingerprints.reset();
             }
             {
+                std::scoped_lock lock{m_attack_matcher_mutex};
+                m_pending_attacks.reset();
+            }
+            {
                 std::scoped_lock lock{m_probe_mutex};
                 m_probe_reports.clear();
                 m_probe_samples_by_function.clear();
@@ -797,6 +803,14 @@ namespace
             m_probe_other_contexts.store(0, std::memory_order_release);
             m_probe_waza_samples.store(0, std::memory_order_release);
             m_probe_cache_overflow.store(false, std::memory_order_release);
+            m_pending_attack_recorded.store(0, std::memory_order_release);
+            m_pending_attack_single.store(0, std::memory_order_release);
+            m_pending_attack_agreed.store(0, std::memory_order_release);
+            m_pending_attack_ambiguous.store(0, std::memory_order_release);
+            m_pending_attack_missing.store(0, std::memory_order_release);
+            m_pending_attack_expired.store(0, std::memory_order_release);
+            m_pending_attack_overflow.store(0, std::memory_order_release);
+            m_pending_attack_missing_actor.store(0, std::memory_order_release);
         }
 
         auto probe_report() -> std::string
@@ -863,6 +877,15 @@ namespace
                    << "; attack_fingerprint_weak=" << m_attack_fingerprint_weak.load()
                    << "; attack_fingerprint_missing_actor="
                    << m_attack_fingerprint_missing_actor.load()
+                   << "; pending_attack_recorded=" << m_pending_attack_recorded.load()
+                   << "; pending_attack_single=" << m_pending_attack_single.load()
+                   << "; pending_attack_agreed=" << m_pending_attack_agreed.load()
+                   << "; pending_attack_ambiguous=" << m_pending_attack_ambiguous.load()
+                   << "; pending_attack_missing=" << m_pending_attack_missing.load()
+                   << "; pending_attack_expired=" << m_pending_attack_expired.load()
+                   << "; pending_attack_overflow=" << m_pending_attack_overflow.load()
+                   << "; pending_attack_missing_actor="
+                   << m_pending_attack_missing_actor.load()
                    << "; probe_damage_callbacks=" << m_probe_damage_callbacks.load()
                    << "; probe_damage_functions=" << m_probe_damage_functions.load()
                    << "; probe_action_contexts=" << m_probe_action_contexts.load()
@@ -920,6 +943,12 @@ namespace
                    << ";attack_fingerprints_recorded="
                    << m_attack_fingerprints_recorded.load()
                    << ";attack_fingerprint_weak=" << m_attack_fingerprint_weak.load()
+                   << ";pending_attack_recorded=" << m_pending_attack_recorded.load()
+                   << ";pending_attack_single=" << m_pending_attack_single.load()
+                   << ";pending_attack_agreed=" << m_pending_attack_agreed.load()
+                   << ";pending_attack_ambiguous=" << m_pending_attack_ambiguous.load()
+                   << ";pending_attack_missing=" << m_pending_attack_missing.load()
+                   << ";pending_attack_expired=" << m_pending_attack_expired.load()
                    << ";probe_damage_callbacks=" << m_probe_damage_callbacks.load()
                    << ";probe_damage_functions=" << m_probe_damage_functions.load()
                    << ";probe_action_contexts=" << m_probe_action_contexts.load()
@@ -1679,7 +1708,14 @@ namespace
                 capture_filter_binding(context);
                 return;
             }
-            if (contains_ignore_case(function_name, "OnAttackDelegate__DelegateSignature"))
+            const auto context_is_effect = context != nullptr
+                && m_skill_effect_base_class != nullptr
+                && context->GetClassPrivate() != nullptr
+                && context->GetClassPrivate()->IsChildOf(m_skill_effect_base_class);
+            const auto damage_handler_name = contains_ignore_case(function_name, "attack")
+                || contains_ignore_case(function_name, "damage");
+            if (context_is_effect && damage_handler_name
+                && cached_attack_layout(function).ready())
             {
                 ++m_script_calls;
                 capture_script_attack_pre(context, stack, function);
@@ -1697,12 +1733,12 @@ namespace
             {
                 return;
             }
+            // The pre-hook accepts reflected Pal effect handlers such as the
+            // plain Blueprint "OnAttack" used by GravityShot, not only the
+            // delegate-signature spelling. Pop by exact function/context so
+            // unrelated script callbacks remain untouched.
+            capture_script_attack_post(context, function);
             const auto function_name = RC::to_string(function->GetName());
-            if (contains_ignore_case(function_name, "OnAttackDelegate__DelegateSignature"))
-            {
-                capture_script_attack_post(context, function);
-                return;
-            }
             if (equals_ignore_case(function_name, "OnInitialize")
                 && context != nullptr && m_skill_effect_base_class != nullptr
                 && context->IsA(m_skill_effect_base_class))
@@ -1833,6 +1869,42 @@ namespace
             attack_scope.waza_id = waza_id;
             attack_scope.skill_code = skill_code;
             ++m_attack_matches;
+
+            if (attack_scope.attacker.valid() && attack_scope.defender.valid())
+            {
+                const pal_dps::PendingAttackSource pending_source{
+                    .action = attack_scope.action,
+                    .effect = attack_scope.effect,
+                    .parent_effect = attack_scope.parent_effect,
+                    .filter = attack_scope.filter,
+                    .cast = attack_scope.cast,
+                    .waza_id = attack_scope.waza_id,
+                    .skill_code = attack_scope.skill_code,
+                    .captured_ns = captured_nanoseconds(),
+                };
+                bool recorded{};
+                {
+                    std::scoped_lock lock{m_attack_matcher_mutex};
+                    recorded = m_pending_attacks.record(
+                        attack_scope.attacker, attack_scope.defender, pending_source
+                    );
+                }
+                if (recorded)
+                {
+                    ++m_pending_attack_recorded;
+                }
+                else
+                {
+                    ++m_pending_attack_overflow;
+                    m_source_overflow.store(true, std::memory_order_release);
+                    m_faulted.store(true, std::memory_order_release);
+                    ++m_source_errors;
+                }
+            }
+            else
+            {
+                ++m_pending_attack_missing_actor;
+            }
 
             const auto* info_struct = layout.damage_info->GetStruct().Get();
             const auto fingerprint = build_damage_fingerprint(
@@ -2017,6 +2089,34 @@ namespace
 
                 const auto attacker_token = object_token(attacker);
                 const auto defender_token = object_token(defender);
+                pal_dps::PendingAttackMatch pending_attack_match{};
+                {
+                    std::scoped_lock lock{m_attack_matcher_mutex};
+                    pending_attack_match = m_pending_attacks.resolve(
+                        attacker_token,
+                        defender_token,
+                        native_event.captured_ns,
+                        maximum_pending_attack_age_ns
+                    );
+                }
+                m_pending_attack_expired.fetch_add(
+                    pending_attack_match.expired_count, std::memory_order_relaxed
+                );
+                switch (pending_attack_match.kind)
+                {
+                case pal_dps::PendingAttackMatchKind::single_candidate:
+                    ++m_pending_attack_single;
+                    break;
+                case pal_dps::PendingAttackMatchKind::agreed_candidate:
+                    ++m_pending_attack_agreed;
+                    break;
+                case pal_dps::PendingAttackMatchKind::source_ambiguous:
+                    ++m_pending_attack_ambiguous;
+                    break;
+                case pal_dps::PendingAttackMatchKind::no_candidate:
+                    ++m_pending_attack_missing;
+                    break;
+                }
                 pal_dps::FingerprintMatch fingerprint_match{};
                 if (nested != nullptr && m_layout.damage_info != nullptr
                     && m_layout.damage_info->GetStruct().Get() != nullptr)
@@ -2075,8 +2175,9 @@ namespace
                 }
                 bool matched_pair{};
                 bool matched_incomplete_scope{};
+                bool confirmed_exact{};
                 for (auto scope = active_attack_scopes.rbegin();
-                     native_event.waza_id <= 0 && scope != active_attack_scopes.rend();
+                     !confirmed_exact && scope != active_attack_scopes.rend();
                      ++scope)
                 {
                     if (scope->defender.valid() && scope->defender != defender_token)
@@ -2105,26 +2206,72 @@ namespace
                     native_event.evidence_kind.assign(
                         scope->cast.valid() ? "effect_cast_link" : "effect_waza"
                     );
+                    confirmed_exact = true;
                     ++m_exact_hits;
                     break;
                 }
-                if (native_event.waza_id <= 0)
+                if (!confirmed_exact)
                 {
+                    if (pending_attack_match.kind
+                            == pal_dps::PendingAttackMatchKind::single_candidate
+                        || pending_attack_match.kind
+                            == pal_dps::PendingAttackMatchKind::agreed_candidate)
+                    {
+                        const auto& source = pending_attack_match.source;
+                        native_event.action = source.action;
+                        native_event.effect = source.effect;
+                        native_event.parent_effect = source.parent_effect;
+                        native_event.filter = source.filter;
+                        native_event.cast = source.cast;
+                        native_event.waza_id = source.waza_id;
+                        native_event.skill_code.assign(source.skill_code);
+                        native_event.evidence_kind.assign(
+                            pending_attack_match.kind
+                                    == pal_dps::PendingAttackMatchKind::single_candidate
+                                ? "effect_pair_single_candidate"
+                                : "effect_pair_agreed_candidate"
+                        );
+                    }
+                    else if (pending_attack_match.kind
+                             == pal_dps::PendingAttackMatchKind::source_ambiguous)
+                    {
+                        native_event.action = {};
+                        native_event.effect = {};
+                        native_event.parent_effect = {};
+                        native_event.filter = {};
+                        native_event.cast = {};
+                        native_event.waza_id = 0;
+                        native_event.skill_code.assign("");
+                        native_event.evidence_kind.assign(
+                            "unresolved_effect_pair_ambiguous"
+                        );
+                    }
+                }
+                if (!confirmed_exact)
+                {
+                    const auto pending_diagnostic = pending_attack_match.kind
+                            == pal_dps::PendingAttackMatchKind::single_candidate
+                        || pending_attack_match.kind
+                            == pal_dps::PendingAttackMatchKind::agreed_candidate
+                        || pending_attack_match.kind
+                            == pal_dps::PendingAttackMatchKind::source_ambiguous;
+                    const auto fingerprint_diagnostic = fingerprint_match.kind
+                        == pal_dps::FingerprintMatchKind::exact;
                     if (active_attack_scopes.empty())
                     {
-                        if (fingerprint_match.kind
+                        if (!pending_diagnostic && fingerprint_match.kind
                             == pal_dps::FingerprintMatchKind::source_ambiguous)
                         {
                             native_event.evidence_kind.assign(
                                 "unresolved_fingerprint_ambiguous"
                             );
                         }
-                        else if (fingerprint_match.kind
+                        else if (!pending_diagnostic && fingerprint_match.kind
                                  == pal_dps::FingerprintMatchKind::fingerprint_weak)
                         {
                             native_event.evidence_kind.assign("unresolved_fingerprint_weak");
                         }
-                        else
+                        else if (!pending_diagnostic && !fingerprint_diagnostic)
                         {
                             native_event.evidence_kind.assign(
                                 "unresolved_fingerprint_no_candidate"
@@ -2134,12 +2281,18 @@ namespace
                     }
                     else if (matched_incomplete_scope)
                     {
-                        native_event.evidence_kind.assign("unresolved_incomplete_scope");
+                        if (!pending_diagnostic && !fingerprint_diagnostic)
+                        {
+                            native_event.evidence_kind.assign("unresolved_incomplete_scope");
+                        }
                         ++m_final_incomplete_scope;
                     }
                     else if (!matched_pair)
                     {
-                        native_event.evidence_kind.assign("unresolved_pair_miss");
+                        if (!pending_diagnostic && !fingerprint_diagnostic)
+                        {
+                            native_event.evidence_kind.assign("unresolved_pair_miss");
+                        }
                         ++m_final_pair_misses;
                     }
                     const auto unresolved = ++m_unresolved_hits;
@@ -2158,7 +2311,11 @@ namespace
                                    << m_fingerprint_candidate_hits.load()
                                    << " fp_weak=" << m_final_fingerprint_weak.load()
                                    << " fp_missing=" << m_final_fingerprint_missing.load()
-                                   << " fp_ambiguous=" << m_final_fingerprint_ambiguous.load();
+                                   << " fp_ambiguous=" << m_final_fingerprint_ambiguous.load()
+                                   << " pair_single=" << m_pending_attack_single.load()
+                                   << " pair_agreed=" << m_pending_attack_agreed.load()
+                                   << " pair_ambiguous=" << m_pending_attack_ambiguous.load()
+                                   << " pair_missing=" << m_pending_attack_missing.load();
                         log(RC::to_wstring(checkpoint.str()));
                     }
                 }
@@ -2431,6 +2588,14 @@ namespace
         std::atomic<std::uint64_t> m_attack_fingerprints_recorded{};
         std::atomic<std::uint64_t> m_attack_fingerprint_weak{};
         std::atomic<std::uint64_t> m_attack_fingerprint_missing_actor{};
+        std::atomic<std::uint64_t> m_pending_attack_recorded{};
+        std::atomic<std::uint64_t> m_pending_attack_single{};
+        std::atomic<std::uint64_t> m_pending_attack_agreed{};
+        std::atomic<std::uint64_t> m_pending_attack_ambiguous{};
+        std::atomic<std::uint64_t> m_pending_attack_missing{};
+        std::atomic<std::uint64_t> m_pending_attack_expired{};
+        std::atomic<std::uint64_t> m_pending_attack_overflow{};
+        std::atomic<std::uint64_t> m_pending_attack_missing_actor{};
         std::atomic<std::uint64_t> m_probe_damage_callbacks{};
         std::atomic<std::uint64_t> m_probe_damage_functions{};
         std::atomic<std::uint64_t> m_probe_action_contexts{};
@@ -2453,10 +2618,12 @@ namespace
         std::mutex m_mutex;
         std::mutex m_source_mutex;
         std::mutex m_fingerprint_mutex;
+        std::mutex m_attack_matcher_mutex;
         std::mutex m_probe_mutex;
         boss_dps::CollectorCore m_collector;
         pal_dps::NativeEventQueue m_event_queue{maximum_pending_events};
         pal_dps::PendingFingerprintMatcher m_pending_fingerprints{maximum_source_records};
+        pal_dps::PendingAttackMatcher m_pending_attacks{maximum_source_records};
         std::unordered_map<boss_dps::DamageKey, WeakObjects, boss_dps::DamageKeyHash>
             m_bucket_objects;
         std::deque<PendingRecord> m_drained_records;

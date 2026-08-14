@@ -194,7 +194,8 @@ if ($LASTEXITCODE -ne 0) {
 foreach ($testName in @(
     "attribution_event_core_test",
     "native_event_queue_test",
-    "pending_fingerprint_matcher_test"
+    "pending_fingerprint_matcher_test",
+    "pending_attack_matcher_test"
 )) {
     $sourcePath = Join-Path $PSScriptRoot "tests\$testName.cpp"
     $testArguments = @(

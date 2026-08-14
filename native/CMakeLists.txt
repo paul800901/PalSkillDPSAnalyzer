@@ -97,8 +97,13 @@ add_executable(pending_fingerprint_matcher_test tests/pending_fingerprint_matche
 target_include_directories(pending_fingerprint_matcher_test PRIVATE include)
 target_compile_options(pending_fingerprint_matcher_test PRIVATE /W4 /WX /EHsc /utf-8)
 
+add_executable(pending_attack_matcher_test tests/pending_attack_matcher_test.cpp)
+target_include_directories(pending_attack_matcher_test PRIVATE include)
+target_compile_options(pending_attack_matcher_test PRIVATE /W4 /WX /EHsc /utf-8)
+
 enable_testing()
 add_test(NAME collector_stress COMMAND collector_stress)
 add_test(NAME attribution_event_core_test COMMAND attribution_event_core_test)
 add_test(NAME native_event_queue_test COMMAND native_event_queue_test)
 add_test(NAME pending_fingerprint_matcher_test COMMAND pending_fingerprint_matcher_test)
+add_test(NAME pending_attack_matcher_test COMMAND pending_attack_matcher_test)
