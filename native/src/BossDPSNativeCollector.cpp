@@ -445,8 +445,8 @@ namespace
         BossDPSNativeCollector()
         {
             ModName = STR("BossDPSNativeCollector");
-            ModVersion = STR("3.4.0");
-            ModDescription = STR("Native exact Pal skill damage source collector");
+            ModVersion = STR("3.4.1-diagnostic");
+            ModDescription = STR("Native exact Pal skill source collector with fail-closed diagnostics");
             ModAuthors = STR("AsahiChan-Game");
         }
 
@@ -706,9 +706,17 @@ namespace
                    << "; effect_initializes=" << m_effect_initialize_matches.load()
                    << "; attack_matches=" << m_attack_matches.load()
                    << "; attack_without_waza=" << m_attack_without_waza.load()
+                   << "; attack_layout_misses=" << m_attack_layout_misses.load()
+                   << "; attack_missing_defender=" << m_attack_missing_defender.load()
+                   << "; attack_missing_source=" << m_attack_missing_source.load()
+                   << "; attack_source_conflicts=" << m_attack_source_conflicts.load()
+                   << "; attack_missing_waza=" << m_attack_missing_waza.load()
                    << "; filter_bind_matches=" << m_filter_bind_matches.load()
                    << "; exact_hits=" << m_exact_hits.load()
                    << "; unresolved_hits=" << m_unresolved_hits.load()
+                   << "; final_no_attack_scope=" << m_final_no_attack_scope.load()
+                   << "; final_pair_misses=" << m_final_pair_misses.load()
+                   << "; final_incomplete_scope=" << m_final_incomplete_scope.load()
                    << "; source_overflow="
                    << (m_source_overflow.load() ? "true" : "false")
                    << "; source_errors=" << m_source_errors.load();
@@ -742,7 +750,10 @@ namespace
                    << ";filter_bind_matches=" << m_filter_bind_matches.load()
                    << ";effect_attack_matches=" << m_attack_matches.load()
                    << ";exact_hit_matches=" << m_exact_hits.load()
-                   << ";unresolved_hits=" << m_unresolved_hits.load();
+                   << ";unresolved_hits=" << m_unresolved_hits.load()
+                   << ";final_no_attack_scope=" << m_final_no_attack_scope.load()
+                   << ";final_pair_misses=" << m_final_pair_misses.load()
+                   << ";final_incomplete_scope=" << m_final_incomplete_scope.load();
             return output.str();
         }
 
@@ -1414,6 +1425,7 @@ namespace
             if (!layout.ready())
             {
                 ++m_attack_without_waza;
+                ++m_attack_layout_misses;
                 return;
             }
 
@@ -1426,6 +1438,7 @@ namespace
             if (defender == nullptr)
             {
                 ++m_attack_without_waza;
+                ++m_attack_missing_defender;
                 return;
             }
 
@@ -1434,6 +1447,14 @@ namespace
             if (!source.has_value() || source->conflicted)
             {
                 ++m_attack_without_waza;
+                if (source.has_value() && source->conflicted)
+                {
+                    ++m_attack_source_conflicts;
+                }
+                else
+                {
+                    ++m_attack_missing_source;
+                }
                 return;
             }
 
@@ -1447,6 +1468,7 @@ namespace
                     if (waza_id > 0 && waza_id != filter_waza.first)
                     {
                         ++m_source_errors;
+                        ++m_attack_source_conflicts;
                         return;
                     }
                     waza_id = filter_waza.first;
@@ -1456,6 +1478,7 @@ namespace
             if (waza_id <= 0 || skill_code.empty())
             {
                 ++m_attack_without_waza;
+                ++m_attack_missing_waza;
                 return;
             }
 
@@ -1465,6 +1488,7 @@ namespace
                 const auto known = m_effect_sources.find(source->effect);
                 if (known == m_effect_sources.end())
                 {
+                    ++m_attack_missing_source;
                     return;
                 }
                 auto& record = known->second;
@@ -1473,6 +1497,7 @@ namespace
                 {
                     record.conflicted = true;
                     ++m_source_errors;
+                    ++m_attack_source_conflicts;
                     return;
                 }
                 if (!record.attacker.valid())
@@ -1625,10 +1650,12 @@ namespace
                 native_event.info_attacker = object_token(info_attacker);
                 native_event.damage = damage;
                 native_event.hits = 1;
-                native_event.evidence_kind.assign("none");
+                native_event.evidence_kind.assign("unresolved_no_attack_scope");
 
                 const auto attacker_token = object_token(attacker);
                 const auto defender_token = object_token(defender);
+                bool matched_pair{};
+                bool matched_incomplete_scope{};
                 for (auto scope = active_attack_scopes.rbegin();
                      scope != active_attack_scopes.rend();
                      ++scope)
@@ -1642,9 +1669,11 @@ namespace
                     {
                         continue;
                     }
+                    matched_pair = true;
                     if (!scope->effect.valid() || scope->waza_id <= 0
                         || scope->skill_code.empty())
                     {
+                        matched_incomplete_scope = true;
                         break;
                     }
                     native_event.action = scope->action;
@@ -1662,7 +1691,34 @@ namespace
                 }
                 if (native_event.waza_id <= 0)
                 {
-                    ++m_unresolved_hits;
+                    if (active_attack_scopes.empty())
+                    {
+                        native_event.evidence_kind.assign("unresolved_no_attack_scope");
+                        ++m_final_no_attack_scope;
+                    }
+                    else if (matched_incomplete_scope)
+                    {
+                        native_event.evidence_kind.assign("unresolved_incomplete_scope");
+                        ++m_final_incomplete_scope;
+                    }
+                    else if (!matched_pair)
+                    {
+                        native_event.evidence_kind.assign("unresolved_pair_miss");
+                        ++m_final_pair_misses;
+                    }
+                    const auto unresolved = ++m_unresolved_hits;
+                    if (unresolved == 1 || unresolved % 64 == 0)
+                    {
+                        std::ostringstream checkpoint;
+                        checkpoint << "attribution checkpoint unresolved=" << unresolved
+                                   << " reason=" << native_event.evidence_kind.view()
+                                   << " attack_matches=" << m_attack_matches.load()
+                                   << " attack_without_waza=" << m_attack_without_waza.load()
+                                   << " no_scope=" << m_final_no_attack_scope.load()
+                                   << " pair_miss=" << m_final_pair_misses.load()
+                                   << " incomplete_scope=" << m_final_incomplete_scope.load();
+                        log(RC::to_wstring(checkpoint.str()));
+                    }
                 }
                 static_cast<void>(m_event_queue.enqueue(std::move(native_event)));
             }
@@ -1918,9 +1974,17 @@ namespace
         std::atomic<std::uint64_t> m_effect_initialize_matches{};
         std::atomic<std::uint64_t> m_attack_matches{};
         std::atomic<std::uint64_t> m_attack_without_waza{};
+        std::atomic<std::uint64_t> m_attack_layout_misses{};
+        std::atomic<std::uint64_t> m_attack_missing_defender{};
+        std::atomic<std::uint64_t> m_attack_missing_source{};
+        std::atomic<std::uint64_t> m_attack_source_conflicts{};
+        std::atomic<std::uint64_t> m_attack_missing_waza{};
         std::atomic<std::uint64_t> m_filter_bind_matches{};
         std::atomic<std::uint64_t> m_exact_hits{};
         std::atomic<std::uint64_t> m_unresolved_hits{};
+        std::atomic<std::uint64_t> m_final_no_attack_scope{};
+        std::atomic<std::uint64_t> m_final_pair_misses{};
+        std::atomic<std::uint64_t> m_final_incomplete_scope{};
         std::atomic<std::uint64_t> m_source_errors{};
         std::mutex m_mutex;
         std::mutex m_source_mutex;
