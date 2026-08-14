@@ -49,6 +49,7 @@ local recent_actions_by_actor = {}
 local delayed_effect_bindings = {}
 local source_chain = nil
 local skill_hud = nil
+hooks.last_native_status_hit_report = 0
 
 -- Native damage hooks may run in the middle of an Unreal call. They must not
 -- call UFunctions or retain references to the temporary event struct. The
@@ -87,6 +88,30 @@ local metrics = {
 
 local function log(message)
     print(MOD .. " " .. tostring(message) .. "\n")
+end
+
+hooks.log_native_diagnostic_status = function(reason)
+    if type(BossDPSNativeStatus) ~= "function" then
+        return
+    end
+    local ok, status = pcall(BossDPSNativeStatus)
+    if ok then
+        log("native diagnostic status reason=" .. tostring(reason)
+            .. " " .. tostring(status))
+    else
+        metrics.errors = metrics.errors + 1
+        log("native diagnostic status failed: " .. tostring(status))
+    end
+    if type(BossDPSNativeProbeReport) == "function" then
+        local report_ok, report = pcall(BossDPSNativeProbeReport)
+        if report_ok then
+            log("native damage handler probe reason=" .. tostring(reason)
+                .. " " .. tostring(report))
+        else
+            metrics.errors = metrics.errors + 1
+            log("native damage handler probe failed: " .. tostring(report))
+        end
+    end
 end
 
 local function classify_native_target(target_key, state)
@@ -3246,6 +3271,7 @@ local function finish_session(session, reason)
     local teams = ranked_damage_entries(session.teams)
     local pals = ranked_damage_entries(session.pal_sources)
     local recipients = session_recipients(session)
+    hooks.log_native_diagnostic_status("session-" .. tostring(reason))
     if config.SkillDiagnosticsOnly == true then
         finish_skill_diagnostics(session, duration, reason, recipients)
         return
@@ -3941,6 +3967,11 @@ local function drain_native_damage()
         metrics.native_buckets = metrics.native_buckets + 1
         metrics.native_hits = metrics.native_hits
             + math.max(1, math.floor(to_number(event.hits)))
+        if config.EnableSkillDiagnostics == true
+            and metrics.native_hits - hooks.last_native_status_hit_report >= 64 then
+            hooks.last_native_status_hit_report = metrics.native_hits
+            hooks.log_native_diagnostic_status("hit-checkpoint-" .. tostring(metrics.native_hits))
+        end
         local ok, err = pcall(process_damage_event, event)
         if not ok then
             metrics.errors = metrics.errors + 1
@@ -4383,6 +4414,15 @@ local function activate_final_damage_hook()
 end
 
 local function reset_skill_diagnostics()
+    hooks.log_native_diagnostic_status("before-reset")
+    if type(BossDPSNativeResetEvents) == "function" then
+        local ok, err = pcall(BossDPSNativeResetEvents)
+        if not ok then
+            metrics.errors = metrics.errors + 1
+            log("native diagnostic reset failed: " .. tostring(err))
+        end
+    end
+    hooks.last_native_status_hit_report = metrics.native_hits
     local count = 0
     for key, session in pairs(sessions) do
         count = count + 1

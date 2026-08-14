@@ -49,6 +49,10 @@ namespace
     constexpr std::size_t maximum_pending_buckets = 4096;
     constexpr std::size_t maximum_pending_events = 16384;
     constexpr std::size_t maximum_source_records = 32768;
+    constexpr std::size_t maximum_discovered_script_functions = 8192;
+    constexpr std::size_t maximum_damage_handler_probe_functions = 128;
+    constexpr std::size_t maximum_damage_handler_probe_samples = 3;
+    constexpr std::size_t maximum_damage_handler_probe_reports = 24;
 
     enum class TargetState : std::uint8_t
     {
@@ -551,8 +555,8 @@ namespace
         BossDPSNativeCollector()
         {
             ModName = STR("BossDPSNativeCollector");
-            ModVersion = STR("3.4.2-fingerprint-probe");
-            ModDescription = STR("Native exact Pal skill source collector with fail-closed damage fingerprint diagnostics");
+            ModVersion = STR("3.5.0-handler-discovery");
+            ModDescription = STR("Native fail-closed Pal skill handler discovery probe");
             ModAuthors = STR("AsahiChan-Game");
         }
 
@@ -683,6 +687,7 @@ namespace
             lua.register_function("BossDPSNativeDrainEventOne", &lua_drain_event_one);
             lua.register_function("BossDPSNativeResetEvents", &lua_reset_events);
             lua.register_function("BossDPSNativeCapabilities", &lua_capabilities);
+            lua.register_function("BossDPSNativeProbeReport", &lua_probe_report);
             log(STR("native event API registered for Lua mod ") + StringType{mod_name});
         }
 
@@ -776,8 +781,41 @@ namespace
         auto reset_events() -> void
         {
             m_event_queue.reset();
-            std::scoped_lock lock{m_fingerprint_mutex};
-            m_pending_fingerprints.reset();
+            {
+                std::scoped_lock lock{m_fingerprint_mutex};
+                m_pending_fingerprints.reset();
+            }
+            {
+                std::scoped_lock lock{m_probe_mutex};
+                m_probe_reports.clear();
+                m_probe_samples_by_function.clear();
+            }
+            m_probe_damage_callbacks.store(0, std::memory_order_release);
+            m_probe_damage_functions.store(0, std::memory_order_release);
+            m_probe_action_contexts.store(0, std::memory_order_release);
+            m_probe_effect_contexts.store(0, std::memory_order_release);
+            m_probe_other_contexts.store(0, std::memory_order_release);
+            m_probe_waza_samples.store(0, std::memory_order_release);
+            m_probe_cache_overflow.store(false, std::memory_order_release);
+        }
+
+        auto probe_report() -> std::string
+        {
+            std::scoped_lock lock{m_probe_mutex};
+            if (m_probe_reports.empty())
+            {
+                return "none";
+            }
+            std::ostringstream output;
+            for (std::size_t index = 0; index < m_probe_reports.size(); ++index)
+            {
+                if (index > 0)
+                {
+                    output << " || ";
+                }
+                output << m_probe_reports[index];
+            }
+            return output.str();
         }
 
         auto status() -> std::string
@@ -804,6 +842,7 @@ namespace
                    << "; event_overflow=" << (event_stats.overflowed ? "true" : "false")
                    << "; damage_path=" << m_damage_function_path
                    << "; script_calls=" << m_script_calls.load()
+                   << "; script_callbacks_seen=" << m_script_callbacks_seen.load()
                    << "; action_hook="
                    << (m_action_source_ready.load() ? "true" : "false")
                    << "; effect_init_hook="
@@ -824,6 +863,14 @@ namespace
                    << "; attack_fingerprint_weak=" << m_attack_fingerprint_weak.load()
                    << "; attack_fingerprint_missing_actor="
                    << m_attack_fingerprint_missing_actor.load()
+                   << "; probe_damage_callbacks=" << m_probe_damage_callbacks.load()
+                   << "; probe_damage_functions=" << m_probe_damage_functions.load()
+                   << "; probe_action_contexts=" << m_probe_action_contexts.load()
+                   << "; probe_effect_contexts=" << m_probe_effect_contexts.load()
+                   << "; probe_other_contexts=" << m_probe_other_contexts.load()
+                   << "; probe_waza_samples=" << m_probe_waza_samples.load()
+                   << "; probe_cache_overflow="
+                   << (m_probe_cache_overflow.load() ? "true" : "false")
                    << "; filter_bind_matches=" << m_filter_bind_matches.load()
                    << "; exact_hits=" << m_exact_hits.load()
                    << "; fingerprint_candidate_hits="
@@ -873,6 +920,12 @@ namespace
                    << ";attack_fingerprints_recorded="
                    << m_attack_fingerprints_recorded.load()
                    << ";attack_fingerprint_weak=" << m_attack_fingerprint_weak.load()
+                   << ";probe_damage_callbacks=" << m_probe_damage_callbacks.load()
+                   << ";probe_damage_functions=" << m_probe_damage_functions.load()
+                   << ";probe_action_contexts=" << m_probe_action_contexts.load()
+                   << ";probe_effect_contexts=" << m_probe_effect_contexts.load()
+                   << ";probe_other_contexts=" << m_probe_other_contexts.load()
+                   << ";probe_waza_samples=" << m_probe_waza_samples.load()
                    << ";exact_hit_matches=" << m_exact_hits.load()
                    << ";fingerprint_candidate_hits="
                    << m_fingerprint_candidate_hits.load()
@@ -1406,11 +1459,6 @@ namespace
             {
                 return layout;
             }
-            const auto function_name = RC::to_string(function->GetName());
-            if (!contains_ignore_case(function_name, "OnAttackDelegate__DelegateSignature"))
-            {
-                return layout;
-            }
             for (TFieldIterator<FProperty> iterator{
                      function,
                      EFieldIterationFlags::IncludeSuper | EFieldIterationFlags::IncludeDeprecated
@@ -1464,6 +1512,135 @@ namespace
             return layout;
         }
 
+        auto cached_attack_layout(UFunction* function) -> AttackFunctionLayout
+        {
+            if (function == nullptr)
+            {
+                return {};
+            }
+            std::scoped_lock lock{m_probe_mutex};
+            const auto known = m_attack_layout_cache.find(function);
+            if (known != m_attack_layout_cache.end())
+            {
+                return known->second;
+            }
+            if (m_attack_layout_cache.size() >= maximum_discovered_script_functions)
+            {
+                m_probe_cache_overflow.store(true, std::memory_order_release);
+                return {};
+            }
+            const auto layout = discover_attack_layout(function);
+            m_attack_layout_cache.emplace(function, layout);
+            return layout;
+        }
+
+        auto probe_script_damage_handler(
+            UObject* context,
+            FFrame& stack,
+            UFunction* function
+        ) -> void
+        {
+            if (context == nullptr || stack.Locals() == nullptr || function == nullptr)
+            {
+                return;
+            }
+            const auto function_name = RC::to_string(function->GetName());
+            if (!contains_ignore_case(function_name, "attack")
+                && !contains_ignore_case(function_name, "damage"))
+            {
+                return;
+            }
+            const auto layout = cached_attack_layout(function);
+            if (!layout.ready())
+            {
+                return;
+            }
+
+            ++m_probe_damage_callbacks;
+            std::size_t sample_number{};
+            bool first_function_sample{};
+            {
+                std::scoped_lock lock{m_probe_mutex};
+                auto known = m_probe_samples_by_function.find(function);
+                if (known == m_probe_samples_by_function.end())
+                {
+                    if (m_probe_samples_by_function.size()
+                        >= maximum_damage_handler_probe_functions)
+                    {
+                        m_probe_cache_overflow.store(true, std::memory_order_release);
+                        return;
+                    }
+                    known = m_probe_samples_by_function.emplace(function, 0).first;
+                    first_function_sample = true;
+                }
+                if (known->second >= maximum_damage_handler_probe_samples)
+                {
+                    return;
+                }
+                sample_number = ++known->second;
+            }
+            if (first_function_sample)
+            {
+                ++m_probe_damage_functions;
+            }
+
+            const auto context_is_effect = m_skill_effect_base_class != nullptr
+                && context->IsA(m_skill_effect_base_class);
+            const auto context_is_action = m_action_base_class != nullptr
+                && context->IsA(m_action_base_class);
+            if (context_is_effect)
+            {
+                ++m_probe_effect_contexts;
+            }
+            else if (context_is_action)
+            {
+                ++m_probe_action_contexts;
+            }
+            else
+            {
+                ++m_probe_other_contexts;
+            }
+
+            auto* parameters = reinterpret_cast<std::byte*>(stack.Locals());
+            auto* damage_info = layout.damage_info->ContainerPtrToValuePtr<void>(parameters);
+            auto* attacker = layout.info_attacker.read(damage_info);
+            auto* defender = layout.defender.read(parameters);
+            auto* filter = find_attack_filter(context, function);
+            const auto [waza_id, skill_code] = read_filter_waza(filter);
+            if (waza_id > 0)
+            {
+                ++m_probe_waza_samples;
+            }
+
+            std::ostringstream message;
+            message << "damage-handler-probe sample=" << sample_number
+                    << " function=" << function_name
+                    << " owner="
+                    << (function->GetOuterPrivate() != nullptr
+                        ? RC::to_string(function->GetOuterPrivate()->GetName())
+                        : std::string{"none"})
+                    << " context_class="
+                    << (context->GetClassPrivate() != nullptr
+                        ? RC::to_string(context->GetClassPrivate()->GetName())
+                        : std::string{"none"})
+                    << " context_kind="
+                    << (context_is_effect ? "effect" : (context_is_action ? "action" : "other"))
+                    << " attacker=" << token_text(object_token(attacker))
+                    << " defender=" << token_text(object_token(defender))
+                    << " filter=" << token_text(object_token(filter))
+                    << " waza=" << waza_id
+                    << " code=" << skill_code
+                    << " hit_count=" << layout.hit_count.read(parameters);
+            {
+                std::scoped_lock lock{m_probe_mutex};
+                if (m_probe_reports.size() < maximum_damage_handler_probe_reports)
+                {
+                    m_probe_reports.push_back(message.str());
+                }
+            }
+            log(RC::to_wstring(message.str()));
+        }
+
         auto capture_script_source_pre(UObject* context, FFrame& stack) -> void
         {
             auto* function = stack.Node();
@@ -1475,6 +1652,8 @@ namespace
             {
                 return;
             }
+            ++m_script_callbacks_seen;
+            probe_script_damage_handler(context, stack, function);
             const auto function_name = RC::to_string(function->GetName());
             if (equals_ignore_case(function_name, "OnBeginAction")
                 && context != nullptr && m_action_base_class != nullptr
@@ -1560,7 +1739,7 @@ namespace
             });
             auto& attack_scope = active_attack_scopes.back();
 
-            auto layout = discover_attack_layout(function);
+            auto layout = cached_attack_layout(function);
             if (!layout.ready())
             {
                 ++m_attack_without_waza;
@@ -2205,6 +2384,12 @@ namespace
             return 1;
         }
 
+        static auto lua_probe_report(const Lua& lua) -> int
+        {
+            lua.set_string(s_instance == nullptr ? "not-loaded" : s_instance->probe_report());
+            return 1;
+        }
+
       private:
         inline static BossDPSNativeCollector* s_instance{};
         ReflectedDamageLayout m_layout{};
@@ -2233,6 +2418,7 @@ namespace
         std::atomic<bool> m_source_overflow{};
         std::atomic<std::uint64_t> m_capture_errors{};
         std::atomic<std::uint64_t> m_script_calls{};
+        std::atomic<std::uint64_t> m_script_callbacks_seen{};
         std::atomic<std::uint64_t> m_action_begin_matches{};
         std::atomic<std::uint64_t> m_effect_initialize_matches{};
         std::atomic<std::uint64_t> m_attack_matches{};
@@ -2245,6 +2431,13 @@ namespace
         std::atomic<std::uint64_t> m_attack_fingerprints_recorded{};
         std::atomic<std::uint64_t> m_attack_fingerprint_weak{};
         std::atomic<std::uint64_t> m_attack_fingerprint_missing_actor{};
+        std::atomic<std::uint64_t> m_probe_damage_callbacks{};
+        std::atomic<std::uint64_t> m_probe_damage_functions{};
+        std::atomic<std::uint64_t> m_probe_action_contexts{};
+        std::atomic<std::uint64_t> m_probe_effect_contexts{};
+        std::atomic<std::uint64_t> m_probe_other_contexts{};
+        std::atomic<std::uint64_t> m_probe_waza_samples{};
+        std::atomic<bool> m_probe_cache_overflow{};
         std::atomic<std::uint64_t> m_filter_bind_matches{};
         std::atomic<std::uint64_t> m_exact_hits{};
         std::atomic<std::uint64_t> m_fingerprint_candidate_hits{};
@@ -2260,6 +2453,7 @@ namespace
         std::mutex m_mutex;
         std::mutex m_source_mutex;
         std::mutex m_fingerprint_mutex;
+        std::mutex m_probe_mutex;
         boss_dps::CollectorCore m_collector;
         pal_dps::NativeEventQueue m_event_queue{maximum_pending_events};
         pal_dps::PendingFingerprintMatcher m_pending_fingerprints{maximum_source_records};
@@ -2276,6 +2470,9 @@ namespace
             m_effect_sources;
         std::unordered_set<pal_dps::ObjectToken, pal_dps::ObjectTokenHash>
             m_ambiguous_effect_filters;
+        std::unordered_map<UFunction*, AttackFunctionLayout> m_attack_layout_cache;
+        std::unordered_map<UFunction*, std::size_t> m_probe_samples_by_function;
+        std::vector<std::string> m_probe_reports;
         std::uint64_t m_next_cast_value{1};
         std::uint64_t m_skipped_nonboss{};
         std::uint64_t m_overflow_buckets{};
