@@ -1,5 +1,5 @@
 {
-  "publishedfileid": "",
-  "changenote": "v0.2.0 diagnostic: localized skill names, full-action DPS, panel cooldown, observed intervals, and AI reuse gaps.",
-  "last_published_version": ""
+  "publishedfileid": "3784125454",
+  "changenote": "v0.5.19: native F3 CommonUI settings/details, five-field HUD, and complete Boss death/capture snapshots that remain unchanged until F2.",
+  "last_published_version": "0.5.19"
 }
