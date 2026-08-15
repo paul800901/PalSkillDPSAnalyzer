@@ -1,26 +1,66 @@
+[CmdletBinding()]
 param(
-    [string]$UE4SSSource = "$env:LOCALAPPDATA\Temp\codex-re-ue4ss-v3.0.1",
-    [string]$FmtSource = "$env:LOCALAPPDATA\Temp\codex-fmt-11.2.0",
-    [string]$ZydisSource = "$env:LOCALAPPDATA\Temp\zydis-4.1.1",
-    [string]$ZycoreSource = "$env:LOCALAPPDATA\Temp\zycore-c-1.5.2",
+    [string]$ProjectRoot = "",
+    [string]$UE4SSSource = "",
+    [string]$FmtSource = "",
+    [string]$ZydisSource = "",
+    [string]$ZycoreSource = "",
+    [string]$ImGuiSource = "",
+    [string]$ImGuiTextEditSource = "",
+    [string]$IconFontSource = "",
     [Parameter(Mandatory = $true)]
     [string]$UE4SSDll,
     [string]$BuildDirectory = "$PSScriptRoot\build-native"
 )
 
 $ErrorActionPreference = "Stop"
-$expectedCommit = "c2ac246447a8bcd92541070cb474044e7a2bbbe6"
+
+if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
+    $ProjectRoot = Split-Path -Parent $PSScriptRoot
+}
+$projectRootResolved = [System.IO.Path]::GetFullPath($ProjectRoot)
+$lock = Get-Content -LiteralPath (Join-Path $projectRootResolved "tools\native-toolchain.lock.json") -Raw | ConvertFrom-Json
+$expectedCommit = $lock.ue4ss.commit
+
+if ([string]::IsNullOrWhiteSpace($UE4SSSource)) {
+    $UE4SSSource = Join-Path $projectRootResolved "external\RE-UE4SS"
+}
+if ([string]::IsNullOrWhiteSpace($FmtSource)) {
+    $FmtSource = Join-Path $projectRootResolved "external\fmt"
+}
+if ([string]::IsNullOrWhiteSpace($ZydisSource)) {
+    $ZydisSource = Join-Path $projectRootResolved "external\zydis"
+}
+if ([string]::IsNullOrWhiteSpace($ZycoreSource)) {
+    $ZycoreSource = Join-Path $projectRootResolved "external\zycore"
+}
+if ([string]::IsNullOrWhiteSpace($ImGuiSource)) {
+    $ImGuiSource = Join-Path $projectRootResolved "external\imgui"
+}
+if ([string]::IsNullOrWhiteSpace($ImGuiTextEditSource)) {
+    $ImGuiTextEditSource = Join-Path $projectRootResolved "external\imgui-text-edit"
+}
+if ([string]::IsNullOrWhiteSpace($IconFontSource)) {
+    $IconFontSource = Join-Path $projectRootResolved "external\icon-font-cpp-headers"
+}
 
 if (-not (Test-Path -LiteralPath $UE4SSDll -PathType Leaf)) {
     throw "UE4SS.dll not found: $UE4SSDll"
 }
-if (-not (Test-Path -LiteralPath "$UE4SSSource\.git" -PathType Container)) {
+$runtimeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $UE4SSDll).Hash
+if ($runtimeHash -ne $lock.ue4ss.runtime_sha256) {
+    throw "UE4SS runtime mismatch. Expected SHA256 $($lock.ue4ss.runtime_sha256), got $runtimeHash"
+}
+if (-not (Test-Path -LiteralPath "$UE4SSSource\.git")) {
     throw "UE4SS source checkout not found: $UE4SSSource"
 }
 
 $actualCommit = (& git -C $UE4SSSource rev-parse HEAD).Trim()
 if ($actualCommit -ne $expectedCommit) {
     throw "UE4SS source commit mismatch. Expected $expectedCommit, got $actualCommit"
+}
+if (-not (Test-Path -LiteralPath "$UE4SSSource\deps\first\Unreal\include\Unreal" -PathType Container)) {
+    throw "UEPseudo headers are unavailable. See docs\NATIVE_DEVELOPMENT.md and rerun tools\bootstrap_native_dependencies.ps1 after linking GitHub to Epic Games."
 }
 if (-not (Test-Path -LiteralPath "$FmtSource\include\fmt\core.h" -PathType Leaf)) {
     throw "fmt 11.2.0 source was not found: $FmtSource"
@@ -31,17 +71,20 @@ if (-not (Test-Path -LiteralPath "$ZydisSource\include\Zydis\Zydis.h" -PathType 
 if (-not (Test-Path -LiteralPath "$ZycoreSource\include\Zycore\Types.h" -PathType Leaf)) {
     throw "Zycore source was not found: $ZycoreSource"
 }
-
-$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-$vsPath = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath).Trim()
-if (-not $vsPath) {
-    throw "Visual Studio C++ build tools were not found"
+if (-not (Test-Path -LiteralPath "$ImGuiSource\imgui.h" -PathType Leaf)) {
+    throw "ImGui source was not found: $ImGuiSource"
 }
-$toolVersion = (Get-Content -LiteralPath (Join-Path $vsPath "VC\Auxiliary\Build\Microsoft.VCToolsVersion.default.txt") -Raw).Trim()
-$toolDirectory = Join-Path $vsPath "VC\Tools\MSVC\$toolVersion\bin\Hostx64\x64"
+if (-not (Test-Path -LiteralPath "$ImGuiTextEditSource\TextEditor.h" -PathType Leaf)) {
+    throw "ImGuiColorTextEdit source was not found: $ImGuiTextEditSource"
+}
+if (-not (Test-Path -LiteralPath "$IconFontSource\IconsFontAwesome6.h" -PathType Leaf)) {
+    throw "IconFontCppHeaders source was not found: $IconFontSource"
+}
+
+. (Join-Path $projectRootResolved "tools\enter_native_toolchain.ps1") -ProjectRoot $projectRootResolved
+$toolDirectory = Join-Path $env:VCToolsInstallDir "bin\Hostx64\x64"
 $dumpbin = Join-Path $toolDirectory "dumpbin.exe"
 $libTool = Join-Path $toolDirectory "lib.exe"
-$vcvars = Join-Path $vsPath "VC\Auxiliary\Build\vcvars64.bat"
 
 New-Item -ItemType Directory -Path $BuildDirectory -Force | Out-Null
 $defPath = Join-Path $BuildDirectory "UE4SS.def"
@@ -76,15 +119,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "lib.exe failed with exit code $LASTEXITCODE"
 }
 
-$environmentLines = & cmd.exe /d /c "`"$vcvars`" >nul && set"
-foreach ($line in $environmentLines) {
-    if ($line -match '^([^=]+)=(.*)$') {
-        [System.Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], "Process")
-    }
-}
-
 $includeDirectories = @(
-    "$PSScriptRoot\include",
     "$UE4SSSource\UE4SS\include",
     "$UE4SSSource\UE4SS\generated_include",
     "$UE4SSSource\deps\first\Unreal\include",
@@ -97,12 +132,24 @@ $includeDirectories = @(
     "$UE4SSSource\deps\first\File\include",
     "$UE4SSSource\deps\first\Function\include",
     "$UE4SSSource\deps\first\Helpers\include",
+    "$UE4SSSource\deps\first\Input\include",
+    "$UE4SSSource\deps\first\IniParser\include",
+    "$UE4SSSource\deps\first\JSON\include",
+    "$UE4SSSource\deps\first\MProgram\include",
+    "$UE4SSSource\deps\first\ParserBase\include",
+    "$UE4SSSource\deps\first\Profiler\include",
+    "$UE4SSSource\deps\first\ScopedTimer\include",
+    "$UE4SSSource\deps\first\SinglePassSigScanner\include",
     "$UE4SSSource\deps\first\Constructs\include",
     "$UE4SSSource\deps\first\DynamicOutput\include",
     "$UE4SSSource\deps\first\ASMHelper\include",
     "$FmtSource\include",
     "$ZydisSource\include",
-    "$ZycoreSource\include"
+    "$ZycoreSource\include",
+    $ImGuiSource,
+    $ImGuiTextEditSource,
+    $IconFontSource,
+    "$PSScriptRoot\include"
 )
 $includeArguments = @()
 foreach ($directory in $includeDirectories) {
@@ -142,6 +189,31 @@ if ($LASTEXITCODE -ne 0) {
 & "$BuildDirectory\collector_stress.exe"
 if ($LASTEXITCODE -ne 0) {
     throw "Native stress test failed with exit code $LASTEXITCODE"
+}
+
+foreach ($testName in @(
+    "attribution_event_core_test",
+    "native_event_queue_test",
+    "pending_fingerprint_matcher_test",
+    "pending_attack_matcher_test",
+    "pending_final_damage_matcher_test"
+)) {
+    $sourcePath = Join-Path $PSScriptRoot "tests\$testName.cpp"
+    $testArguments = @(
+        "/nologo", "/std:c++latest", "/EHsc", "/MD", "/O2", "/W4", "/WX", "/utf-8",
+        $sourcePath,
+        "/I$PSScriptRoot\include",
+        "/Fo:$BuildDirectory\$testName.obj",
+        "/Fe:$BuildDirectory\$testName.exe"
+    )
+    & cl.exe @testArguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "$testName build failed with exit code $LASTEXITCODE"
+    }
+    & "$BuildDirectory\$testName.exe"
+    if ($LASTEXITCODE -ne 0) {
+        throw "$testName failed with exit code $LASTEXITCODE"
+    }
 }
 
 Write-Host "Native collector built: $BuildDirectory\main.dll"

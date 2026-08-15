@@ -4,8 +4,8 @@ $workshopDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 $manifestPath = Join-Path $workshopDirectory "localizations.json"
 $entries = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
 
-if ($entries.Count -ne 17) {
-    throw "Expected 17 Workshop localizations, found $($entries.Count)"
+if ($entries.Count -ne 2) {
+    throw "Expected English and Traditional Chinese Workshop localizations, found $($entries.Count)"
 }
 
 $seenLocales = @{}
@@ -27,7 +27,7 @@ foreach ($entry in $entries) {
     $description = Get-Content -LiteralPath $descriptionPath -Raw -Encoding UTF8
     foreach ($requiredText in @(
         "[h1]", "[/h1]", "[h2]", "[/h2]", "3625223587",
-        "github.com/AsahiChan-Game/PalBossDPSBroadcast"
+        "github.com/paul800901/PalSkillDPSAnalyzer"
     )) {
         if (-not $description.Contains($requiredText)) {
             throw "$($entry.locale) description is missing: $requiredText"
@@ -35,4 +35,4 @@ foreach ($entry in $entries) {
     }
 }
 
-Write-Host "Workshop localization validation passed for 17 languages."
+Write-Host "Workshop localization validation passed for English and Traditional Chinese."

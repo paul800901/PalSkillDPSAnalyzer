@@ -3,9 +3,22 @@ $ErrorActionPreference = "Stop"
 $testDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectDirectory = Split-Path -Parent $testDirectory
 $mainScript = Join-Path $projectDirectory "Scripts\main.lua"
+$hudScript = Join-Path $projectDirectory "Scripts\hud.lua"
 $configScript = Join-Path $projectDirectory "Scripts\config.lua"
 $commentaryScript = Join-Path $projectDirectory "Scripts\commentary.lua"
 $localizationScript = Join-Path $projectDirectory "Scripts\localization.lua"
+$hudStringsScript = Join-Path $projectDirectory "Scripts\hud_strings.lua"
+$skillNamesScript = Join-Path $projectDirectory "Scripts\skill_names.lua"
+$skillEffectAttributionScript = Join-Path $projectDirectory "Scripts\skill_effect_attribution.lua"
+$castEffectAttributionScript = Join-Path $projectDirectory "Scripts\cast_effect_attribution.lua"
+$runtimeSourceChainScript = Join-Path $projectDirectory "Scripts\runtime_source_chain.lua"
+$overlayScript = Join-Path $projectDirectory "Scripts\skill_dps_overlay.ps1"
+$overlayLauncher = Join-Path $projectDirectory "Scripts\skill_dps_overlay_launcher.vbs"
+$hudV1Fixture = Join-Path $testDirectory "fixtures\hud_v1_state.txt"
+$hudV2Fixture = Join-Path $testDirectory "fixtures\hud_v2_state.txt"
+$hudV2RankChangeFixture = Join-Path $testDirectory "fixtures\hud_v2_rank_change_state.txt"
+$hudV2SettingsFixture = Join-Path $testDirectory "fixtures\hud_v2_settings_state.txt"
+$hudV2SettingsEmptyFixture = Join-Path $testDirectory "fixtures\hud_v2_settings_empty_state.txt"
 $localeDirectory = Join-Path $projectDirectory "Scripts\locales"
 $workshopDirectory = Join-Path $projectDirectory "workshop\content"
 $workshopScripts = Join-Path $workshopDirectory "Scripts"
@@ -17,12 +30,30 @@ $workshopLocalizationValidator = Join-Path $projectDirectory "workshop\validate_
 Write-Host "[1/5] Parsing Lua sources"
 & npx --yes --package=luaparse luaparse --quiet --file $mainScript
 if ($LASTEXITCODE -ne 0) { throw "main.lua parse failed" }
+& npx --yes --package=luaparse luaparse --quiet --file $hudScript
+if ($LASTEXITCODE -ne 0) { throw "hud.lua parse failed" }
 & npx --yes --package=luaparse luaparse --quiet --file $configScript
 if ($LASTEXITCODE -ne 0) { throw "config.lua parse failed" }
 & npx --yes --package=luaparse luaparse --quiet --file $commentaryScript
 if ($LASTEXITCODE -ne 0) { throw "commentary.lua parse failed" }
 & npx --yes --package=luaparse luaparse --quiet --file $localizationScript
 if ($LASTEXITCODE -ne 0) { throw "localization.lua parse failed" }
+& npx --yes --package=luaparse luaparse --quiet --file $hudStringsScript
+if ($LASTEXITCODE -ne 0) { throw "hud_strings.lua parse failed" }
+& npx --yes --package=luaparse luaparse --quiet --file $skillNamesScript
+if ($LASTEXITCODE -ne 0) { throw "skill_names.lua parse failed" }
+& npx --yes --package=luaparse luaparse --quiet --file $skillEffectAttributionScript
+if ($LASTEXITCODE -ne 0) { throw "skill_effect_attribution.lua parse failed" }
+& npx --yes --package=luaparse luaparse --quiet --file $castEffectAttributionScript
+if ($LASTEXITCODE -ne 0) { throw "cast_effect_attribution.lua parse failed" }
+& npx --yes --package=luaparse luaparse --quiet --file $runtimeSourceChainScript
+if ($LASTEXITCODE -ne 0) { throw "runtime_source_chain.lua parse failed" }
+& npx --yes --package=luaparse luaparse --quiet --file (Join-Path $testDirectory "test_cast_effect_attribution.lua")
+if ($LASTEXITCODE -ne 0) { throw "test_cast_effect_attribution.lua parse failed" }
+& npx --yes --package=luaparse luaparse --quiet --file (Join-Path $testDirectory "test_runtime_source_chain.lua")
+if ($LASTEXITCODE -ne 0) { throw "test_runtime_source_chain.lua parse failed" }
+& npx --yes --package=luaparse luaparse --quiet --file (Join-Path $testDirectory "fixtures\cast_effect_overlap.lua")
+if ($LASTEXITCODE -ne 0) { throw "cast_effect_overlap.lua parse failed" }
 foreach ($localePath in Get-ChildItem -LiteralPath $localeDirectory -Filter "*.lua" -File) {
     & npx --yes --package=luaparse luaparse --quiet --file $localePath.FullName
     if ($LASTEXITCODE -ne 0) { throw "locale parse failed: $($localePath.Name)" }
@@ -33,30 +64,130 @@ if (Select-String -Path $commentaryScript -Pattern "糖罐" -SimpleMatch -Quiet)
 
 Write-Host "[2/5] Auditing forbidden crash-path APIs"
 $forbidden = "ExecuteWithDelay|SendSystemAnnounce|GetIndividualCharacterParameterByActor|IsBossPal_Database\(|IsTowerBossPal\(|FindAllOf"
-$matches = & rg -n $forbidden $mainScript
-if ($LASTEXITCODE -eq 0) {
-    $matches | Write-Host
+$forbiddenMatches = Select-String -LiteralPath $mainScript -Pattern $forbidden
+if ($forbiddenMatches) {
+    $forbiddenMatches | ForEach-Object { $_.Line } | Write-Host
     throw "forbidden API found in main.lua"
+}
+$forbiddenHud = "StaticConstructObject|PrintString"
+$hudForbiddenMatches = Select-String -LiteralPath $hudScript -Pattern $forbiddenHud
+if ($hudForbiddenMatches) {
+    $hudForbiddenMatches | ForEach-Object { $_.Line } | Write-Host
+    throw "forbidden Unreal UI API found in hud.lua"
+}
+$hudText = Get-Content -LiteralPath $hudScript -Raw -Encoding UTF8
+foreach ($requiredHudFeature in @(
+    'selected_tab=',
+    'Key.F3',
+    'settings/details hotkey=',
+    'watchdog_external_overlay',
+    'command_ack=',
+    'external HUD heartbeat stale',
+    'external HUD relaunch suppressed after 3 attempts',
+    'skill_dps_overlay_launcher.vbs',
+    'wscript.exe',
+    'sync_gameplay_visibility',
+    '/Game/Mods/PalSkillDPSAnalyzerSP/WBP_PalSkillDPSSettings',
+    'SetInputMode_UIOnlyEx',
+    'SetInputMode_GameOnly',
+    'ActivateWidget',
+    'RemoveFromParent',
+    'register_console_command_handler'
+)) {
+    if (-not $hudText.Contains($requiredHudFeature)) {
+        throw "HUD recovery/input-lock feature missing: $requiredHudFeature"
+    }
+}
+foreach ($forbiddenInputFeature in @(
+    'SetIgnoreLookInput',
+    'SetIgnoreMoveInput',
+    'DisableInput',
+    'EnableInput'
+)) {
+    if ($hudText.Contains($forbiddenInputFeature)) {
+        throw "external HUD must not mutate Palworld input: $forbiddenInputFeature"
+    }
+}
+$overlayText = Get-Content -LiteralPath $overlayScript -Raw -Encoding UTF8
+foreach ($requiredOverlayFeature in @(
+    'Write-HudHeartbeat',
+    'Assert-HudWindow',
+    'add_UnhandledException',
+    'command acknowledged id=',
+    'reset_notice',
+    'settingsSelectedTab',
+    'settingsScrollOffset',
+    'resultsScrollOffset',
+    '$border.Height = $workspaceHeight',
+    '[object]::ReferenceEquals($capturedTabs, $script:settingsTabs)',
+    'Assert-HudWindow ([bool]$script:lastSettingsOpen) $false',
+    '0x0020',
+    '$damageLabel + " " + (Format-HudInteger $row.Damage)',
+    'Format-HudDecimal $row.Dps',
+    '$subline = "{0} DPS',
+    '{1}%" -f (Format-HudDecimal $row.Dps), (Format-HudDecimal $row.Share)',
+    '$contextLine = $duration',
+    'New-HudDetailRow'
+)) {
+    if (-not $overlayText.Contains($requiredOverlayFeature)) {
+        throw "external HUD recovery feature missing: $requiredOverlayFeature"
+    }
+}
+foreach ($forbiddenOverlayFeature in @(
+    'SetForegroundWindow',
+    'ShowCursor',
+    'ReleaseClipCursor',
+    '[Windows.Input.Keyboard]::Focus',
+    '$window.Activate()',
+    '$window.Focus()'
+)) {
+    if ($overlayText.Contains($forbiddenOverlayFeature)) {
+        throw "display-only overlay contains cross-process input control: $forbiddenOverlayFeature"
+    }
 }
 
 Write-Host "[3/5] Validating strict UTF-8"
 $utf8 = [System.Text.UTF8Encoding]::new($false, $true)
 foreach ($file in @(
     $mainScript,
+    $hudScript,
     $configScript,
     $commentaryScript,
     $localizationScript,
+    $hudStringsScript,
+    $skillNamesScript,
+    $skillEffectAttributionScript,
+    $castEffectAttributionScript,
+    $runtimeSourceChainScript,
+    $overlayScript,
+    $overlayLauncher,
+    $hudV1Fixture,
+    $hudV2Fixture,
+    $hudV2RankChangeFixture,
+    $hudV2SettingsFixture,
+    $hudV2SettingsEmptyFixture,
     (Join-Path $testDirectory "test_main.lua"),
     (Join-Path $testDirectory "test_localization.lua"),
+    (Join-Path $testDirectory "test_cast_effect_attribution.lua"),
+    (Join-Path $testDirectory "test_runtime_source_chain.lua"),
+    (Join-Path $testDirectory "fixtures\cast_effect_overlap.lua"),
     (Join-Path $workshopDirectory "Info.json"),
     (Join-Path $workshopDirectory "README.md"),
     $workshopDescription,
     $workshopLocalizationManifest,
     $workshopLocalizationValidator,
     (Join-Path $workshopScripts "main.lua"),
+    (Join-Path $workshopScripts "hud.lua"),
     (Join-Path $workshopScripts "config.lua"),
     (Join-Path $workshopScripts "commentary.lua"),
-    (Join-Path $workshopScripts "localization.lua")
+    (Join-Path $workshopScripts "localization.lua"),
+    (Join-Path $workshopScripts "hud_strings.lua"),
+    (Join-Path $workshopScripts "skill_names.lua")
+    ,(Join-Path $workshopScripts "skill_effect_attribution.lua")
+    ,(Join-Path $workshopScripts "cast_effect_attribution.lua")
+    ,(Join-Path $workshopScripts "runtime_source_chain.lua")
+    ,(Join-Path $workshopScripts "skill_dps_overlay.ps1")
+    ,(Join-Path $workshopScripts "skill_dps_overlay_launcher.vbs")
 )) {
     [void]$utf8.GetString([System.IO.File]::ReadAllBytes($file))
 }
@@ -72,19 +203,41 @@ foreach ($entry in $workshopLocalizationEntries) {
 
 Write-Host "[4/5] Validating Steam Workshop package"
 $workshopInfo = Get-Content -LiteralPath (Join-Path $workshopDirectory "Info.json") -Raw -Encoding UTF8 | ConvertFrom-Json
-$expectedWorkshopTitle = -join @([char]0x4E0D, [char]0x8981, [char]0x67E5, [char]0x6211, "D", "P", "S")
+$expectedWorkshopTitle = -join @(
+    [char]0x5E15, [char]0x9B6F, [char]0x6280, [char]0x80FD,
+    " DPS ", [char]0x5206, [char]0x6790, [char]0x5668
+)
 if ($workshopInfo.ModName -ne $expectedWorkshopTitle) { throw "unexpected Workshop ModName" }
-if ($workshopInfo.PackageName -ne "PalBossDPSBroadcastSP") { throw "unexpected Workshop PackageName" }
-if ($workshopInfo.Version -ne "1.2.0") { throw "unexpected Workshop version" }
+if ($workshopInfo.PackageName -ne "PalSkillDPSAnalyzerSP") { throw "unexpected Workshop PackageName" }
+if ($workshopInfo.Version -ne "0.5.19") { throw "unexpected Workshop version" }
 if ($workshopInfo.Dependencies -notcontains "UE4SSExperimentalPW") { throw "Workshop UE4SS dependency missing" }
-if ($workshopInfo.InstallRule.Count -ne 1 -or $workshopInfo.InstallRule[0].Type -ne "Lua") {
-    throw "Workshop Lua InstallRule missing"
+if ($workshopInfo.InstallRule.Count -ne 3) {
+    throw "Workshop Lua/Paks/LogicMods InstallRule count mismatch"
 }
-foreach ($sharedName in @("main.lua", "commentary.lua", "localization.lua")) {
+$workshopInstallRuleTypes = @($workshopInfo.InstallRule | ForEach-Object { $_.Type })
+if ($workshopInstallRuleTypes -notcontains "Lua" -or
+    $workshopInstallRuleTypes -notcontains "Paks" -or
+    $workshopInstallRuleTypes -notcontains "LogicMods") {
+    throw "Workshop Lua/Paks/LogicMods InstallRule missing"
+}
+$nativeUiPak = Join-Path $workshopDirectory "Paks\PalSkillDPSAnalyzerSP_P.pak"
+if (-not (Test-Path -LiteralPath $nativeUiPak)) { throw "Workshop native CommonUI pak missing" }
+$logicModsPak = Join-Path $workshopDirectory "LogicMods\PalSkillDPSAnalyzerSP.pak"
+if (-not (Test-Path -LiteralPath $logicModsPak)) { throw "Workshop LogicMods bootstrap pak missing" }
+foreach ($sharedName in @("main.lua", "hud.lua", "commentary.lua", "localization.lua", "hud_strings.lua", "skill_names.lua", "skill_effect_attribution.lua", "cast_effect_attribution.lua", "runtime_source_chain.lua")) {
     $sharedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $projectDirectory "Scripts\$sharedName")).Hash
     $workshopHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $workshopScripts $sharedName)).Hash
     if ($sharedHash -ne $workshopHash) { throw "Workshop $sharedName is not synchronized with shared core" }
 }
+$sharedOverlayHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $overlayScript).Hash
+$workshopOverlayHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $workshopScripts "skill_dps_overlay.ps1")).Hash
+if ($sharedOverlayHash -ne $workshopOverlayHash) { throw "Workshop external HUD script is not synchronized" }
+$sharedLauncherHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $overlayLauncher).Hash
+$workshopLauncher = Join-Path $workshopScripts "skill_dps_overlay_launcher.vbs"
+$workshopLauncherHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $workshopLauncher).Hash
+if ($sharedLauncherHash -ne $workshopLauncherHash) { throw "Workshop hidden HUD launcher is not synchronized" }
+$launcherProbe = & cscript.exe //nologo $overlayLauncher --validate 2>&1
+if ($LASTEXITCODE -ne 0) { throw "hidden HUD launcher validation failed: $launcherProbe" }
 $sharedLocales = Get-ChildItem -LiteralPath $localeDirectory -Filter "*.lua" -File
 if ($sharedLocales.Count -ne 17) { throw "expected exactly 17 shared locales" }
 foreach ($localePath in $sharedLocales) {
@@ -100,9 +253,31 @@ foreach ($localePath in $sharedLocales) {
 }
 $workshopConfig = Get-Content -LiteralPath (Join-Path $workshopScripts "config.lua") -Raw -Encoding UTF8
 foreach ($requiredSetting in @(
-    "config.LocalOnlyMessages = true",
-    "config.EnableFunComments = true",
-    "config.EnablePalDamageBreakdown = true"
+    "config.LocalOnlyMessages = false",
+    "config.EnableSkillDiagnostics = true",
+    "config.SkillDiagnosticsOnly = true",
+    "config.EnableSkillSourceChain = true",
+    "config.EnableBoundedSkillInference = true",
+    "config.IncludePlayerDamage = false",
+    'config.SkillDiagnosticChatMode = "off"',
+    "config.SkillDiagnosticLogNativeProbeReport = false",
+    "config.SkillDiagnosticNativeStatusIntervalHits = 0",
+    "config.EnableSkillDPSHUD = true",
+    'config.MeasurementMode = "manual"',
+    'config.TargetScope = "boss"',
+    "config.HUDSettingsVersion = 3",
+    'config.HUDDetailMode = "compact"',
+    "config.EnableExternalHUD = true",
+    "config.ExternalHUDAutoLaunch = true",
+    "config.EnableExternalHUDSettings = false",
+    "config.EnableNativeCommonUISettings = true",
+    "config.HUDUseExperimentalUMG = false",
+    "config.HUDUseScreenTextFallback = false",
+    "config.HUDShowInternalSkillCode = false",
+    "config.SkillActionPostHitSeconds = 10",
+    "config.SkillEffectMaxLifetimeSeconds = 45",
+    "config.PreferNativeCollector = true",
+    "config.AllowLegacyNativeAggregate = false"
 )) {
     if (-not $workshopConfig.Contains($requiredSetting)) { throw "Workshop config missing: $requiredSetting" }
 }
@@ -129,20 +304,98 @@ if ($LASTEXITCODE -ne 0) { throw "Workshop localization validation failed" }
 [void][scriptblock]::Create($uploadScriptText)
 & npx --yes --package=luaparse luaparse --quiet --file (Join-Path $workshopScripts "main.lua")
 if ($LASTEXITCODE -ne 0) { throw "Workshop main.lua parse failed" }
+& npx --yes --package=luaparse luaparse --quiet --file (Join-Path $workshopScripts "hud.lua")
+if ($LASTEXITCODE -ne 0) { throw "Workshop hud.lua parse failed" }
 & npx --yes --package=luaparse luaparse --quiet --file (Join-Path $workshopScripts "config.lua")
 if ($LASTEXITCODE -ne 0) { throw "Workshop config.lua parse failed" }
 & npx --yes --package=luaparse luaparse --quiet --file (Join-Path $workshopScripts "commentary.lua")
 if ($LASTEXITCODE -ne 0) { throw "Workshop commentary.lua parse failed" }
 & npx --yes --package=luaparse luaparse --quiet --file (Join-Path $workshopScripts "localization.lua")
 if ($LASTEXITCODE -ne 0) { throw "Workshop localization.lua parse failed" }
+& npx --yes --package=luaparse luaparse --quiet --file (Join-Path $workshopScripts "hud_strings.lua")
+if ($LASTEXITCODE -ne 0) { throw "Workshop hud_strings.lua parse failed" }
+& npx --yes --package=luaparse luaparse --quiet --file (Join-Path $workshopScripts "skill_names.lua")
+if ($LASTEXITCODE -ne 0) { throw "Workshop skill_names.lua parse failed" }
+& npx --yes --package=luaparse luaparse --quiet --file (Join-Path $workshopScripts "skill_effect_attribution.lua")
+if ($LASTEXITCODE -ne 0) { throw "Workshop skill_effect_attribution.lua parse failed" }
+& npx --yes --package=luaparse luaparse --quiet --file (Join-Path $workshopScripts "cast_effect_attribution.lua")
+if ($LASTEXITCODE -ne 0) { throw "Workshop cast_effect_attribution.lua parse failed" }
+& npx --yes --package=luaparse luaparse --quiet --file (Join-Path $workshopScripts "runtime_source_chain.lua")
+if ($LASTEXITCODE -ne 0) { throw "Workshop runtime_source_chain.lua parse failed" }
+$overlayTokens = $null
+$overlayErrors = $null
+[void][System.Management.Automation.Language.Parser]::ParseFile(
+    (Join-Path $workshopScripts "skill_dps_overlay.ps1"),
+    [ref]$overlayTokens,
+    [ref]$overlayErrors
+)
+if ($overlayErrors.Count -gt 0) { throw "Workshop external HUD PowerShell parse failed" }
+
+$windowsPowerShell = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+$v1Validation = & $windowsPowerShell -NoLogo -NoProfile -NonInteractive -STA -ExecutionPolicy Bypass `
+    -File $overlayScript -StatePath $hudV1Fixture -ValidationMode
+if ($LASTEXITCODE -ne 0 -or -not ($v1Validation -match "view=text rows=0")) {
+    throw "external HUD V1 settings view runtime validation failed"
+}
+$v2Validation = & $windowsPowerShell -NoLogo -NoProfile -NonInteractive -STA -ExecutionPolicy Bypass `
+    -File $overlayScript -StatePath $hudV2Fixture -ValidationMode `
+    -ValidationUpdateStatePath $hudV2RankChangeFixture
+if ($LASTEXITCODE -ne 0 -or -not ($v2Validation -match "view=meter rows=4")) {
+    throw "external HUD V2 meter runtime validation failed"
+}
+if (-not ($v2Validation -match "meter_rebuilds=1")) {
+    throw "external HUD V2 meter rebuilt on a data update instead of updating in place"
+}
+if (-not ($v2Validation -match "position_moves=1")) {
+    throw "external HUD moved more than once while processing unchanged-anchor data snapshots"
+}
+if (-not ($v2Validation -match "rank_ordered=1")) {
+    throw "external HUD did not render final damage ranking from highest to lowest"
+}
+if (-not ($v2Validation -match "rank_reordered_in_place=1")) {
+    throw "external HUD replaced row objects instead of moving persistent rows in place"
+}
+if (-not ($v2Validation -match "rank_gradient=1")) {
+    throw "external HUD rank colors do not match the bright-blue gradient/basic-attack palette"
+}
+if (-not ($v2Validation -match "core_fields_only=1")) {
+    throw "external HUD live rows expose fields outside skill name/damage/DPS/share, or duration left the header"
+}
+$settingsValidation = & $windowsPowerShell -NoLogo -NoProfile -NonInteractive -STA -ExecutionPolicy Bypass `
+    -File $overlayScript -StatePath $hudV2SettingsFixture -ValidationMode
+if ($LASTEXITCODE -ne 0 -or -not ($settingsValidation -match "view=settings rows=3.*tab_stable=1")) {
+    throw "external HUD V2 interactive settings/results runtime validation failed"
+}
+$emptySettingsValidation = & $windowsPowerShell -NoLogo -NoProfile -NonInteractive -STA -ExecutionPolicy Bypass `
+    -File $overlayScript -StatePath $hudV2SettingsEmptyFixture -ValidationMode
+if ($LASTEXITCODE -ne 0 -or -not ($emptySettingsValidation -match "view=settings rows=0.*tab_stable=1")) {
+    throw "external HUD V2 empty-results runtime validation failed"
+}
+$settingsSize = [regex]::Match([string]$settingsValidation, 'desired=([0-9.]+x[0-9.]+)').Groups[1].Value
+$emptySettingsSize = [regex]::Match([string]$emptySettingsValidation, 'desired=([0-9.]+x[0-9.]+)').Groups[1].Value
+if ([string]::IsNullOrWhiteSpace($settingsSize) -or $settingsSize -ne $emptySettingsSize) {
+    throw "settings/results workspace size changed with result content: $settingsSize vs $emptySettingsSize"
+}
 
 Write-Host "[5/5] Running integration, thread-affinity, lifetime, and stress tests"
 Push-Location $testDirectory
 try {
+    $castEffectOutput = & npx --yes --package=fengari-node-cli fengari test_cast_effect_attribution.lua 2>&1
+    $castEffectExitCode = $LASTEXITCODE
+    $castEffectOutput | Write-Host
+    if ($castEffectExitCode -ne 0 -or -not ($castEffectOutput -match "cast/effect attribution regression tests passed")) {
+        throw "cast/effect attribution regression test failed or did not reach its completion marker"
+    }
+    $sourceChainOutput = & npx --yes --package=fengari-node-cli fengari test_runtime_source_chain.lua 2>&1
+    $sourceChainExitCode = $LASTEXITCODE
+    $sourceChainOutput | Write-Host
+    if ($sourceChainExitCode -ne 0 -or -not ($sourceChainOutput -match "runtime source-chain hook regression tests passed")) {
+        throw "runtime source-chain hook regression test failed or did not reach its completion marker"
+    }
     $testOutput = & npx --yes --package=fengari-node-cli fengari test_main.lua 2>&1
     $testExitCode = $LASTEXITCODE
     $testOutput | Write-Host
-    if ($testExitCode -ne 0 -or -not ($testOutput -match "v3\.4\.0 integration/thread/lifetime/native/stress tests passed")) {
+    if ($testExitCode -ne 0 -or -not ($testOutput -match "v0\.5\.19 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed")) {
         throw "Lua integration test failed or did not reach its completion marker"
     }
     $localeOutput = & npx --yes --package=fengari-node-cli fengari test_localization.lua 2>&1

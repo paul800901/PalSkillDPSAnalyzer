@@ -1,5 +1,5 @@
 {
-    "publishedfileid":  "3769041368",
-    "changenote":  "v1.2.0: Per-Pal damage breakdown is now enabled by default in single-player, with a clearer config switch.",
-    "last_published_version":  "1.2.0"
+  "publishedfileid": "",
+  "changenote": "v0.2.0 diagnostic: localized skill names, full-action DPS, panel cooldown, observed intervals, and AI reuse gaps.",
+  "last_published_version": ""
 }

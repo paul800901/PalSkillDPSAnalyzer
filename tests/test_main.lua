@@ -1,7 +1,17 @@
 package.path = "../Scripts/?.lua;" .. package.path
 
+-- Fengari does not expose filesystem writes. The HUD persistence path is
+-- exercised here without mutating the developer machine.
+io.open = io.open or function()
+    return {
+        write = function() end,
+        close = function() end,
+    }
+end
+
 local phase = "bootstrap"
 local callbacks = {}
+local post_callbacks = {}
 local game_tasks = {}
 local delayed_tasks = {}
 local loop_tasks = {}
@@ -12,6 +22,7 @@ local object_accesses = 0
 local localized_name_calls = 0
 local nickname_calls = 0
 local fake_time = 1000
+fake_game_time = 1000
 
 local original_os_time = os.time
 os.time = function()
@@ -43,6 +54,10 @@ local function object(fields, methods)
             end
             return storage[key]
         end,
+        __newindex = function(_, key, value)
+            require_game_thread("UObject member " .. tostring(key))
+            storage[key] = value
+        end,
     })
 end
 
@@ -71,7 +86,71 @@ local player_two_state = object({
     PlayerNamePrivate = "Bob",
     GuildBelongTo = guild_two,
 }, { GetAddress = function() return 9202 end })
-local local_player_controller = object({ PlayerState = player_one_state })
+local input_look_events = {}
+local input_move_events = {}
+input_cursor_events = {}
+input_controller_action_events = {}
+input_pawn_action_events = {}
+input_mode_events = {}
+native_settings_events = {}
+native_settings_text = {}
+native_settings_page = nil
+native_settings_creation_count = 0
+native_ftext_set_count = 0
+console_command_callbacks = {}
+
+FText = setmetatable({}, {
+    __call = function(_, value)
+        local content = tostring(value or "")
+        return {
+            ToString = function() return content end,
+            type = function() return "FText" end,
+        }
+    end,
+})
+
+FName = setmetatable({}, {
+    __call = function(_, value)
+        local content = tostring(value or "")
+        return {
+            ToString = function() return content end,
+            type = function() return "FName" end,
+        }
+    end,
+})
+local_input_pawn = object({}, {
+    DisableInput = function()
+        input_pawn_action_events[#input_pawn_action_events + 1] = "disable"
+    end,
+    EnableInput = function()
+        input_pawn_action_events[#input_pawn_action_events + 1] = "enable"
+    end,
+})
+local_player_controller_fields = {
+    PlayerState = player_one_state,
+    bShowMouseCursor = false,
+}
+local local_player_controller = object(local_player_controller_fields, {
+    GetPawn = function()
+        return local_input_pawn
+    end,
+    SetIgnoreLookInput = function(_, value)
+        input_look_events[#input_look_events + 1] = value == true
+    end,
+    SetIgnoreMoveInput = function(_, value)
+        input_move_events[#input_move_events + 1] = value == true
+    end,
+    SetShowMouseCursor = function(_, value)
+        local_player_controller_fields.bShowMouseCursor = value == true
+        input_cursor_events[#input_cursor_events + 1] = value == true
+    end,
+    DisableInput = function()
+        input_controller_action_events[#input_controller_action_events + 1] = "disable"
+    end,
+    EnableInput = function()
+        input_controller_action_events[#input_controller_action_events + 1] = "enable"
+    end,
+})
 
 local next_actor_address = 10000
 
@@ -94,7 +173,11 @@ end
 
 local player_one = actor("BP_Player_C_1", { PlayerState = player_one_state })
 local player_two = actor("BP_Player_C_2", { PlayerState = player_two_state })
-local player_two_pal_parameter = object({}, {
+local player_two_pal_parameter = object({
+    SaveParameter = {
+        EquipWaza = { 501, 502, 601 },
+    },
+}, {
     GetAddress = function()
         return 9102
     end,
@@ -131,11 +214,103 @@ local normal_target = actor("BP_Sheep_C_4", {
     }),
 })
 local world = object()
+game_paused = false
+
+native_ui = { named_widgets = {}, reset_count = 0, asset_loaded = false, asset_load_count = 0 }
+native_ui.text_widget = function(name)
+    local widget = object({}, {
+        SetText = function(_, value)
+            assert(type(value) == "table" and value:type() == "FText",
+                "native settings SetText must receive an FText value")
+            native_ftext_set_count = native_ftext_set_count + 1
+            native_settings_text[name] = value:ToString()
+        end,
+    })
+    native_ui.named_widgets[name] = widget
+    return widget
+end
+
+native_ui.switcher = object({}, {
+    SetActiveWidgetIndex = function(_, index)
+        native_settings_page = index
+    end,
+})
+native_ui.named_widgets.PSDPS_PageSwitcher = native_ui.switcher
+native_ui.text_widget("PSDPS_Title")
+native_ui.text_widget("PSDPS_Footer")
+native_ui.text_widget("PSDPS_DetailRows")
+for _, key in ipairs({
+    "Language",
+    "MeasurementMode",
+    "TargetScope",
+    "IncludePlayerDamage",
+    "EnableSkillDPSHUD",
+    "HUDAnchor",
+    "HUDScale",
+    "HUDFinalResultSeconds",
+    "SkillDiagnosticChatMode",
+}) do
+    native_ui.text_widget("PSDPS_" .. key .. "_Value")
+end
+
+native_ui.widget = object(native_ui.named_widgets, {
+    GetWidgetFromName = function()
+        error("native settings must use exposed Blueprint widget variables")
+    end,
+    AddToViewport = function(_, z_order)
+        assert(z_order == 10000, "native settings must use the intended viewport layer")
+        native_settings_events[#native_settings_events + 1] = "add"
+    end,
+    ActivateWidget = function()
+        native_settings_events[#native_settings_events + 1] = "activate"
+    end,
+    DeactivateWidget = function()
+        native_settings_events[#native_settings_events + 1] = "deactivate"
+    end,
+    RemoveFromParent = function()
+        native_settings_events[#native_settings_events + 1] = "remove"
+    end,
+    SetKeyboardFocus = function()
+        native_settings_events[#native_settings_events + 1] = "focus"
+    end,
+})
+native_ui.class = object()
+native_ui.asset = object({ GeneratedClass = native_ui.class })
+native_ui.widget_library = object({}, {
+    Create = function(_, context, widget_class, controller)
+        assert(context == world, "native settings used the wrong world")
+        assert(widget_class == native_ui.class, "native settings used the wrong widget class")
+        assert(controller == local_player_controller, "native settings used the wrong player controller")
+        native_settings_creation_count = native_settings_creation_count + 1
+        return native_ui.widget
+    end,
+    SetInputMode_UIOnlyEx = function(_, controller, widget, mouse_lock, flush_input)
+        assert(controller == local_player_controller and widget == native_ui.widget,
+            "UIOnly input mode did not target the native settings widget")
+        assert(mouse_lock == 0 and flush_input == true,
+            "UIOnly input mode did not request an unlocked, flushed cursor")
+        input_mode_events[#input_mode_events + 1] = "ui"
+    end,
+    SetInputMode_GameOnly = function(_, controller, flush_input)
+        assert(controller == local_player_controller and flush_input == true,
+            "GameOnly input restore used the wrong controller/options")
+        input_mode_events[#input_mode_events + 1] = "game"
+    end,
+})
+
 local gameplay_statics = object({}, {
     GetPlayerController = function(_, context, index)
         assert(context == world, "unexpected local-player world context")
         assert(index == 0, "local player must use controller index zero")
         return local_player_controller
+    end,
+    GetTimeSeconds = function(_, context)
+        assert(context == world, "unexpected game-time world context")
+        return fake_game_time
+    end,
+    IsGamePaused = function(_, context)
+        assert(context == world, "unexpected pause-state world context")
+        return game_paused
     end,
 })
 
@@ -158,6 +333,36 @@ local character_database = object({}, {
     end,
 })
 
+waza_metadata = {
+    [137] = { localized = "暗能弹", cooldown = 2 },
+    [501] = { localized = "暗黑球", cooldown = 4 },
+    [502] = { localized = "毒雾", cooldown = 30 },
+    [601] = { localized = "切割龙息", cooldown = 16 },
+    [602] = { localized = "晶钻之雨", cooldown = 22 },
+    [42] = { localized = "烈焰球", cooldown = 30 },
+    [46] = { localized = "烈焰风暴", cooldown = 12 },
+    [54] = { localized = "流火", cooldown = 16 },
+}
+waza_database = object({}, {
+    FindWazaForBP = function(_, waza_id, out_data)
+        local metadata = waza_metadata[waza_id]
+        if metadata == nil then
+            return false
+        end
+        out_data.CoolTime = metadata.cooldown
+        return true
+    end,
+})
+pal_ui_utility = object({}, {
+    GetWazaName = function(_, context, waza_id, out_name)
+        assert(context == world, "unexpected Waza localization world context")
+        local metadata = waza_metadata[waza_id]
+        if metadata ~= nil then
+            out_name.outName = metadata.localized
+        end
+    end,
+})
+
 local utility = object({}, {
     GetPlayerState = function(_, candidate)
         if candidate == player_one then
@@ -176,6 +381,10 @@ local utility = object({}, {
     GetDatabaseCharacterParameter = function(_, context)
         assert(context == world, "unexpected localization world context")
         return character_database
+    end,
+    GetWazaDatabase = function(_, context)
+        assert(context == world, "unexpected Waza database world context")
+        return waza_database
     end,
     SendSystemToPlayerChat = function(_, context, message, receiver_uids)
         assert(context == world, "unexpected world context")
@@ -204,10 +413,44 @@ local internationalization_library = object({}, {
     end,
 })
 
+local waza_names = {
+    [137] = "EPalWazaID::GravityShot",
+    [501] = "EPalWazaID::DarkBall",
+    [502] = "EPalWazaID::PoisonFog",
+    [601] = "EPalWazaID::BeamSlicer",
+    [602] = "EPalWazaID::DiamondFall",
+    [116] = "EPalWazaID::IcicleThrow",
+    [186] = "EPalWazaID::DoubleIcicleThrow",
+    [42] = "EPalWazaID::FireBall",
+    [46] = "EPalWazaID::FlareTornado",
+    [54] = "EPalWazaID::FlameFunnel",
+    [131] = "EPalWazaID::DarkLaser",
+    [135] = "EPalWazaID::PoisonShot",
+    [161] = "EPalWazaID::DarkLegion",
+    [701] = "EPalWazaID::IceAge",
+    [702] = "EPalWazaID::Apocalypse",
+    [703] = "EPalWazaID::SandTwister",
+}
+local waza_enum = object({}, {
+    GetNameByValue = function(_, value)
+        return waza_names[value] or ("EPalWazaID::TestWaza" .. tostring(value))
+    end,
+})
+
 function StaticFindObject(path)
     require_game_thread("StaticFindObject")
+    if path == "/Game/Mods/PalSkillDPSAnalyzerSP/WBP_PalSkillDPSSettings.WBP_PalSkillDPSSettings_C"
+        and native_ui.asset_loaded then
+        return native_ui.class
+    end
+    if path == "/Script/UMG.Default__WidgetBlueprintLibrary" then
+        return native_ui.widget_library
+    end
     if path == "/Script/Pal.Default__PalUtility" then
         return utility
+    end
+    if path == "/Script/Pal.Default__PalUIUtility" then
+        return pal_ui_utility
     end
     if path == "/Script/Engine.Default__GameplayStatics" then
         return gameplay_statics
@@ -215,7 +458,26 @@ function StaticFindObject(path)
     if path == "/Script/Engine.Default__KismetInternationalizationLibrary" then
         return internationalization_library
     end
+    if path == "/Script/Pal.EPalWazaID" then
+        return waza_enum
+    end
     error("unexpected StaticFindObject path: " .. tostring(path))
+end
+
+function LoadAsset(path)
+    require_game_thread("LoadAsset")
+    assert(path == "/Game/Mods/PalSkillDPSAnalyzerSP/WBP_PalSkillDPSSettings.WBP_PalSkillDPSSettings",
+        "unexpected native settings asset path")
+    native_ui.asset_loaded = true
+    native_ui.asset_load_count = native_ui.asset_load_count + 1
+    return native_ui.asset, true, true
+end
+
+function RegisterConsoleCommandHandler(name, callback)
+    assert(phase == "bootstrap", "console command handler must register during bootstrap")
+    assert(name == "psdps" and type(callback) == "function",
+        "unexpected native settings console command registration")
+    console_command_callbacks[name] = callback
 end
 
 function FindFirstOf(type_name)
@@ -224,11 +486,18 @@ function FindFirstOf(type_name)
     return world
 end
 
-function RegisterHook(path, callback)
+function RegisterHook(path, callback, post_callback)
     assert(phase == "bootstrap" or phase == "game",
         "RegisterHook must run during bootstrap or on the game thread")
     local allowed = {
         ["/Script/Pal.PalEventNotify_Character:OnCharacterDamaged_ServerInternal"] = true,
+        ["/Script/Pal.PalCharacterParameterComponent:OnDamage"] = true,
+        ["/Script/Pal.PalDamageReactionComponent:MulticastDamageReact"] = true,
+        ["/Script/Pal.PalUtility:MakeDamageInfoByWazaType"] = true,
+        ["/Script/Pal.PalActionBase:OnBeginAction"] = true,
+        ["/Script/Pal.PalActionBase:OnEndAction"] = true,
+        ["/Script/Pal.PalSkillEffectBase:OnInitialize"] = true,
+        ["/Script/Pal.PalAttackFilter:BindPrimitiveComponent"] = true,
         ["/Script/Pal.PalEventNotify_Character:OnCharacterDead_ServerInternal"] = true,
         ["/Script/Pal.PalUtility:PalCaptureSuccess"] = true,
     }
@@ -236,10 +505,38 @@ function RegisterHook(path, callback)
         error("simulated Palworld 1.0: UFunction not found")
     end
     callbacks[path] = callback
+    post_callbacks[path] = post_callback
+end
+
+function RegisterCustomEvent(name, callback)
+    registered_custom_events = registered_custom_events or {}
+    registered_custom_events[name] = callback
 end
 
 EGameThreadMethod = { EngineTick = 1, ProcessEvent = 2 }
 EngineTickAvailable = true
+Key = {
+    F1 = "F1",
+    F2 = "F2",
+    F3 = "F3",
+    UP_ARROW = "UP",
+    DOWN_ARROW = "DOWN",
+    LEFT_ARROW = "LEFT",
+    RIGHT_ARROW = "RIGHT",
+    RETURN = "RETURN",
+}
+ModifierKey = { CONTROL = "CONTROL" }
+key_callbacks = {}
+
+function IsKeyBindRegistered(_, _)
+    return false
+end
+
+function RegisterKeyBindAsync(key, modifiers, callback)
+    assert(phase == "bootstrap", "keybinds must be registered during bootstrap")
+    assert(type(modifiers) == "table", "async keybind registration requires a modifier table")
+    key_callbacks[key] = callback
+end
 
 function ExecuteInGameThread(callback, method)
     assert(phase == "hook" or phase == "game", "unexpected game-thread scheduling phase")
@@ -306,7 +603,50 @@ local function damage(attacker, defender, amount, extra_fields)
         payload[key] = value
     end
     phase = "hook"
-    callbacks["/Script/Pal.PalEventNotify_Character:OnCharacterDamaged_ServerInternal"](nil, hook_param(payload))
+    local hook = callbacks["/Script/Pal.PalCharacterParameterComponent:OnDamage"]
+        or callbacks["/Script/Pal.PalEventNotify_Character:OnCharacterDamaged_ServerInternal"]
+    hook(nil, hook_param(payload))
+    phase = "idle"
+end
+
+local function waza(attacker, defender, waza_id, returned_damage_info)
+    phase = "hook"
+    callbacks["/Script/Pal.PalUtility:MakeDamageInfoByWazaType"](
+        nil,
+        hook_param(attacker),
+        hook_param(defender),
+        hook_param(nil),
+        hook_param(nil),
+        hook_param(nil),
+        hook_param({}),
+        hook_param(waza_id)
+    )
+    local post = post_callbacks["/Script/Pal.PalUtility:MakeDamageInfoByWazaType"]
+    if post ~= nil then
+        post(
+            nil,
+            hook_param(returned_damage_info or { WazaID = waza_id }),
+            hook_param(attacker),
+            hook_param(defender),
+            hook_param(nil),
+            hook_param(nil),
+            hook_param(nil),
+            hook_param({}),
+            hook_param(waza_id)
+        )
+    end
+    phase = "idle"
+end
+
+function action_begin(action)
+    phase = "hook"
+    callbacks["/Script/Pal.PalActionBase:OnBeginAction"](hook_param(action))
+    phase = "idle"
+end
+
+function action_end(action)
+    phase = "hook"
+    callbacks["/Script/Pal.PalActionBase:OnEndAction"](hook_param(action))
     phase = "idle"
 end
 
@@ -340,12 +680,523 @@ assert(runtime_config.EnableDetailedAwards == false, "detailed awards should def
 assert(runtime_config.EnablePalDamageBreakdown == false, "Pal breakdown should default to disabled on servers")
 assert(runtime_config.EnableTeamDetails == false, "team details should default to disabled")
 assert(runtime_config.LocalOnlyMessages == false, "server package should not default to local-only messages")
+assert(runtime_config.EnableSkillDiagnostics == true, "skill diagnostics should default to enabled")
+assert(runtime_config.SkillDiagnosticsOnly == true, "diagnostic-only output should default to enabled")
+assert(runtime_config.IncludePlayerDamage == false, "player damage should default to disabled")
+assert(runtime_config.SkillDiagnosticChatMode == "off", "diagnostic chat should default to disabled")
+assert(runtime_config.EnableSkillDPSHUD == true, "skill DPS HUD should default to enabled")
+assert(runtime_config.HUDSettingsVersion == 3, "HUD settings schema should be v3")
+assert(runtime_config.MeasurementMode == "manual", "damage lab should default to a manual test window")
+assert(runtime_config.TargetScope == "boss", "damage lab should default to arena and open-world Boss targets")
+assert(runtime_config.EnableExternalHUD == true, "external HUD should default to enabled")
+assert(runtime_config.ExternalHUDAutoLaunch == true, "external HUD should auto-launch by default")
+assert(runtime_config.HUDDetailMode == "compact", "HUD should default to compact combat bars")
+assert(runtime_config.HUDShowInternalSkillCode == false,
+    "internal skill code should default to hidden")
+assert(runtime_config.DumpDamageSchema == false, "schema dump should default to disabled after field discovery")
+assert(runtime_config.SkillDiagnosticLogCasts == true,
+    "per-cast diagnostic log should default to enabled")
+assert(runtime_config.SkillActionMaxEntries >= 128,
+    "action lifecycle cache must be bounded")
+assert(runtime_config.HUDMaxHitCastSamples == 6,
+    "per-cast hit history should default to six visible casts")
+assert(runtime_config.SkillPerCastHitMaxEntries == 4096,
+    "per-cast hit timestamps should have a bounded diagnostic limit")
+assert(type(runtime_config.SkillFullHitCaps) == "table"
+    and next(runtime_config.SkillFullHitCaps) == nil,
+    "full-hit baselines must start empty instead of guessing from observed hits")
+assert(runtime_config.EnableExternalHUDSettings == false,
+    "cross-process WPF settings must stay disabled")
+assert(runtime_config.EnableNativeCommonUISettings == true,
+    "F3 native CommonUI settings should default to enabled")
+assert(key_callbacks[Key.F1] == nil, "F1 must remain free for other mods")
+assert(type(key_callbacks[Key.F3]) == "function", "F3 HUD settings key was not registered")
+assert(type(key_callbacks[Key.F2]) == "function", "F2 damage-test reset key was not registered")
+assert(key_callbacks[Key.UP_ARROW] == nil and key_callbacks[Key.DOWN_ARROW] == nil
+    and key_callbacks[Key.LEFT_ARROW] == nil and key_callbacks[Key.RIGHT_ARROW] == nil
+    and key_callbacks[Key.RETURN] == nil,
+    "native mouse settings must not install the obsolete keyboard navigation layer")
+assert(type(console_command_callbacks.psdps) == "function",
+    "native settings command bridge was not registered")
+
+do
+    local casts = {
+        { key = "cast-1", started_at = 10, ended_at = 12, damage = 0, hits = 0 },
+        { key = "cast-2", started_at = 20, ended_at = 22, damage = 0, hits = 0 },
+        { key = "cast-3", started_at = 30, ended_at = 32, damage = 0, hits = 0 },
+    }
+    local grouped, unassigned =
+        BossDPSBroadcastTestApi.group_unlinked_hits_by_cast_window(casts, {
+            { at = 5, damage = 7, hits = 1 },
+            { at = 11, damage = 20, hits = 2 },
+            { at = 21, damage = 30, hits = 3 },
+        })
+    assert(grouped == 5 and unassigned == 1,
+        "same-skill cast windows did not conserve grouped and unassigned hits")
+    assert(casts[1].hits == 2 and casts[1].damage == 20,
+        "first cast window did not retain its own hits and damage")
+    assert(casts[2].hits == 3 and casts[2].damage == 30,
+        "second cast window did not retain its own hits and damage")
+    assert(casts[3].hits == 0,
+        "zero-damage cast must remain distinguishable from a hit cast")
+
+    local quality = BossDPSBroadcastTestApi.cast_hit_quality(casts, 50, true, 4)
+    assert(quality.hit_casts == 2 and quality.zero_damage_casts == 1,
+        "cast quality did not count effective and zero-damage casts")
+    assert(quality.per_cast_hits == "2/3/0" and quality.observed_max_hits == 3,
+        "cast quality did not preserve each cast's hit count")
+    assert(quality.per_cast_sample_count == 3 and quality.per_cast_total_samples == 3
+        and quality.per_cast_samples_truncated == false,
+        "cast quality did not expose its settled sample window")
+    assert(quality.minimum_hits == 0 and math.abs(quality.average_hits - (5 / 3)) < 0.001
+        and quality.maximum_hits == 3,
+        "cast quality did not preserve settled min/average/max hits")
+    assert(math.abs(quality.hit_completion - (5 / 12 * 100)) < 0.001,
+        "calibrated full-hit percentage used the wrong denominator")
+
+    local active = BossDPSBroadcastTestApi.cast_hit_quality({
+        { key = "active", started_at = 45, ended_at = nil, damage = 9, hits = 2 },
+    }, 50, false, 4)
+    assert(active.hit_casts == 1 and active.pending_casts == 1
+        and active.per_cast_hits == "" and active.per_cast_total_samples == 0
+        and active.hit_completion == nil,
+        "active casts must remain visibly unsettled instead of reporting a false miss/full-hit rate")
+
+    local many_casts = {}
+    for index = 1, 10 do
+        many_casts[#many_casts + 1] = {
+            key = "many-" .. tostring(index),
+            started_at = index,
+            ended_at = index + 0.5,
+            damage = index,
+            hits = index,
+        }
+    end
+    local recent = BossDPSBroadcastTestApi.cast_hit_quality(many_casts, 50, true, nil)
+    assert(recent.per_cast_hits == "5/6/7/8/9/10"
+        and recent.per_cast_sample_count == 6 and recent.per_cast_total_samples == 10
+        and recent.per_cast_samples_truncated == true,
+        "long cast history did not expose an unambiguous recent-sample window")
+end
+
+do
+    hud_test_phase = phase
+    phase = "game"
+    runtime_config.Language = "zh-TW"
+    assert(runtime_config.HUDUseExperimentalUMG == false,
+        "unsafe dynamic UMG backend must be disabled by default")
+    assert(runtime_config.HUDUseScreenTextFallback == false,
+        "unsafe PrintString backend must be disabled by default")
+    local snapshot = {
+        state = "active",
+        boss = "測試 Boss",
+        duration = 20,
+        total_damage = 2000,
+        encounter_dps = 100,
+        include_player = false,
+        language = "zh-TW",
+        sources = {
+            {
+                name = "測試帕魯",
+                damage = 2000,
+                dps = 100,
+                hits = 4,
+                skills = {
+                    {
+                        name = "切割龍息",
+                        internal_code = "BeamSlicer",
+                        damage = 2000,
+                        encounter_dps = 100,
+                        hits = 4,
+                        casts = 2,
+                        hit_casts = 2,
+                        zero_damage_casts = 0,
+                        pending_casts = 0,
+                        per_cast_hits = "2/2",
+                        per_cast_sample_count = 2,
+                        per_cast_total_samples = 2,
+                        per_cast_samples_truncated = false,
+                        observed_max_hits = 2,
+                        minimum_hits = 2,
+                        average_hits = 2,
+                        maximum_hits = 2,
+                        historical_max_hits = 2,
+                        full_hit_cap = nil,
+                        per_cast_grouping_approximate = false,
+                        damage_per_cast = 1000,
+                        panel_cd = 16,
+                        actual_interval = 20.5,
+                        action_duration = 2.5,
+                        action_dps = 400,
+                        reuse_gap = 18,
+                        lifecycle_complete = 2,
+                    },
+                },
+            },
+        },
+    }
+    local hud_header, hud_summary, hud_body, hud_footer =
+        BossDPSBroadcastTestApi.skill_hud:format_snapshot(snapshot)
+    local original_create_widget = BossDPSBroadcastTestApi.skill_hud.create_widget
+    BossDPSBroadcastTestApi.skill_hud.create_widget = function()
+        error("experimental UMG path must not run")
+    end
+    local previous_phase = phase
+    phase = "game"
+    BossDPSBroadcastTestApi.skill_hud:render_text(hud_header, hud_summary, hud_body, hud_footer)
+    phase = previous_phase
+    BossDPSBroadcastTestApi.skill_hud.create_widget = original_create_widget
+    assert(BossDPSBroadcastTestApi.skill_hud.backend == "external-file",
+        "external file-backed HUD was not selected")
+    assert(BossDPSBroadcastTestApi.skill_hud.last_external_state.visible == true,
+        "external HUD state should be visible after rendering")
+    assert(string.find(BossDPSBroadcastTestApi.skill_hud.last_external_state.text,
+        "切割龍息", 1, true) ~= nil, "external HUD state did not receive localized text")
+    assert(string.find(hud_header, "帕魯技能 DPS", 1, true) ~= nil, "HUD title missing")
+    assert(string.find(hud_summary, "總傷害 2,000", 1, true) ~= nil, "HUD encounter summary missing")
+    assert(string.find(hud_body, "切割龍息", 1, true) ~= nil,
+        "HUD localized skill name missing")
+    assert(string.find(hud_body, "BeamSlicer", 1, true) == nil,
+        "HUD should hide the internal skill code by default")
+    assert(string.find(hud_body, "施放DPS", 1, true) == nil,
+        "compact HUD should not show timing diagnostics")
+    assert(string.find(hud_footer, "人物傷害 關", 1, true) ~= nil,
+        "HUD player-damage state missing")
+    BossDPSBroadcastTestApi.skill_hud:publish(snapshot)
+    assert(BossDPSBroadcastTestApi.skill_hud.last_external_state.protocol == "PAL_SKILL_DPS_HUD_V2",
+        "meter publish should use the structured HUD protocol")
+    assert(BossDPSBroadcastTestApi.skill_hud.last_external_state.view == "meter",
+        "structured HUD state should select the meter view")
+    assert(string.find(BossDPSBroadcastTestApi.skill_hud.last_external_state.text,
+        "detail=compact", 1, true) ~= nil, "structured HUD should keep the compact mode")
+    assert(string.find(BossDPSBroadcastTestApi.skill_hud.last_external_state.text,
+        "\nR\t1\t1\t切割龍息\tBeamSlicer\t", 1, true) ~= nil,
+        "structured HUD row did not receive localized skill data")
+    assert(string.find(BossDPSBroadcastTestApi.skill_hud.last_external_state.text,
+        "\t100.0000\t100.0000\t4\t2\t", 1, true) ~= nil,
+        "structured HUD row did not preserve the skill's independent DPS")
+    assert(string.find(BossDPSBroadcastTestApi.skill_hud.last_external_state.text,
+        "有效 2/2 · 0傷 0", 1, true) ~= nil,
+        "structured HUD row did not expose effective and zero-damage casts")
+    assert(string.find(BossDPSBroadcastTestApi.skill_hud.last_external_state.text,
+        "Hit 4 · 逐次 2/2 · 滿Hit 待校準", 1, true) ~= nil,
+        "structured HUD row did not expose per-cast hit counts")
+
+    snapshot.sources[1].skills[#snapshot.sources[1].skills + 1] = {
+        name = "暗能彈",
+        internal_code = "GravityShot",
+        category = "basic",
+        damage = 200,
+        encounter_dps = 10,
+        hits = 2,
+        casts = 1,
+        hit_casts = 1,
+        zero_damage_casts = 0,
+        pending_casts = 0,
+        per_cast_hits = "2",
+        observed_max_hits = 2,
+        damage_per_cast = 200,
+        panel_cd = 2,
+        actual_interval = 3,
+        action_duration = 1,
+        action_dps = 200,
+        reuse_gap = 2,
+        lifecycle_complete = 1,
+    }
+    BossDPSBroadcastTestApi.skill_hud:publish(snapshot)
+    assert(string.find(BossDPSBroadcastTestApi.skill_hud.last_external_state.text,
+        "\nR\t1\t2\t普攻｜暗能彈\tGravityShot\t200.0000\t10.0000\t", 1, true) ~= nil,
+        "basic attack row did not preserve its independent DPS")
+    assert(string.find(BossDPSBroadcastTestApi.skill_hud.last_external_state.text,
+        "\tbasic\n", 1, true) ~= nil,
+        "structured HUD row did not expose the basic-attack category")
+
+    local detail_model = BossDPSBroadcastTestApi.skill_hud:detail_skill({
+        casts = 11,
+        hit_casts = 5,
+        zero_damage_casts = 5,
+        pending_casts = 1,
+        hits = 5,
+        per_cast_hits = "0/0/0/1/1/1",
+        per_cast_sample_count = 6,
+        per_cast_total_samples = 10,
+        per_cast_samples_truncated = true,
+        per_cast_grouping_approximate = true,
+        minimum_hits = 0,
+        average_hits = 0.5,
+        maximum_hits = 1,
+        historical_max_hits = 1,
+    })
+    assert(string.find(detail_model.casts_text,
+        "施放 11 次｜有傷施放 5｜無傷施放 5｜統計中 1", 1, true) ~= nil
+        and string.find(detail_model.hits_text,
+            "最近 6 次施放命中段數（估算）：0, 0, 0, 1, 1, 1（共 10 次已結算）", 1, true) ~= nil
+        and string.find(detail_model.hits_text, "~", 1, true) == nil
+        and string.find(detail_model.range_text, "含無傷施放", 1, true) ~= nil,
+        "detail model did not explain pending, estimated, truncated, and zero-damage casts")
+
+    runtime_config.HUDDetailMode = "full"
+    local _, _, detailed_body = BossDPSBroadcastTestApi.skill_hud:format_snapshot(snapshot)
+    assert(string.find(detailed_body, "施放DPS 400.0", 1, true) ~= nil,
+        "full HUD action DPS missing")
+    assert(string.find(detailed_body, "實際間隔 20.5秒", 1, true) ~= nil,
+        "full HUD observed interval missing")
+    BossDPSBroadcastTestApi.skill_hud:publish(snapshot)
+    assert(string.find(BossDPSBroadcastTestApi.skill_hud.last_external_state.text,
+        "detail=full", 1, true) ~= nil, "structured HUD should expose full diagnostics mode")
+    runtime_config.HUDDetailMode = "compact"
+    runtime_config.HUDShowInternalSkillCode = true
+    local _, _, diagnostic_body = BossDPSBroadcastTestApi.skill_hud:format_snapshot(snapshot)
+    assert(string.find(diagnostic_body, "切割龍息 (BeamSlicer)", 1, true) ~= nil,
+        "HUD internal skill code toggle is ineffective")
+    runtime_config.HUDShowInternalSkillCode = false
+
+    runtime_config.Language = "en"
+    local english_header, english_summary, english_body =
+        BossDPSBroadcastTestApi.skill_hud:format_snapshot(snapshot)
+    assert(string.find(english_header, "PAL SKILL DPS", 1, true) ~= nil,
+        "HUD did not switch its interface to English")
+    assert(string.find(english_summary, "damage 2,000", 1, true) ~= nil,
+        "HUD English summary did not refresh")
+    assert(string.find(english_body, "Beam Slicer", 1, true) ~= nil,
+        "HUD did not switch the skill name to English")
+    assert(string.find(english_body, "切割龍息", 1, true) == nil,
+        "HUD retained the previous language's skill name")
+
+    runtime_config.Language = "ja"
+    local japanese_lines = BossDPSBroadcastTestApi.skill_hud:settings_lines()
+    local _, _, japanese_body = BossDPSBroadcastTestApi.skill_hud:format_snapshot(snapshot)
+    assert(string.find(table.concat(japanese_lines, "\n"), "表示言語", 1, true) ~= nil,
+        "HUD settings did not switch to Japanese")
+    assert(string.find(japanese_body, "ビームスライサー", 1, true) ~= nil,
+        "HUD did not switch the skill name to Japanese")
+    assert(BossDPSBroadcastTestApi.skill_hud.setting_keys[1] == "reset",
+        "Start new test must be the first settings action")
+    runtime_config.Language = "zh-TW"
+    previous_phase = phase
+    phase = "game"
+    native_ui.event_count = function(expected)
+        local count = 0
+        for _, event in ipairs(native_settings_events) do
+            if event == expected then count = count + 1 end
+        end
+        return count
+    end
+    assert(BossDPSBroadcastTestApi.skill_hud:toggle_settings() == true
+        and BossDPSBroadcastTestApi.skill_hud.settings_open == true
+        and BossDPSBroadcastTestApi.skill_hud.settings_page == 0,
+        "F3 did not open the settings page")
+    assert(native_ui.asset_load_count == 1
+        and native_settings_creation_count == 1
+        and native_ui.event_count("add") == 1
+        and native_ui.event_count("activate") == 1
+        and native_ui.event_count("focus") == 1,
+        "F3 did not create and activate one native settings widget")
+    assert(native_settings_page == 0,
+        "native settings widget did not select its first page")
+    assert(input_mode_events[#input_mode_events] == "ui"
+        and input_cursor_events[#input_cursor_events] == true
+        and local_player_controller_fields.bShowMouseCursor == true,
+        "native settings widget did not acquire UI-only input and a visible cursor")
+    assert(BossDPSBroadcastTestApi.skill_hud.last_external_state.visible == false,
+        "opening native settings did not hide the display-only DPS meter")
+    assert(native_settings_text.PSDPS_Title ~= nil
+        and native_settings_text.PSDPS_Title ~= "",
+        "native settings title was not populated")
+    assert(string.find(native_settings_text.PSDPS_DetailRows or "",
+        "累計傷害 2,000", 1, true) ~= nil
+        and string.find(native_settings_text.PSDPS_DetailRows or "", "個目標", 1, true) == nil
+        and string.find(native_settings_text.PSDPS_DetailRows or "",
+            "總命中段數 4｜每次施放命中段數：2, 2", 1, true) ~= nil
+        and string.find(native_settings_text.PSDPS_DetailRows or "",
+            "每次施放命中段數（含無傷施放）：最低 2.0｜平均 2.0｜最高 2.0", 1, true) ~= nil
+        and string.find(native_settings_text.PSDPS_DetailRows or "",
+            "本次遊戲最高單次施放 2.0 段｜理論最高命中段數 尚無資料", 1, true) ~= nil,
+        "native detail page did not receive the detailed hit statistics")
+
+    assert(console_command_callbacks.psdps("psdps", { "ui", "tab", "details" }) == true,
+        "native details-tab button command was not accepted")
+    run_game_tasks()
+    assert(BossDPSBroadcastTestApi.skill_hud.settings_open == true
+        and BossDPSBroadcastTestApi.skill_hud.settings_page == 1
+        and native_settings_page == 1
+        and string.find(native_settings_text.PSDPS_Title or "", "本次測試詳情", 1, true) ~= nil,
+        "native details-tab button did not switch the existing widget")
+
+    native_ui.frozen_creation_count = native_settings_creation_count
+    native_ui.frozen_add_count = native_ui.event_count("add")
+    phase = "game"
+    BossDPSBroadcastTestApi.skill_hud:publish(snapshot)
+    assert(native_settings_creation_count == native_ui.frozen_creation_count
+        and native_ui.event_count("add") == native_ui.frozen_add_count,
+        "periodic snapshots rebuilt or re-added the native settings widget")
+
+    native_ui.previous_scale = runtime_config.HUDScale
+    native_ui.previous_scale_text = native_settings_text.PSDPS_HUDScale_Value
+    phase = "game"
+    assert(console_command_callbacks.psdps("psdps", { "ui", "cycle", "HUDScale", "1" }) == true,
+        "native setting arrow command was not accepted")
+    run_game_tasks()
+    assert(runtime_config.HUDScale ~= native_ui.previous_scale
+        and native_settings_text.PSDPS_HUDScale_Value ~= nil
+        and native_settings_text.PSDPS_HUDScale_Value ~= native_ui.previous_scale_text
+        and native_settings_text.PSDPS_HUDScale_Value
+            == BossDPSBroadcastTestApi.skill_hud:setting_value_text("HUDScale")
+        and native_ftext_set_count > 0,
+        "native setting arrow did not update its setting and visible value")
+
+    native_ui.original_reset = BossDPSBroadcastTestApi.skill_hud.on_reset
+    BossDPSBroadcastTestApi.skill_hud.on_reset = function()
+        native_ui.reset_count = native_ui.reset_count + 1
+    end
+    phase = "game"
+    assert(console_command_callbacks.psdps("psdps", { "ui", "reset" }) == true,
+        "native reset button command was not accepted")
+    run_game_tasks()
+    assert(native_ui.reset_count == 1 and BossDPSBroadcastTestApi.skill_hud.reset_notice ~= "",
+        "native reset button did not reset the current test exactly once")
+    BossDPSBroadcastTestApi.skill_hud.on_reset = native_ui.original_reset
+
+    phase = "game"
+    assert(console_command_callbacks.psdps("psdps", { "ui", "close" }) == true,
+        "native close button command was not accepted")
+    run_game_tasks()
+    assert(BossDPSBroadcastTestApi.skill_hud.settings_open == false
+        and native_ui.event_count("deactivate") == 1
+        and native_ui.event_count("remove") == 1,
+        "native close button did not deactivate and remove the settings widget")
+    assert(input_mode_events[#input_mode_events] == "game"
+        and input_cursor_events[#input_cursor_events] == false
+        and local_player_controller_fields.bShowMouseCursor == false,
+        "closing native settings did not restore GameOnly input and hide the cursor")
+    assert(#input_look_events == 0 and #input_move_events == 0
+        and #input_controller_action_events == 0 and #input_pawn_action_events == 0
+        and #input_cursor_events == 2,
+        "native settings must not disable the pawn/controller or suppress movement manually")
+
+    local original_hotkey_reset = BossDPSBroadcastTestApi.skill_hud.on_reset
+    local hotkey_reset_count = 0
+    BossDPSBroadcastTestApi.skill_hud.on_reset = function()
+        hotkey_reset_count = hotkey_reset_count + 1
+    end
+    phase = "game"
+    key_callbacks[Key.F2]()
+    run_game_tasks()
+    assert(hotkey_reset_count == 1,
+        "F2 must reset the damage test exactly once without opening an external window")
+    -- F2 key auto-repeat (held key) inside the debounce window must not
+    -- create/clear the test a second time.
+    phase = "game"
+    key_callbacks[Key.F2]()
+    phase = previous_phase
+    run_game_tasks()
+    assert(hotkey_reset_count == 1,
+        "F2 key auto-repeat was not debounced to a single reset")
+    assert(BossDPSBroadcastTestApi.skill_hud.settings_open == false,
+        "F2 reset must not open the F3 settings workspace")
+    BossDPSBroadcastTestApi.skill_hud.on_reset = original_hotkey_reset
+
+    phase = "game"
+    key_callbacks[Key.F3]()
+    run_game_tasks()
+    assert(BossDPSBroadcastTestApi.skill_hud.settings_open == true
+        and native_settings_creation_count == 1
+        and native_ui.event_count("add") == 2,
+        "F3 did not reopen the same native settings widget")
+    phase = "game"
+    key_callbacks[Key.F3]()
+    run_game_tasks()
+    assert(BossDPSBroadcastTestApi.skill_hud.settings_open == false
+        and native_ui.event_count("remove") == 2,
+        "second F3 press did not close the native settings widget")
+
+    -- Palworld stays the foreground process on its own pause/options screen.
+    -- The overlay must use gameplay state rather than process foreground alone.
+    game_paused = true
+    BossDPSBroadcastTestApi.skill_hud:publish(snapshot)
+    assert(BossDPSBroadcastTestApi.skill_hud.last_external_state.visible == false,
+        "native pause/options menu did not hide the DPS overlay")
+    assert(BossDPSBroadcastTestApi.skill_hud:toggle_settings() == false
+        and BossDPSBroadcastTestApi.skill_hud.settings_open == false,
+        "F3 workspace opened on a native menu instead of gameplay")
+    game_paused = false
+    phase = "game"
+    local_player_controller.bShowMouseCursor = true
+    BossDPSBroadcastTestApi.skill_hud:publish(snapshot)
+    assert(BossDPSBroadcastTestApi.skill_hud.last_external_state.visible == false,
+        "native cursor menu did not hide the DPS overlay")
+    local_player_controller.bShowMouseCursor = false
+    BossDPSBroadcastTestApi.skill_hud.gameplay_available = false
+    phase = "game"
+    BossDPSBroadcastTestApi.skill_hud:sync_gameplay_visibility()
+    phase = previous_phase
+    assert(BossDPSBroadcastTestApi.skill_hud.last_external_state.visible == true,
+        "returning from a native menu did not restore the latest DPS overlay")
+    phase = previous_phase
+    runtime_config.Language = "auto"
+    phase = hud_test_phase
+end
+
+
+-- The strongest link is the DamageInfo object returned by Waza construction
+-- and later embedded in the final damage result. It must beat a different
+-- current action and support overlapping Waza markers for the same pair.
+do
+    local info_parameter = object({
+        SaveParameter = { EquipWaza = { 602, 501, 502 } },
+    })
+    local info_component = object({ IndividualParameter = info_parameter })
+    local info_current_action = nil
+    local info_action_component = object({}, {
+        GetCurrentAction = function() return info_current_action end,
+    })
+    local info_pal = actor("BP_CatVampire_C_5190", {
+        CharacterParameterComponent = info_component,
+        ActionComponent = info_action_component,
+    })
+    trainer_by_actor[info_pal] = player_two
+    local info_boss = boss_actor("BP_RaidBoss_DamageInfoIdentity_C_5191")
+    -- Same primitive fields, different returned DamageInfo instances: a
+    -- BasePower/element heuristic cannot distinguish these overlapping casts.
+    local diamond_info = { BasePower = 600, AttackElementType = 6 }
+    local dark_info = { BasePower = 600, AttackElementType = 6 }
+    waza(info_pal, info_boss, 602, diamond_info)
+    waza(info_pal, info_boss, 501, dark_info)
+    run_game_tasks()
+    info_current_action = actor("BP_ActionGravityShot_C_2147005192", {
+        GetWazaID = function() return 137 end,
+        GetActionCharacter = function() return info_pal end,
+    })
+    damage(info_pal, info_boss, 88, { DamageInfo = diamond_info })
+    run_game_tasks()
+    phase = "game"
+    BossDPSBroadcastTestApi.publish_current_skill_hud()
+    phase = "idle"
+    local info_state = BossDPSBroadcastTestApi.skill_hud.last_external_state.text
+    assert(string.find(info_state, "晶鑽之雨", 1, true) ~= nil
+        or string.find(info_state, "晶钻之雨", 1, true) ~= nil,
+        "DamageInfo identity did not return delayed damage to DiamondFall")
+    assert(string.find(info_state, "88.0000", 1, true) ~= nil,
+        "DamageInfo identity-linked damage amount was not recorded")
+    death(info_boss)
+    run_game_tasks()
+    run_delayed_tasks()
+end
 -- Most existing scenarios also exercise the enabled commentary branches.
+-- They verify the inherited BossDPS core, so opt back into legacy output for
+-- those scenarios. Dedicated diagnostics cases below test the new defaults.
+runtime_config.SkillDiagnosticsOnly = false
+runtime_config.IncludePlayerDamage = true
 runtime_config.EnableFunComments = true
 runtime_config.BroadcastStart = true
 runtime_config.EnableProgressReports = true
 runtime_config.EnableDetailedAwards = true
 runtime_config.EnableTeamDetails = true
+runtime_config.MeasurementMode = "target"
+runtime_config.TargetScope = "boss"
+phase = "game"
+BossDPSBroadcastTestApi.reset_skill_diagnostics()
+phase = "idle"
 
 local commentary = require("commentary")
 local commentary_base = {
@@ -397,15 +1248,29 @@ commentary_case({ top_share = 51, second_share = 49 }, true)
 commentary_case({ total = 20000, top_share = 90, second_share = 0 }, true)
 commentary_case({}, true)
 
-local damage_hook = callbacks["/Script/Pal.PalEventNotify_Character:OnCharacterDamaged_ServerInternal"]
+local damage_hook = callbacks["/Script/Pal.PalCharacterParameterComponent:OnDamage"]
+    or callbacks["/Script/Pal.PalEventNotify_Character:OnCharacterDamaged_ServerInternal"]
+local waza_hook = callbacks["/Script/Pal.PalUtility:MakeDamageInfoByWazaType"]
 local death_hook = callbacks["/Script/Pal.PalEventNotify_Character:OnCharacterDead_ServerInternal"]
 local captured_hook = callbacks["/Script/Pal.PalUtility:PalCaptureSuccess"]
 assert(damage_hook ~= nil, "damage hook was not registered")
+assert(callbacks["/Script/Pal.PalCharacterParameterComponent:OnDamage"] ~= nil,
+    "Palworld final-damage hook was not selected")
+assert(waza_hook ~= nil, "Waza attribution hook was not registered")
+assert(post_callbacks["/Script/Pal.PalUtility:MakeDamageInfoByWazaType"] ~= nil,
+    "Waza attribution post-hook with ReturnValue was not registered")
+assert(callbacks["/Script/Pal.PalActionBase:OnBeginAction"] ~= nil
+    and callbacks["/Script/Pal.PalActionBase:OnEndAction"] ~= nil,
+    "action lifecycle hooks were not registered")
 assert(death_hook ~= nil, "death hook was not registered")
 assert(captured_hook ~= nil, "capture hook was not registered")
-assert(#loop_tasks == 2, "cleanup and progress loops were not configured")
-local loop_delays = { [loop_tasks[1].delay] = true, [loop_tasks[2].delay] = true }
-assert(loop_tasks[1].delay == 10000 and loop_tasks[2].delay == 10000, "unexpected loop delays")
+assert(#loop_tasks == 3, "cleanup, progress, and HUD loops were not configured")
+local loop_delays = {
+    [loop_tasks[1].delay] = true,
+    [loop_tasks[2].delay] = true,
+    [loop_tasks[3].delay] = true,
+}
+assert(loop_delays[10000] and loop_delays[500], "unexpected loop delays")
 
 -- The master DPS switch must suppress event capture, sessions, and messages.
 local disabled_boss = boss_actor("BP_RaidBoss_Disabled_C_30")
@@ -575,6 +1440,800 @@ assert(string.find(mounted_joined, "棉花糖（捣蛋猫）［Bob］｜伤害 5
 assert(string.find(mounted_joined, "Bob（玩家角色）｜伤害 200｜28.6%", 1, true) ~= nil)
 assert(string.find(mounted_joined, "最高伤害队伍", 1, true) == nil, "single-team fight printed a redundant team winner")
 assert(string.find(mounted_joined, "击杀播报：Bob 击败了 RaidBoss_Mounted", 1, true) ~= nil, "player final blow announcement missing")
+
+-- Standalone diagnostics mode treats each Pal or optional player character as
+-- an independent verification source. Player damage is off by default; raw
+-- candidate metadata separates skill/weapon buckets without inventing names.
+runtime_config.SkillDiagnosticsOnly = true
+runtime_config.IncludePlayerDamage = false
+runtime_config.BroadcastStart = false
+runtime_config.SkillDiagnosticChatMode = "full"
+local diagnostic_boss = boss_actor("BP_RaidBoss_Diagnostic_C_180")
+local poison_projectile = actor("BP_PoisonFogProjectile_C_181", { Owner = player_two_pal })
+local rifle_projectile = actor("BP_AssaultRifleBullet_C_182", { Owner = player_one })
+local ignored_before = BossDPSBroadcastTestApi.metrics.ignored_player_damage
+damage(player_one, diagnostic_boss, 200, {
+    DamageCauser = rifle_projectile,
+    DamageInfo = { WeaponType = "AssaultRifle" },
+})
+waza(player_two_pal, diagnostic_boss, 501)
+damage(player_two_pal, diagnostic_boss, 250, {
+    BasePower = 80,
+    AttackElementType = 8,
+})
+waza(player_two_pal, diagnostic_boss, 501)
+damage(player_two_pal, diagnostic_boss, 350, {
+    BasePower = 80,
+    AttackElementType = 8,
+})
+waza(player_two_pal, diagnostic_boss, 502)
+damage(player_two_pal, diagnostic_boss, 300, {
+    BasePower = 100,
+    AttackElementType = 8,
+})
+run_game_tasks()
+fake_time = fake_time + runtime_config.SkillMarkerTTLSeconds + 1
+damage(player_two_pal, diagnostic_boss, 100, {
+    BasePower = 30,
+    AttackElementType = 1,
+})
+run_game_tasks()
+local diagnostic_session
+for _, candidate in pairs(BossDPSBroadcastTestApi.sessions) do
+    if candidate.name == "RaidBoss_Diagnostic" then
+        diagnostic_session = candidate
+        break
+    end
+end
+assert(diagnostic_session ~= nil, "Pal diagnostic session was not created")
+assert(diagnostic_session.total_damage == 1000, "disabled player damage entered diagnostic total")
+assert(BossDPSBroadcastTestApi.metrics.ignored_player_damage - ignored_before == 1,
+    "disabled player damage was not counted as ignored")
+local diagnostic_source
+local diagnostic_source_count = 0
+for _, source in pairs(diagnostic_session.diagnostic_sources) do
+    diagnostic_source = source
+    diagnostic_source_count = diagnostic_source_count + 1
+end
+assert(diagnostic_source_count == 1 and diagnostic_source.kind == "pal",
+    "Pal-only diagnostics created an unexpected source")
+local diagnostic_candidate_count = 0
+local unresolved_dark_ball_candidate
+for _, candidate in pairs(diagnostic_source.skill_candidates) do
+    diagnostic_candidate_count = diagnostic_candidate_count + 1
+    if candidate.name == "UNRESOLVED_PAL_ATTACK_BP_80_ELEMENT_8" then
+        unresolved_dark_ball_candidate = candidate
+    end
+end
+assert(diagnostic_candidate_count == 3, "Pal skill candidates were not separated")
+assert(unresolved_dark_ball_candidate ~= nil
+        and unresolved_dark_ball_candidate.damage == 600
+        and unresolved_dark_ball_candidate.hits == 2,
+    "weak Waza markers did not fail closed into one unresolved signature")
+local bob_before_diagnostic_finish = #bob_inbox
+death(diagnostic_boss)
+run_game_tasks()
+run_delayed_tasks()
+local diagnostic_messages = {}
+for index = bob_before_diagnostic_finish + 1, #bob_inbox do
+    diagnostic_messages[#diagnostic_messages + 1] = bob_inbox[index]
+end
+local diagnostic_joined = table.concat(diagnostic_messages, "\n")
+assert(string.find(diagnostic_joined, "伤害验证完成", 1, true) ~= nil,
+    "diagnostic completion message missing")
+assert(string.find(diagnostic_joined,
+        "UNRESOLVED_PAL_ATTACK_BP_80_ELEMENT_8｜伤害 600｜占比 60.0%｜整场DPS 19",
+        1, true) ~= nil,
+    "fail-closed unresolved chat result missing")
+assert(string.find(diagnostic_joined, "MVP", 1, true) == nil,
+    "diagnostic-only mode emitted a player ranking")
+
+-- Real Palworld action Blueprints append a new UObject instance number to
+-- every cast. Repeated casts must share one stable skill bucket. A generic
+-- ActionDamage tick may join a skill only when BasePower+element identifies
+-- exactly one concrete skill in the completed encounter.
+local current_action = nil
+local action_component = object({}, {
+    GetCurrentAction = function()
+        return current_action
+    end,
+})
+local action_pal = actor("BP_PinkCat_C_184", {
+    CharacterParameterComponent = player_two_pal_component,
+    ActionComponent = action_component,
+})
+trainer_by_actor[action_pal] = player_two
+local action_boss = boss_actor("BP_RaidBoss_ActionDiagnostic_C_185")
+local action_before = #bob_inbox
+
+fake_game_time = 2000
+current_action = actor("BP_ActionBeamSlicer_C_2147000001", {
+    GetWazaID = function() return 601 end,
+    GetActionCharacter = function() return action_pal end,
+})
+action_begin(current_action)
+run_game_tasks()
+fake_game_time = 2001
+damage(action_pal, action_boss, 300, { BasePower = 350, AttackElementType = 9 })
+run_game_tasks()
+fake_game_time = 2002
+action_end(current_action)
+run_game_tasks()
+
+fake_game_time = 2020
+current_action = actor("BP_ActionBeamSlicer_C_2147000002", {
+    GetWazaID = function() return 601 end,
+    GetActionCharacter = function() return action_pal end,
+})
+action_begin(current_action)
+run_game_tasks()
+fake_game_time = 2021
+damage(action_pal, action_boss, 200, { BasePower = 350, AttackElementType = 9 })
+run_game_tasks()
+fake_game_time = 2022
+action_end(current_action)
+run_game_tasks()
+
+-- A cast can be fully swallowed by boss invulnerability/HP lock or miss every
+-- projectile. It must remain visible as an observed equipped skill with DMG 0
+-- instead of disappearing from the three-skill comparison.
+fake_game_time = 2025
+current_action = actor("BP_ActionDarkBall_C_2147000005", {
+    GetWazaID = function() return 501 end,
+    GetActionCharacter = function() return action_pal end,
+})
+action_begin(current_action)
+run_game_tasks()
+fake_game_time = 2026
+action_end(current_action)
+run_game_tasks()
+
+current_action = actor("BP_ActionFlareTornado_C_2147000003")
+damage(action_pal, action_boss, 100, { BasePower = 200, AttackElementType = 2 })
+run_game_tasks()
+current_action = actor("BP_ActionDamage_C_2147000004")
+damage(action_pal, action_boss, 50, { BasePower = 200, AttackElementType = 2 })
+run_game_tasks()
+current_action = nil
+fake_game_time = 2040
+damage(action_pal, action_boss, 25, { BasePower = 350, AttackElementType = 9 })
+run_game_tasks()
+damage(action_pal, action_boss, 25, { BasePower = 200, AttackElementType = 9 })
+run_game_tasks()
+
+local action_session
+for _, candidate in pairs(BossDPSBroadcastTestApi.sessions) do
+    if candidate.name == "RaidBoss_ActionDiagnostic" then
+        action_session = candidate
+        break
+    end
+end
+assert(action_session ~= nil and action_session.total_damage == 700,
+    "action diagnostic session total is incorrect")
+local action_source
+for _, source in pairs(action_session.diagnostic_sources) do
+    action_source = source
+end
+local action_candidate_count = 0
+local inferred_beam_candidate
+for _, candidate in pairs(action_source.skill_candidates) do
+    action_candidate_count = action_candidate_count + 1
+    if candidate.name == "BeamSlicer" then
+        inferred_beam_candidate = candidate
+    end
+end
+assert(action_candidate_count == 4,
+    "bounded action evidence produced an unexpected candidate count")
+assert(inferred_beam_candidate ~= nil
+        and inferred_beam_candidate.damage == 500
+        and inferred_beam_candidate.hits == 2
+        and inferred_beam_candidate.confidence == "inferred"
+        and inferred_beam_candidate.exact_damage == 0
+        and inferred_beam_candidate.inferred_damage == 500,
+    "active equipped casts were not kept in one inferred skill bucket")
+assert(action_source.skill_candidates["UNRESOLVED_PAL_ATTACK_BP_350_ELEMENT_9"] ~= nil
+        and action_source.skill_candidates["UNRESOLVED_PAL_ATTACK_BP_350_ELEMENT_9"].damage == 25,
+    "an out-of-window hit was guessed from stale action timing")
+
+do
+    phase = "game"
+    BossDPSBroadcastTestApi.publish_current_skill_hud()
+    phase = "idle"
+    local live_action_state = BossDPSBroadcastTestApi.skill_hud.last_external_state
+    assert(live_action_state ~= nil and live_action_state.text ~= nil,
+        "live HUD state was not published")
+    assert(string.find(live_action_state.text, "切割龙息", 1, true) ~= nil,
+        "live HUD did not show the inferred active equipped skill")
+    assert(string.find(live_action_state.text,
+        "\tDarkBall\t0.0000\t0.0000\t0.0000\t0\t1\t", 1, true) ~= nil,
+        "an observed equipped cast with zero effective damage disappeared from the HUD")
+    assert(string.find(live_action_state.text,
+        "\t未归属伤害\tUNRESOLVED_PAL_ATTACK_BP_200_ELEMENT_9\t", 1, true) ~= nil,
+        "ambiguous damage did not hide its internal identifier from the visible label")
+end
+
+death(action_boss)
+run_game_tasks()
+run_delayed_tasks()
+local action_messages = {}
+for index = action_before + 1, #bob_inbox do
+    action_messages[#action_messages + 1] = bob_inbox[index]
+end
+local action_joined = table.concat(action_messages, "\n")
+assert(string.find(action_joined,
+        "切割龙息（BeamSlicer）｜伤害 500", 1, true) ~= nil,
+    "bounded active-action result is missing from the report")
+assert(string.find(action_joined,
+        "UNRESOLVED_PAL_ATTACK_BP_350_ELEMENT_9｜伤害 25", 1, true) ~= nil,
+    "stale action timing did not remain unresolved")
+assert(string.find(action_joined,
+        "UNRESOLVED_PAL_ATTACK_BP_200_ELEMENT_2｜伤害 150", 1, true) ~= nil,
+    "same-signature weak action damage did not remain unresolved")
+assert(string.find(action_joined, "UNRESOLVED_PAL_ATTACK_BP_200_ELEMENT_9｜伤害 25", 1, true) ~= nil,
+    "ambiguous generic damage was assigned without proof")
+assert(string.find(action_joined, "技能/武器候选 4个", 1, true) ~= nil,
+    "bounded candidate count is incorrect")
+
+-- Many Pal skills deal their first damage only after the action has ended.
+-- Action timing alone is diagnostic context and must fail closed; only the
+-- later asset-backed hits may enter the confirmed DiamondFall bucket.
+do
+    local delayed_parameter = object({
+        SaveParameter = { EquipWaza = { 602, 501, 502 } },
+    })
+    local delayed_component = object({ IndividualParameter = delayed_parameter })
+    local delayed_current_action = nil
+    local delayed_action_component = object({}, {
+        GetCurrentAction = function() return delayed_current_action end,
+    })
+    local delayed_pal = actor("BP_CatVampire_C_190", {
+        CharacterParameterComponent = delayed_component,
+        ActionComponent = delayed_action_component,
+    })
+    trainer_by_actor[delayed_pal] = player_two
+    local delayed_boss = boss_actor("BP_RaidBoss_DelayedRain_C_191")
+    fake_game_time = 2060
+    delayed_current_action = actor("BP_ActionDiamondFall_C_2147000006", {
+        GetWazaID = function() return 602 end,
+        GetActionCharacter = function() return delayed_pal end,
+    })
+    action_begin(delayed_current_action)
+    run_game_tasks()
+    fake_game_time = 2062
+    action_end(delayed_current_action)
+    run_game_tasks()
+    -- Recorded regression: GravityShot may already be current when a
+    -- DiamondFall shard lands. Because GravityShot is not one of this Pal's
+    -- three equipped skills, it must not steal the delayed equipped-skill hit.
+    delayed_current_action = actor("BP_ActionGravityShot_C_2147000098", {
+        GetWazaID = function() return 137 end,
+        GetActionCharacter = function() return delayed_pal end,
+    })
+    fake_game_time = 2064
+    damage(delayed_pal, delayed_boss, 40, { BasePower = 600, AttackElementType = 6 })
+    run_game_tasks()
+    -- A movement action is also timing context rather than a damage skill.
+    delayed_current_action = actor("BP_PalAction_AnimationStepRight_C_2147000099", {
+        GetWazaID = function() return 0 end,
+        GetActionCharacter = function() return delayed_pal end,
+    })
+    fake_game_time = 2064.8
+    damage(delayed_pal, delayed_boss, 36, { BasePower = 600, AttackElementType = 6 })
+    run_game_tasks()
+    phase = "game"
+    BossDPSBroadcastTestApi.publish_current_skill_hud()
+    phase = "idle"
+    local delayed_state = BossDPSBroadcastTestApi.skill_hud.last_external_state
+    assert(string.find(delayed_state.text, "晶钻之雨", 1, true) ~= nil
+        and string.find(delayed_state.text, "76.0000", 1, true) ~= nil,
+        "unique equipped signature did not recover delayed DiamondFall hits")
+    assert(string.find(delayed_state.text, "AnimationStep", 1, true) == nil,
+        "a movement action was exposed as a damage skill")
+
+    fake_game_time = 2070
+    delayed_current_action = actor("BP_ActionDarkBall_C_2147000007", {
+        GetWazaID = function() return 501 end,
+        GetActionCharacter = function() return delayed_pal end,
+    })
+    action_begin(delayed_current_action)
+    run_game_tasks()
+    fake_game_time = 2071
+    action_end(delayed_current_action)
+    run_game_tasks()
+    fake_game_time = 2071.2
+    delayed_current_action = actor("BP_ActionPoisonFog_C_2147000008", {
+        GetWazaID = function() return 502 end,
+        GetActionCharacter = function() return delayed_pal end,
+    })
+    action_begin(delayed_current_action)
+    run_game_tasks()
+    fake_game_time = 2071.5
+    action_end(delayed_current_action)
+    run_game_tasks()
+    delayed_current_action = nil
+    fake_game_time = 2072
+    damage(delayed_pal, delayed_boss, 10, { BasePower = 999, AttackElementType = 8 })
+    run_game_tasks()
+    phase = "game"
+    BossDPSBroadcastTestApi.publish_current_skill_hud()
+    phase = "idle"
+    assert(string.find(BossDPSBroadcastTestApi.skill_hud.last_external_state.text,
+        "未归属伤害", 1, true) ~= nil,
+        "two equally plausible recent actions should remain unattributed")
+
+    -- Cooked Blueprint evidence is stronger than the Pal's current action:
+    -- DiamondFall_Fall and DiamondFall_Explode both declare DiamondFall at
+    -- power rate 0.05, and the Fall actor spawns Explode with the same Owner.
+    fake_game_time = 2073
+    delayed_current_action = actor("BP_ActionDarkBall_C_2147000009", {
+        GetWazaID = function() return 501 end,
+        GetActionCharacter = function() return delayed_pal end,
+    })
+    local diamond_fall_causer = actor("BP_SkillEffect_DiamondFall_Fall_C_2147000100")
+    local diamond_explode_causer = actor("BP_SkillEffect_DiamondFall_Explode_C_2147000101")
+    damage(delayed_pal, delayed_boss, 31, {
+        DamageCauser = diamond_fall_causer,
+        BasePower = 600,
+        AttackElementType = 6,
+    })
+    damage(delayed_pal, delayed_boss, 29, {
+        DamageCauser = diamond_explode_causer,
+        BasePower = 600,
+        AttackElementType = 6,
+    })
+    run_game_tasks()
+    phase = "game"
+    BossDPSBroadcastTestApi.publish_current_skill_hud()
+    phase = "idle"
+    local asset_state = BossDPSBroadcastTestApi.skill_hud.last_external_state.text
+    assert(string.find(asset_state, "晶钻之雨", 1, true) ~= nil
+        and string.find(asset_state, "136.0000", 1, true) ~= nil,
+        "asset-backed DiamondFall phases did not share one confirmed skill bucket")
+    assert(string.find(asset_state, "SkillEffect_DiamondFall", 1, true) == nil,
+        "DiamondFall phases leaked into separate visible skill rows")
+    death(delayed_boss)
+    run_game_tasks()
+    run_delayed_tasks()
+end
+
+-- Fire regression: verified signatures unique among the live three slots are
+-- useful bounded evidence, while the non-equipped filler becomes a basic hit.
+do
+    local fire_parameter = object({
+        SaveParameter = { EquipWaza = { 42, 54, 46 } },
+    }, {
+        GetAddress = function() return 9401 end,
+        GetCharacterID = function() return "CatVampire" end,
+        GetNickname = function(_, out_name)
+            out_name.outName = "火系測試帕魯"
+        end,
+    })
+    local fire_component = object({ IndividualParameter = fire_parameter })
+    local fire_current_action = nil
+    local fire_action_component = object({}, {
+        GetCurrentAction = function() return fire_current_action end,
+    })
+    local fire_pal = actor("BP_CatVampire_C_194", {
+        CharacterParameterComponent = fire_component,
+        ActionComponent = fire_action_component,
+    })
+    trainer_by_actor[fire_pal] = player_two
+    local fire_boss = boss_actor("BP_RaidBoss_FireSignature_C_195")
+
+    -- First accepted hit opens the session and captures the current loadout.
+    -- The following omitted-Waza events must then classify immediately.
+    fake_game_time = 2080
+    fire_current_action = actor("BP_ActionFireBall_C_2147000100", {
+        GetWazaID = function() return 42 end,
+        GetActionCharacter = function() return fire_pal end,
+    })
+    damage(fire_pal, fire_boss, 600, { BasePower = 600, AttackElementType = 2 })
+    run_game_tasks()
+    fire_current_action = nil
+    damage(fire_pal, fire_boss, 300, { BasePower = 300, AttackElementType = 2 })
+    damage(fire_pal, fire_boss, 200, { BasePower = 200, AttackElementType = 2 })
+    run_game_tasks()
+
+    fake_game_time = 2085
+    fire_current_action = actor("BP_ActionFlareTornado_C_2147000102", {
+        GetWazaID = function() return 46 end,
+        GetActionCharacter = function() return fire_pal end,
+    })
+    action_begin(fire_current_action)
+    run_game_tasks()
+    fake_game_time = 2086
+    action_end(fire_current_action)
+    run_game_tasks()
+    fire_current_action = actor("BP_ActionGravityShot_C_2147000103", {
+        GetWazaID = function() return 137 end,
+        GetActionCharacter = function() return fire_pal end,
+    })
+    fake_game_time = 2087
+    damage(fire_pal, fire_boss, 40, { BasePower = 40, AttackElementType = 8 })
+    run_game_tasks()
+
+    local fire_session
+    for _, candidate_session in pairs(BossDPSBroadcastTestApi.sessions) do
+        if candidate_session.name == "RaidBoss_FireSignature" then
+            fire_session = candidate_session
+            break
+        end
+    end
+    assert(fire_session ~= nil and fire_session.total_damage == 1140,
+        "fire signature fixture total is incorrect")
+    local fire_source = fire_session.diagnostic_sources["pal:9401"]
+    assert(fire_source ~= nil, "fire signature Pal source missing")
+    for signature, expected in pairs({
+        ["skill:FireBall"] = 600,
+        ["skill:FlameFunnel"] = 300,
+        ["skill:FlareTornado"] = 200,
+        ["skill:GravityShot"] = 40,
+    }) do
+        assert(fire_source.skill_candidates[signature] ~= nil
+            and fire_source.skill_candidates[signature].damage == expected
+            and fire_source.skill_candidates[signature].confidence == "inferred",
+            "bounded fire/current-action inference failed: " .. signature)
+    end
+    death(fire_boss)
+    run_game_tasks()
+    run_delayed_tasks()
+    fire_current_action = nil
+end
+
+-- Dark regression: each equipped skill has a distinct verified signature;
+-- GravityShot remains a non-equipped basic attack.
+do
+    local dark_parameter = object({
+        SaveParameter = { EquipWaza = { 131, 161, 135 } },
+    }, {
+        GetAddress = function() return 9501 end,
+        GetCharacterID = function() return "CatVampire" end,
+        GetNickname = function(_, out_name)
+            out_name.outName = "暗系測試帕魯"
+        end,
+    })
+    local dark_component = object({ IndividualParameter = dark_parameter })
+    local dark_current_action = nil
+    local dark_action_component = object({}, {
+        GetCurrentAction = function() return dark_current_action end,
+    })
+    local dark_pal = actor("BP_CatVampire_C_196", {
+        CharacterParameterComponent = dark_component,
+        ActionComponent = dark_action_component,
+    })
+    trainer_by_actor[dark_pal] = player_two
+    local dark_boss = boss_actor("BP_WorldTreeDragon_DarkSignature_C_197")
+
+    fake_game_time = 2090
+    dark_current_action = actor("BP_ActionDarkLaser_C_2147000104", {
+        GetWazaID = function() return 131 end,
+        GetActionCharacter = function() return dark_pal end,
+    })
+    damage(dark_pal, dark_boss, 450, { BasePower = 450, AttackElementType = 8 })
+    run_game_tasks()
+
+    -- Reproduce the live concurrent-action conflict: PoisonShot is current
+    -- while delayed DarkLegion damage arrives. The signature is unique among
+    -- the three equipped slots, so timing conflict must not make it unknown.
+    dark_current_action = actor("BP_ActionPoisonShot_C_2147000105", {
+        GetWazaID = function() return 135 end,
+        GetActionCharacter = function() return dark_pal end,
+    })
+    damage(dark_pal, dark_boss, 600, { BasePower = 600, AttackElementType = 8 })
+    damage(dark_pal, dark_boss, 30, { BasePower = 30, AttackElementType = 8 })
+    run_game_tasks()
+
+    dark_current_action = actor("BP_ActionGravityShot_C_2147000106", {
+        GetWazaID = function() return 137 end,
+        GetActionCharacter = function() return dark_pal end,
+    })
+    damage(dark_pal, dark_boss, 40, { BasePower = 40, AttackElementType = 8 })
+    run_game_tasks()
+
+    local dark_session
+    for _, candidate_session in pairs(BossDPSBroadcastTestApi.sessions) do
+        if candidate_session.name == "WorldTreeDragon_DarkSignature" then
+            dark_session = candidate_session
+            break
+        end
+    end
+    assert(dark_session ~= nil and dark_session.total_damage == 1120,
+        "dark signature fixture total is incorrect")
+    local dark_source = dark_session.diagnostic_sources["pal:9501"]
+    assert(dark_source ~= nil, "dark signature Pal source missing")
+    for signature, expected in pairs({
+        ["skill:DarkLaser"] = 450,
+        ["skill:DarkLegion"] = 600,
+        ["skill:PoisonShot"] = 30,
+        ["skill:GravityShot"] = 40,
+    }) do
+        assert(dark_source.skill_candidates[signature] ~= nil
+            and dark_source.skill_candidates[signature].damage == expected
+            and dark_source.skill_candidates[signature].confidence == "inferred",
+            "bounded dark/current-action inference failed: " .. signature)
+    end
+    death(dark_boss)
+    run_game_tasks()
+    run_delayed_tasks()
+    dark_current_action = nil
+end
+
+-- The three EquipWaza slots are active skills. A Waza emitted outside those
+-- slots is Palworld's default/filler attack and must be labelled as such.
+do
+    local basic_boss = boss_actor("BP_RaidBoss_BasicAttackDiagnostic_C_186")
+    fake_game_time = 2100
+    current_action = actor("BP_ActionGravityShot_C_2147000005", {
+        GetWazaID = function() return 137 end,
+        GetActionCharacter = function() return action_pal end,
+    })
+    action_begin(current_action)
+    run_game_tasks()
+    fake_game_time = 2101
+    damage(action_pal, basic_boss, 40, { BasePower = 40, AttackElementType = 8 })
+    run_game_tasks()
+    fake_game_time = 2102
+    action_end(current_action)
+    run_game_tasks()
+    phase = "game"
+    BossDPSBroadcastTestApi.publish_current_skill_hud()
+    phase = "idle"
+    local basic_state = BossDPSBroadcastTestApi.skill_hud.last_external_state
+    assert(string.find(basic_state.text, "普攻", 1, true) ~= nil
+            and string.find(basic_state.text, "暗能弹", 1, true) ~= nil,
+        "non-equipped GravityShot was not presented as a basic attack")
+    death(basic_boss)
+    run_game_tasks()
+    run_delayed_tasks()
+    current_action = nil
+end
+
+-- Regression: swapping a Pal's equipped skills mid-test must re-read the
+-- three-slot list. The old code cached the first snapshot forever, so a newly
+-- equipped skill (e.g. DiamondFall) kept the "basic" prefix until a restart.
+do
+    local swap_parameter = object({
+        SaveParameter = {
+            EquipWaza = { 501, 502, 601 },
+        },
+    }, {
+        GetAddress = function() return 9501 end,
+        GetCharacterID = function() return "PinkCat" end,
+        GetNickname = function(_, out_name)
+            out_name.outName = "夜幕魔蝠"
+        end,
+    })
+    local swap_component = object({
+        IndividualParameter = swap_parameter,
+    })
+    local swap_action_component = object({}, {
+        GetCurrentAction = function() return current_action end,
+    })
+    local swap_pal = actor("BP_PinkCat_C_187", {
+        CharacterParameterComponent = swap_component,
+        ActionComponent = swap_action_component,
+    })
+    trainer_by_actor[swap_pal] = player_two
+    local swap_boss = boss_actor("BP_RaidBoss_EquipSwapDiagnostic_C_188")
+
+    -- First cast: an equipped skill (BeamSlicer 601) appears without prefix.
+    fake_game_time = 2500
+    current_action = actor("BP_ActionBeamSlicer_C_2147000020", {
+        GetWazaID = function() return 601 end,
+        GetActionCharacter = function() return swap_pal end,
+    })
+    action_begin(current_action)
+    run_game_tasks()
+    fake_game_time = 2501
+    damage(swap_pal, swap_boss, 300, { BasePower = 350, AttackElementType = 9 })
+    run_game_tasks()
+    fake_game_time = 2502
+    action_end(current_action)
+    run_game_tasks()
+
+    -- Swap DiamondFall (602) into the third slot, replacing BeamSlicer.
+    phase = "game"
+    swap_parameter.SaveParameter.EquipWaza = { 501, 502, 602 }
+    phase = "idle"
+
+    -- Second cast starts well after the first cast's delayed-hit window, so
+    -- only the action-begin invalidation + re-read decides the classification.
+    fake_game_time = 2610
+    current_action = actor("BP_ActionDiamondFall_C_2147000021", {
+        GetWazaID = function() return 602 end,
+        GetActionCharacter = function() return swap_pal end,
+    })
+    action_begin(current_action)
+    run_game_tasks()
+    fake_game_time = 2611
+    damage(swap_pal, swap_boss, 400, { BasePower = 150, AttackElementType = 1 })
+    run_game_tasks()
+    fake_game_time = 2612
+    action_end(current_action)
+    run_game_tasks()
+
+    phase = "game"
+    BossDPSBroadcastTestApi.publish_current_skill_hud()
+    phase = "idle"
+    local swap_state = BossDPSBroadcastTestApi.skill_hud.last_external_state
+    assert(string.find(swap_state.text, "晶钻之雨", 1, true) ~= nil,
+        "swapped-in DiamondFall was not detected from the refreshed loadout")
+    assert(string.find(swap_state.text, "切割龙息", 1, true) ~= nil,
+        "pre-swap BeamSlicer result disappeared after the loadout changed")
+
+    -- Loadout and action signatures remain diagnostic only; neither cast may
+    -- seed an authoritative signature mapping.
+    local swap_session
+    for _, candidate_session in pairs(BossDPSBroadcastTestApi.sessions) do
+        if candidate_session.name == "RaidBoss_EquipSwapDiagnostic" then
+            swap_session = candidate_session
+            break
+        end
+    end
+    assert(swap_session ~= nil, "equip-swap session missing")
+    local swap_source = swap_session.diagnostic_sources["pal:9501"]
+    assert(swap_source ~= nil, "equip-swap pal source missing")
+    assert(swap_source.skill_signatures == nil
+            or swap_source.skill_signatures["bp:350|element:9"] == nil,
+        "pre-swap current action seeded a reliable signature")
+    assert(swap_source.skill_signatures == nil
+            or swap_source.skill_signatures["bp:150|element:1"] == nil,
+        "the swapped-in current action seeded a reliable signature")
+
+    death(swap_boss)
+    run_game_tasks()
+    run_delayed_tasks()
+    current_action = nil
+end
+
+-- A unique asset-backed signature from one of the Pal's three equipped slots
+-- may identify delayed damage. Timing-only evidence must still be unable to
+-- invent a mapping for a signature absent from the equipped asset metadata.
+do
+    local weak_parameter = object({
+        SaveParameter = { EquipWaza = { 501, 502, 602 } },
+    }, {
+        GetAddress = function() return 9601 end,
+        GetCharacterID = function() return "PinkCat" end,
+        GetNickname = function(_, out_name)
+            out_name.outName = "弱證帕魯"
+        end,
+    })
+    local weak_component = object({
+        IndividualParameter = weak_parameter,
+    })
+    local weak_action_component = object({}, {
+        GetCurrentAction = function() return current_action end,
+    })
+    local weak_pal = actor("BP_PinkCat_C_189", {
+        CharacterParameterComponent = weak_component,
+        ActionComponent = weak_action_component,
+    })
+    trainer_by_actor[weak_pal] = player_two
+    local weak_boss = boss_actor("BP_RaidBoss_WeakSignature_C_190")
+
+    -- DiamondFall completes; the next delayed hit is attributed only through
+    -- the completed-cast timing rule, with no Waza marker or DamageInfo.
+    fake_game_time = 2800
+    local recent_action = actor("BP_ActionDiamondFall_C_2147000030", {
+        GetWazaID = function() return 602 end,
+        GetActionCharacter = function() return weak_pal end,
+    })
+    action_begin(recent_action)
+    run_game_tasks()
+    fake_game_time = 2801
+    action_end(recent_action)
+    run_game_tasks()
+
+    -- GravityShot (basic) is current when the ice shard lands.
+    fake_game_time = 2810
+    current_action = actor("BP_ActionGravityShot_C_2147000031", {
+        GetWazaID = function() return 137 end,
+        GetActionCharacter = function() return weak_pal end,
+    })
+    action_begin(current_action)
+    run_game_tasks()
+    fake_game_time = 2811
+    damage(weak_pal, weak_boss, 50, { BasePower = 600, AttackElementType = 6 })
+    run_game_tasks()
+    fake_game_time = 2812
+    action_end(current_action)
+    run_game_tasks()
+
+    local weak_session
+    for _, candidate_session in pairs(BossDPSBroadcastTestApi.sessions) do
+        if candidate_session.name == "RaidBoss_WeakSignature" then
+            weak_session = candidate_session
+            break
+        end
+    end
+    assert(weak_session ~= nil, "weak-signature session missing")
+    local weak_source = weak_session.diagnostic_sources["pal:9601"]
+    assert(weak_source ~= nil, "weak-signature pal source missing")
+    assert(weak_source.skill_candidates["skill:DiamondFall"] ~= nil
+            and weak_source.skill_candidates["skill:DiamondFall"].damage == 50
+            and weak_source.skill_candidates["skill:DiamondFall"].confidence == "inferred",
+        "unique equipped signature did not recover delayed DiamondFall damage")
+
+    -- Record one genuinely unknown signature, then begin another action. The
+    -- old implementation deleted this bucket on every action begin, so source
+    -- damage remained 60 while visible skill rows summed to only 50.
+    current_action = nil
+    fake_game_time = 2900
+    damage(weak_pal, weak_boss, 10, { BasePower = 999, AttackElementType = 3 })
+    run_game_tasks()
+    local unknown_key = "UNRESOLVED_PAL_ATTACK_BP_999_ELEMENT_3"
+    assert(weak_source.skill_candidates[unknown_key] ~= nil,
+        "unknown signature fixture did not create an unresolved bucket")
+    fake_game_time = 2901
+    local movement_action = actor("BP_PalAction_AnimationStepRight_C_2147000032", {
+        GetWazaID = function() return 0 end,
+        GetActionCharacter = function() return weak_pal end,
+    })
+    action_begin(movement_action)
+    run_game_tasks()
+    assert(weak_source.skill_candidates[unknown_key] ~= nil,
+        "action begin deleted accumulated unresolved damage")
+    assert(weak_source.skill_signatures == nil
+            or weak_source.skill_signatures["bp:999|element:3"] == nil,
+        "timing-only evidence invented an unknown signature mapping")
+    local visible_damage = 0
+    for _, candidate in pairs(weak_source.skill_candidates) do
+        visible_damage = visible_damage + (candidate.damage or 0)
+    end
+    assert(visible_damage == weak_source.damage,
+        "source total no longer equals the sum of its skill candidates")
+
+    death(weak_boss)
+    run_game_tasks()
+    run_delayed_tasks()
+    current_action = nil
+end
+
+-- Enabling player verification creates one player source and separates a
+-- weapon/projectile candidate. A one-weapon-per-fight workflow remains valid
+-- even when Palworld exposes no richer weapon identifier.
+runtime_config.IncludePlayerDamage = true
+local weapon_boss = boss_actor("BP_RaidBoss_WeaponDiagnostic_C_183")
+damage(player_one, weapon_boss, 200, {
+    DamageCauser = rifle_projectile,
+    DamageInfo = { WeaponType = "AssaultRifle" },
+})
+damage(player_one, weapon_boss, 300, {
+    DamageCauser = rifle_projectile,
+    DamageInfo = { WeaponType = "AssaultRifle" },
+})
+run_game_tasks()
+local weapon_session
+for _, candidate in pairs(BossDPSBroadcastTestApi.sessions) do
+    if candidate.name == "RaidBoss_WeaponDiagnostic" then
+        weapon_session = candidate
+        break
+    end
+end
+assert(weapon_session ~= nil and weapon_session.total_damage == 500,
+    "enabled player damage was not recorded")
+local player_diagnostic_source
+for _, source in pairs(weapon_session.diagnostic_sources) do
+    player_diagnostic_source = source
+end
+assert(player_diagnostic_source ~= nil and player_diagnostic_source.kind == "player"
+    and player_diagnostic_source.damage == 500,
+    "player diagnostic source was not isolated from Pal damage")
+local weapon_candidate_count = 0
+for _, candidate in pairs(player_diagnostic_source.skill_candidates) do
+    weapon_candidate_count = weapon_candidate_count + 1
+    assert(candidate.damage == 500 and candidate.hits == 2,
+        "weapon candidate totals are incorrect")
+end
+assert(weapon_candidate_count == 1, "one weapon produced multiple diagnostic buckets")
+death(weapon_boss)
+run_game_tasks()
+run_delayed_tasks()
+
+runtime_config.SkillDiagnosticsOnly = false
+runtime_config.IncludePlayerDamage = true
+runtime_config.BroadcastStart = true
 
 -- Regression for the real 1.0 failure: byte-based truncation could split a
 -- Chinese Pal nickname and make SendSystemToPlayerChat raise "bad conversion".
@@ -933,6 +2592,579 @@ run_delayed_tasks()
 joined = table.concat(delivered, "\n")
 assert(string.find(joined, "击败了 RaidBoss_Stress｜用时 1秒｜团队DPS 1｜团队伤害 1", 1, true) ~= nil, "death was lost behind burst traffic")
 
+-- Manual damage-lab mode spans several open-world targets and keeps every
+-- individual owned Pal in a separate source group until the operator resets.
+function run_manual_damage_lab_test()
+runtime_config.MeasurementMode = "manual"
+runtime_config.TargetScope = "all"
+runtime_config.IncludePlayerDamage = false
+runtime_config.SkillDiagnosticsOnly = true
+phase = "game"
+BossDPSBroadcastTestApi.reset_skill_diagnostics()
+phase = "idle"
+local base_pal_parameter = object({}, {
+    GetAddress = function() return 9199 end,
+    GetCharacterID = function() return "PinkCat" end,
+    GetNickname = function(_, out_name) out_name.outName = "基地帕魯" end,
+})
+local base_pal = actor("BP_PinkCat_Base_C_44", {
+    CharacterParameterComponent = object({ IndividualParameter = base_pal_parameter }),
+})
+trainer_by_actor[base_pal] = player_one
+local open_world_target = actor("BP_Sheep_OpenWorld_C_45", {
+    StaticCharacterParameterComponent = object({
+        IsBoss_Database = false,
+        IsTowerBoss_Database = false,
+    }),
+})
+local alpha_target = boss_actor("BP_Suzaku_BOSS_OpenWorld_C_46")
+waza(player_two_pal, open_world_target, 501)
+damage(player_two_pal, open_world_target, 300)
+waza(base_pal, alpha_target, 502)
+damage(base_pal, alpha_target, 500)
+death(open_world_target)
+death(alpha_target)
+run_game_tasks()
+local manual_session = BossDPSBroadcastTestApi.sessions["__PAL_SKILL_DPS_MANUAL_TEST__"]
+assert(manual_session ~= nil and manual_session.finished ~= true,
+    "manual test ended when one of its targets died")
+assert(manual_session.total_damage == 800 and manual_session.target_count == 2,
+    "manual test did not aggregate ordinary and Alpha targets")
+local manual_pal_count = 0
+for _ in pairs(manual_session.pal_sources) do manual_pal_count = manual_pal_count + 1 end
+assert(manual_pal_count == 2, "two individual Pals were merged into one source")
+phase = "game"
+BossDPSBroadcastTestApi.publish_current_skill_hud()
+phase = "idle"
+assert(string.find(BossDPSBroadcastTestApi.skill_hud.last_external_state.text,
+    "基地帕魯", 1, true) ~= nil and string.find(BossDPSBroadcastTestApi.skill_hud.last_external_state.text,
+    "棉花糖", 1, true) ~= nil, "manual meter did not expose both Pal groups")
+phase = "game"
+assert(BossDPSBroadcastTestApi.skill_hud:toggle_settings() == true
+    and BossDPSBroadcastTestApi.skill_hud.settings_open == true,
+    "manual mode did not expose the F3 settings workspace")
+BossDPSBroadcastTestApi.skill_hud:close_settings()
+BossDPSBroadcastTestApi.reset_skill_diagnostics()
+phase = "idle"
+manual_session = BossDPSBroadcastTestApi.sessions["__PAL_SKILL_DPS_MANUAL_TEST__"]
+assert(manual_session ~= nil and manual_session.total_damage == 0 and manual_session.manual_armed == true,
+    "Start new test did not reset and re-arm the manual window")
+runtime_config.MeasurementMode = "target"
+runtime_config.TargetScope = "boss"
+runtime_config.IncludePlayerDamage = true
+runtime_config.SkillDiagnosticsOnly = false
+end
+run_manual_damage_lab_test()
+run_manual_damage_lab_test = nil
+
+-- Boss-only manual tests freeze at the final Boss death/capture. A known
+-- non-terminal composite part is a phase transition and must keep recording.
+function run_manual_boss_snapshot_test()
+runtime_config.MeasurementMode = "manual"
+runtime_config.TargetScope = "boss"
+runtime_config.IncludePlayerDamage = false
+runtime_config.SkillDiagnosticsOnly = true
+phase = "game"
+BossDPSBroadcastTestApi.reset_skill_diagnostics()
+phase = "idle"
+
+local phase_anchor = actor("BP_YakushimaBoss002_Controller_C_901")
+local phase_head = boss_actor("BP_YakushimaBoss002_Head_C_902", { Owner = phase_anchor })
+local phase_body = boss_actor("BP_YakushimaBoss002_B_C_903", { Owner = phase_anchor })
+fake_game_time = 3000
+waza(player_two_pal, phase_head, 501)
+damage(player_two_pal, phase_head, 100)
+run_game_tasks()
+fake_game_time = 3005
+death(phase_head)
+run_game_tasks()
+local boss_session = BossDPSBroadcastTestApi.sessions["__PAL_SKILL_DPS_MANUAL_TEST__"]
+assert(boss_session ~= nil and boss_session.finished ~= true,
+    "non-terminal Boss phase froze the manual Boss snapshot")
+
+waza(player_two_pal, phase_body, 501)
+damage(player_two_pal, phase_body, 200)
+run_game_tasks()
+fake_game_time = 3012
+death(phase_body)
+run_game_tasks()
+local frozen = BossDPSBroadcastTestApi.skill_hud.latest_snapshot
+assert(BossDPSBroadcastTestApi.sessions["__PAL_SKILL_DPS_MANUAL_TEST__"] == nil
+    and frozen ~= nil and frozen.state == "finished" and frozen.reason == "defeated"
+    and math.abs(frozen.duration - 12) < 0.001
+    and math.abs(frozen.encounter_dps - 25) < 0.001,
+    "final Boss death did not freeze the manual snapshot at the death time")
+assert(string.find(BossDPSBroadcastTestApi.skill_hud.last_external_state.text,
+        "\nexpires_at=0\n", 1, true) ~= nil,
+    "manual Boss snapshot was given an automatic HUD expiry")
+local ignored_after_finish = BossDPSBroadcastTestApi.metrics.ignored_post_finish_damage
+-- Real multi-hit effects can deliver their last segments after the death hook.
+-- They must be discarded until F2, not treated as the first hits of a new test.
+waza(player_two_pal, phase_body, 501)
+damage(player_two_pal, phase_body, 40)
+damage(player_two_pal, phase_body, 60)
+run_game_tasks()
+assert(BossDPSBroadcastTestApi.sessions["__PAL_SKILL_DPS_MANUAL_TEST__"] == nil
+    and BossDPSBroadcastTestApi.skill_hud.latest_snapshot == frozen
+    and frozen.total_damage == 300
+    and BossDPSBroadcastTestApi.metrics.ignored_post_finish_damage
+        == ignored_after_finish + 2,
+    "post-death hit segments replaced the frozen Boss result")
+fake_game_time = 3060
+phase = "game"
+BossDPSBroadcastTestApi.publish_current_skill_hud()
+phase = "idle"
+assert(BossDPSBroadcastTestApi.skill_hud.latest_snapshot == frozen
+    and math.abs(frozen.duration - 12) < 0.001
+    and math.abs(frozen.encounter_dps - 25) < 0.001,
+    "F3/HUD refresh changed a frozen Boss result")
+
+local saved_mode = runtime_config.MeasurementMode
+local saved_scope = runtime_config.TargetScope
+local saved_save_settings = BossDPSBroadcastTestApi.skill_hud.save_settings
+local reset_from_setting = 0
+local ignored_after_setting = BossDPSBroadcastTestApi.metrics.ignored_post_finish_damage
+local saved_reset_callback = BossDPSBroadcastTestApi.skill_hud.on_reset
+BossDPSBroadcastTestApi.skill_hud.save_settings = function() return true end
+BossDPSBroadcastTestApi.skill_hud.on_reset = function()
+    reset_from_setting = reset_from_setting + 1
+end
+BossDPSBroadcastTestApi.skill_hud:cycle_setting("MeasurementMode", 1)
+BossDPSBroadcastTestApi.skill_hud:cycle_setting("TargetScope", 1)
+assert(reset_from_setting == 0
+    and BossDPSBroadcastTestApi.skill_hud.latest_snapshot == frozen
+    and frozen.total_damage == 300,
+    "F3 measurement settings reset or replaced the frozen Boss result")
+local post_setting_target = boss_actor("BP_RaidBoss_PostSettingTail_C_905")
+waza(player_two_pal, post_setting_target, 501)
+damage(player_two_pal, post_setting_target, 70)
+run_game_tasks()
+assert(BossDPSBroadcastTestApi.sessions["__PAL_SKILL_DPS_MANUAL_TEST__"] == nil
+    and BossDPSBroadcastTestApi.skill_hud.latest_snapshot == frozen
+    and frozen.total_damage == 300
+    and BossDPSBroadcastTestApi.metrics.ignored_post_finish_damage
+        == ignored_after_setting + 1,
+    "F3 automatic/all settings bypassed the frozen Boss result lock")
+runtime_config.MeasurementMode = saved_mode
+runtime_config.TargetScope = saved_scope
+BossDPSBroadcastTestApi.skill_hud.save_settings = saved_save_settings
+BossDPSBroadcastTestApi.skill_hud.on_reset = saved_reset_callback
+
+phase = "game"
+BossDPSBroadcastTestApi.reset_skill_diagnostics()
+phase = "idle"
+local captured_boss = boss_actor("BP_RaidBoss_ManualCapture_C_904")
+fake_game_time = 3100
+waza(player_two_pal, captured_boss, 501)
+damage(player_two_pal, captured_boss, 90)
+run_game_tasks()
+fake_game_time = 3109
+captured(captured_boss, player_two_pal)
+run_game_tasks()
+local captured_snapshot = BossDPSBroadcastTestApi.skill_hud.latest_snapshot
+assert(captured_snapshot ~= nil and captured_snapshot.state == "finished"
+    and captured_snapshot.reason == "captured" and math.abs(captured_snapshot.duration - 9) < 0.001,
+    "captured Boss did not freeze the manual Boss snapshot")
+
+runtime_config.MeasurementMode = "target"
+runtime_config.TargetScope = "boss"
+runtime_config.IncludePlayerDamage = true
+runtime_config.SkillDiagnosticsOnly = false
+phase = "game"
+BossDPSBroadcastTestApi.reset_skill_diagnostics()
+phase = "idle"
+end
+run_manual_boss_snapshot_test()
+run_manual_boss_snapshot_test = nil
+
+-- Native event API v2: every final hit arrives separately with a stable
+-- sequence and object-token diagnostics. It must be preferred by the runtime
+-- and preserve total/hit conservation without going through aggregation.
+do
+local native_event_boss = boss_actor("BP_RaidBoss_NativeEvent_C_500")
+local native_event_index = 0
+BossDPSNativeDrainEventOne = function()
+    native_event_index = native_event_index + 1
+    if native_event_index <= 3 then
+        return true, {
+            api_version = 2,
+            kind = "damage",
+            sequence = native_event_index,
+            captured_ns = native_event_index * 100,
+            attacker = player_one,
+            defender = native_event_boss,
+            damage = 100 + native_event_index,
+            hits = 1,
+            target_key = "0xDEF",
+            attacker_id = "1:1",
+            defender_id = "2:1",
+            evidence_kind = "unresolved",
+        }
+    end
+    return false
+end
+BossDPSBroadcastTestApi.hooks.damage_mode = "native-event"
+local native_events_before = BossDPSBroadcastTestApi.metrics.native_events
+local native_event_hits_before = BossDPSBroadcastTestApi.metrics.native_hits
+phase = "game"
+BossDPSBroadcastTestApi.drain_native_damage()
+phase = "bootstrap"
+local native_event_session
+for _, candidate in pairs(BossDPSBroadcastTestApi.sessions) do
+    if candidate.name == "RaidBoss_NativeEvent" then
+        native_event_session = candidate
+        break
+    end
+end
+assert(native_event_session ~= nil, "native event stream did not start a boss session")
+assert(native_event_session.total_damage == 306,
+    "native event stream changed per-hit total damage")
+assert(BossDPSBroadcastTestApi.metrics.native_events - native_events_before == 3,
+    "native event metric is incorrect")
+assert(BossDPSBroadcastTestApi.metrics.native_hits - native_event_hits_before == 3,
+    "native event stream changed hit conservation")
+death(native_event_boss)
+run_game_tasks()
+run_delayed_tasks()
+end
+
+-- Native event API v2 positional tuple: keep parity with the table payload
+-- above. The bridge returns `true` followed by exactly 27 payload fields;
+-- Lua must reconstruct one event table per hit without losing damage or hits.
+do
+local positional = {
+    boss = boss_actor("BP_RaidBoss_NativePositionalEvent_C_501"),
+    index = 0,
+}
+BossDPSNativeDrainEventOne = function()
+    positional.index = positional.index + 1
+    if positional.index <= 3 then
+        return true,
+            2,                                      -- api_version (1)
+            "damage",                               -- kind (2)
+            positional.index,                        -- sequence (3)
+            positional.index * 1000,                 -- captured_ns (4)
+            200 + positional.index,                  -- damage (5)
+            1,                                       -- hits (6)
+            "unresolved",                            -- evidence_kind (7)
+            player_one,                              -- attacker (8)
+            positional.boss,                         -- defender (9)
+            nil,                                     -- damage_causer (10)
+            nil,                                     -- override_network_owner (11)
+            nil,                                     -- info_attacker (12)
+            "1:1",                                   -- attacker_id (13)
+            "3:1",                                   -- defender_id (14)
+            "0:0",                                   -- damage_causer_id (15)
+            "0:0",                                   -- override_network_owner_id (16)
+            "0:0",                                   -- info_attacker_id (17)
+            "damage-info:" .. positional.index,      -- damage_info_id (18)
+            "action:" .. positional.index,           -- action_id (19)
+            "cast:" .. positional.index,             -- cast_id (20)
+            "effect:" .. positional.index,           -- effect_id (21)
+            "filter:" .. positional.index,           -- filter_id (22)
+            "0:0",                                   -- status_application_id (23)
+            "0xPOS",                                 -- target_key (24)
+            0,                                       -- waza_id (25)
+            "",                                      -- skill_code (26)
+            ""                                       -- status_code (27)
+    end
+    return false
+end
+BossDPSBroadcastTestApi.hooks.damage_mode = "native-event"
+positional.events_before = BossDPSBroadcastTestApi.metrics.native_events
+positional.hits_before = BossDPSBroadcastTestApi.metrics.native_hits
+phase = "game"
+BossDPSBroadcastTestApi.drain_native_damage()
+phase = "bootstrap"
+for _, candidate in pairs(BossDPSBroadcastTestApi.sessions) do
+    if candidate.name == "RaidBoss_NativePositionalEvent" then
+        positional.session = candidate
+        break
+    end
+end
+assert(positional.session ~= nil,
+    "positional native event tuple did not start a boss session")
+assert(positional.session.total_damage == 606,
+    "positional native event tuple changed per-hit total damage")
+positional.contributor_damage = 0
+positional.contributor_hits = 0
+for _, contributor in pairs(positional.session.contributors) do
+    positional.contributor_damage = positional.contributor_damage + contributor.damage
+    positional.contributor_hits = positional.contributor_hits + contributor.hits
+end
+assert(positional.contributor_damage == positional.session.total_damage,
+    "positional native event tuple violated contributor/session damage conservation")
+assert(positional.contributor_hits == 3,
+    "positional native event tuple violated contributor hit conservation")
+assert(BossDPSBroadcastTestApi.metrics.native_events - positional.events_before == 3,
+    "positional native event tuple changed event conservation")
+assert(BossDPSBroadcastTestApi.metrics.native_hits - positional.hits_before == 3,
+    "positional native event tuple changed native hit conservation")
+death(positional.boss)
+run_game_tasks()
+run_delayed_tasks()
+end
+
+-- Native exact source proof: when the C++ collector observes a Blueprint
+-- attack delegate whose PalAttackFilter still carries its Waza ID, Lua must
+-- put the final damage into that skill instead of the unresolved bucket.
+do
+local exact_native = {
+    boss = boss_actor("BP_RaidBoss_NativeEffectWaza_C_502"),
+    index = 0,
+}
+BossDPSNativeDrainEventOne = function()
+    exact_native.index = exact_native.index + 1
+    if exact_native.index == 1 then
+        return true,
+            2,                                      -- api_version (1)
+            "damage",                              -- kind (2)
+            7001,                                   -- sequence (3)
+            7001000,                                -- captured_ns (4)
+            777,                                    -- damage (5)
+            2,                                      -- hits (6)
+            "effect_waza",                         -- evidence_kind (7)
+            player_two_pal,                         -- attacker (8)
+            exact_native.boss,                      -- defender (9)
+            nil,                                    -- damage_causer (10)
+            nil,                                    -- override_network_owner (11)
+            nil,                                    -- info_attacker (12)
+            "3:1",                                 -- attacker_id (13)
+            "502:1",                               -- defender_id (14)
+            "0:0",                                 -- damage_causer_id (15)
+            "0:0",                                 -- override_network_owner_id (16)
+            "0:0",                                 -- info_attacker_id (17)
+            "",                                    -- damage_info_id (18)
+            "",                                    -- action_id (19)
+            "",                                    -- cast_id (20)
+            "400:9",                               -- effect_id (21)
+            "401:9",                               -- filter_id (22)
+            "0:0",                                 -- status_application_id (23)
+            "0xEXACT",                             -- target_key (24)
+            602,                                    -- waza_id (25)
+            "DiamondFall",                         -- skill_code (26)
+            ""                                     -- status_code (27)
+    elseif exact_native.index == 2 then
+        return true,
+            2, "damage", 7002, 7002000, 123, 1,
+            "damage_info_fingerprint_candidate",
+            player_two_pal, exact_native.boss, nil, nil, nil,
+            "3:1", "502:1", "0:0", "0:0", "0:0", "",
+            "", "", "402:9", "403:9", "0:0", "0xEXACT",
+            602, "DiamondFall", ""
+    elseif exact_native.index == 3 then
+        return true,
+            2, "damage", 7003, 7003000, 222, 1,
+            "effect_pair_single_link",
+            player_two_pal, exact_native.boss, nil, nil, nil,
+            "3:1", "502:1", "0:0", "0:0", "0:0", "",
+            "action:single", "cast:single", "404:9", "405:9", "0:0", "0xEXACT",
+            602, "DiamondFall", ""
+    elseif exact_native.index == 4 then
+        return true,
+            2, "damage", 7004, 7004000, 333, 1,
+            "effect_pair_agreed_link",
+            player_two_pal, exact_native.boss, nil, nil, nil,
+            "3:1", "502:1", "0:0", "0:0", "0:0", "",
+            "action:agreed", "cast:agreed", "406:9", "407:9", "0:0", "0xEXACT",
+            602, "DiamondFall", ""
+    elseif exact_native.index == 5 then
+        return true,
+            2, "damage", 7005, 7005000, 111, 1,
+            "unresolved_effect_pair_ambiguous",
+            player_two_pal, exact_native.boss, nil, nil, nil,
+            "3:1", "502:1", "0:0", "0:0", "0:0", "",
+            "", "", "", "", "0:0", "0xEXACT",
+            602, "DiamondFall", ""
+    elseif exact_native.index == 6 then
+        return true,
+            2, "damage", 7006, 7006000, 444, 1,
+            "post_effect_pair_single_link",
+            player_two_pal, exact_native.boss, nil, nil, nil,
+            "3:1", "502:1", "0:0", "0:0", "0:0", "",
+            "action:reverse", "cast:reverse", "408:9", "409:9", "0:0", "0xEXACT",
+            602, "DiamondFall", ""
+    end
+    return false
+end
+BossDPSBroadcastTestApi.hooks.damage_mode = "native-event"
+phase = "game"
+BossDPSBroadcastTestApi.drain_native_damage()
+phase = "bootstrap"
+for _, candidate in pairs(BossDPSBroadcastTestApi.sessions) do
+    if candidate.name == "RaidBoss_NativeEffectWaza" then
+        exact_native.session = candidate
+        break
+    end
+end
+assert(exact_native.session ~= nil and exact_native.session.total_damage == 2010,
+    "exact native effect/fingerprint events did not preserve final damage")
+for _, source in pairs(exact_native.session.diagnostic_sources) do
+    if source.kind == "pal" then
+        exact_native.source = source
+        break
+    end
+end
+assert(exact_native.source ~= nil,
+    "exact native effect/Waza event did not retain the Pal source")
+exact_native.skill = exact_native.source.skill_candidates["skill:DiamondFall"]
+assert(exact_native.skill ~= nil
+        and exact_native.skill.damage == 1776
+        and exact_native.skill.hits == 5
+        and exact_native.skill.waza_id == 602,
+    "exact native effect/pair links did not enter the DiamondFall bucket")
+exact_native.unresolved_damage = 0
+for key in pairs(exact_native.source.skill_candidates) do
+    if string.find(key, "UNRESOLVED", 1, true) ~= nil
+        or string.find(key, "UNKNOWN", 1, true) ~= nil then
+        exact_native.unresolved_damage = exact_native.unresolved_damage
+            + exact_native.source.skill_candidates[key].damage
+    end
+end
+assert(exact_native.unresolved_damage == 234,
+    "fingerprint or ambiguous pair evidence was promoted instead of failing closed")
+death(exact_native.boss)
+run_game_tasks()
+run_delayed_tasks()
+end
+
+-- Native exact overlap proof: final hits from sustained skills may arrive
+-- after newer casts have started. The collector's per-hit exact Waza/effect
+-- source must survive the positional Lua bridge without being rewritten by
+-- event order. A hit without that exact source must stay unresolved.
+do
+local exact_parameter = object({
+    SaveParameter = { EquipWaza = { 701, 702, 703 } },
+})
+local exact_current_action = actor("BP_ActionApocalypse_C_2147999503", {
+    GetWazaID = function() return 702 end,
+    GetSimpleName = function() return "BP_ActionApocalypse_C_2147999503" end,
+})
+local exact_action_component = object({}, {
+    GetCurrentAction = function() return exact_current_action end,
+})
+local exact_pal = actor("BP_CatVampire_C_502", {
+    CharacterParameterComponent = object({ IndividualParameter = exact_parameter }),
+    ActionComponent = exact_action_component,
+})
+trainer_by_actor[exact_pal] = player_two
+local exact_overlap = {
+    boss = boss_actor("BP_RaidBoss_NativeExactOverlap_C_503"),
+    index = 0,
+    events = {
+        -- IceAge lands after Apocalypse begins.
+        { damage = 80, code = "IceAge", waza = 701, cast = "ice:1", effect = "ice-effect:1" },
+        { damage = 101, code = "Apocalypse", waza = 702, cast = "apocalypse:1", effect = "apocalypse-effect:1" },
+        { damage = 40, code = "GravityShot", waza = 137, cast = "gravity:1", effect = "gravity-effect:1" },
+        -- Apocalypse tail lands after GravityShot begins.
+        { damage = 103, code = "Apocalypse", waza = 702, cast = "apocalypse:1", effect = "apocalypse-effect:1" },
+        { damage = 55, code = "SandTwister", waza = 703, cast = "sand:1", effect = "sand-effect:1" },
+        -- Both sustained skills keep landing after SandTwister begins.
+        { damage = 82, code = "IceAge", waza = 701, cast = "ice:1", effect = "ice-effect:1" },
+        { damage = 107, code = "Apocalypse", waza = 702, cast = "apocalypse:1", effect = "apocalypse-effect:1" },
+        -- Same encounter/signature timing but no exact token.
+        { damage = 17, code = "", waza = 0, cast = "", effect = "", unresolved = true },
+    },
+    expected = {
+        IceAge = { damage = 162, hits = 2 },
+        Apocalypse = { damage = 311, hits = 3 },
+        GravityShot = { damage = 40, hits = 1 },
+        SandTwister = { damage = 55, hits = 1 },
+    },
+}
+BossDPSNativeDrainEventOne = function()
+    exact_overlap.index = exact_overlap.index + 1
+    local event = exact_overlap.events[exact_overlap.index]
+    if event == nil then return false end
+    return true,
+        2,                                          -- api_version (1)
+        "damage",                                   -- kind (2)
+        8000 + exact_overlap.index,                  -- sequence (3)
+        8000000 + exact_overlap.index,               -- captured_ns (4)
+        event.damage,                                -- damage (5)
+        1,                                           -- hits (6)
+        event.unresolved and "unresolved" or "effect_waza", -- evidence_kind (7)
+        exact_pal,                                   -- attacker (8)
+        exact_overlap.boss,                          -- defender (9)
+        nil,                                         -- damage_causer (10)
+        nil,                                         -- override_network_owner (11)
+        nil,                                         -- info_attacker (12)
+        "3:1",                                       -- attacker_id (13)
+        "503:1",                                     -- defender_id (14)
+        "0:0",                                       -- damage_causer_id (15)
+        "0:0",                                       -- override_network_owner_id (16)
+        "0:0",                                       -- info_attacker_id (17)
+        "",                                          -- damage_info_id (18)
+        "",                                          -- action_id (19)
+        event.cast,                                  -- cast_id (20)
+        event.effect,                                -- effect_id (21)
+        event.unresolved and "" or ("filter:" .. event.code), -- filter_id (22)
+        "0:0",                                       -- status_application_id (23)
+        "0xEXACT-OVERLAP",                           -- target_key (24)
+        event.waza,                                  -- waza_id (25)
+        event.code,                                  -- skill_code (26)
+        ""                                           -- status_code (27)
+end
+BossDPSBroadcastTestApi.hooks.damage_mode = "native-event"
+exact_overlap.events_before = BossDPSBroadcastTestApi.metrics.native_events
+exact_overlap.hits_before = BossDPSBroadcastTestApi.metrics.native_hits
+phase = "game"
+BossDPSBroadcastTestApi.drain_native_damage()
+phase = "bootstrap"
+for _, candidate in pairs(BossDPSBroadcastTestApi.sessions) do
+    if candidate.name == "RaidBoss_NativeExactOverlap" then
+        exact_overlap.session = candidate
+        break
+    end
+end
+assert(exact_overlap.session ~= nil and exact_overlap.session.total_damage == 585,
+    "native exact overlap stream changed final damage total")
+for _, source in pairs(exact_overlap.session.diagnostic_sources) do
+    if source.kind == "pal" then
+        exact_overlap.source = source
+        break
+    end
+end
+assert(exact_overlap.source ~= nil,
+    "native exact overlap stream did not retain the Pal source")
+exact_overlap.damage_sum = 0
+exact_overlap.hit_sum = 0
+exact_overlap.unresolved_damage = 0
+exact_overlap.unresolved_hits = 0
+for key, candidate in pairs(exact_overlap.source.skill_candidates) do
+    exact_overlap.damage_sum = exact_overlap.damage_sum + candidate.damage
+    exact_overlap.hit_sum = exact_overlap.hit_sum + candidate.hits
+    if exact_overlap.expected[candidate.name] == nil then
+        assert(string.find(key, "UNRESOLVED", 1, true) ~= nil
+                or string.find(key, "UNKNOWN", 1, true) ~= nil,
+            "native exact overlap created an unexpected skill bucket " .. tostring(key))
+        exact_overlap.unresolved_damage = exact_overlap.unresolved_damage + candidate.damage
+        exact_overlap.unresolved_hits = exact_overlap.unresolved_hits + candidate.hits
+        assert(candidate.exact_damage == 0,
+            "missing exact token entered a certain skill bucket")
+    end
+end
+for code, expected in pairs(exact_overlap.expected) do
+    local candidate = exact_overlap.source.skill_candidates["skill:" .. code]
+    assert(candidate ~= nil
+            and candidate.damage == expected.damage
+            and candidate.hits == expected.hits,
+        "native exact overlap changed " .. code .. " damage/hits")
+end
+assert(exact_overlap.unresolved_damage == 17 and exact_overlap.unresolved_hits == 1,
+    "missing exact token did not remain unresolved")
+assert(exact_overlap.damage_sum == exact_overlap.session.total_damage
+        and exact_overlap.hit_sum == 8,
+    "native exact overlap violated per-skill damage/hit conservation")
+assert(BossDPSBroadcastTestApi.metrics.native_events - exact_overlap.events_before == 8,
+    "native exact overlap changed event conservation")
+assert(BossDPSBroadcastTestApi.metrics.native_hits - exact_overlap.hits_before == 8,
+    "native exact overlap changed hit conservation")
+death(exact_overlap.boss)
+run_game_tasks()
+run_delayed_tasks()
+end
+
 -- Native bridge simulation: one aggregated bucket represents many hits. Lua
 -- must preserve the exact damage while carrying the hit count into tie-break
 -- metadata, and it must classify the target for the C++ fast path.
@@ -1012,4 +3244,4 @@ assert(#delivered_by_uid[test_guid_key(uid_spectator)] == 0, "spectator received
 
 assert(#BossDPSBroadcastTestApi.sessions == 0, "sessions table must be map-like")
 assert(original_os_time ~= nil)
-print("BossDPSBroadcast v3.4.0 integration/thread/lifetime/native/stress tests passed")
+print("PalSkillDPSAnalyzer v0.5.19 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed")

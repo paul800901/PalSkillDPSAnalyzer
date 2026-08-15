@@ -1,177 +1,108 @@
-# PalBossDPSBroadcast v3.4.0
+# PalSkillDPSAnalyzer v0.5.19-core-hud
 
-适用于 Palworld 1.0 专用服务器的 UE4SS Boss 伤害统计模组。v3.2 将高频伤害采集移到可选 C++ 聚合器；v3.3 新增 Palworld 官方全部 17 种语言的自动本地化；v3.4 增加直观的逐只帕鲁伤害明细开关。原生组件不可用时默认自动回退到纯 Lua。
+Palworld 1.0 單機用 UE4SS 傷害驗證 Mod。它不是玩家排行榜，而是專門測量帕魯對 Boss 造成的技能傷害：預設接受競技場／高塔／地城／石板等封閉戰鬥 Boss，以及大世界有 Boss／Alpha 標記的頭目；普通野怪與基地混戰不納入預設正式統計。首頁只保留技能名稱、總傷、DPS、占比與測試時間；施放與 Hit 細節放在 F3 第二頁。
 
-服务端自动统计 Boss 战中的团队伤害、玩家综合伤害、占比和 DPS，并通过游戏聊天窗口向本场实际参与者发送结算。客户端无需安装。
+人物傷害預設關閉。需要測試武器時，可在另一場戰鬥中開啟人物來源；能辨識武器／投射物就分桶，不能辨識時保留為未知人物武器，不猜名稱。
 
-仓库同时提供面向 Steam 创意工坊的单机发行包。单机版复用同一统计核心，但只向本机玩家发送聊天结果。构建和适用边界见 [Workshop 说明](workshop/README.md)。
+## 獨立技能 DPS 面板
 
-## 默认效果
+第一次有效命中後，畫面左側安全區會開啟縮小至 85% 的透明置頂 HUD；聊天輸出預設關閉。戰鬥儀表按累計傷害由高到低排列，只顯示技能名稱、累計傷害、DPS、占比與測試時間。按 `F3` 開啟／關閉遊戲內原生設定面板，使用滑鼠切換「設定」與「本次測試詳情」分頁；施放次數、有傷／無傷施放、總命中段數、每次施放命中段數、單次施放命中段數最低／平均／最高（含無傷施放）、本次遊戲最高單次施放段數與理論最高命中段數都留在第二頁。
 
-公开版默认采用低打扰模式。一场三人 Boss 战发送一行开始确认和四行最终结算：
+預設是「手動 Boss 測試區間」：按 `F2` 可安全歸零並重新待命，直到第一下對可辨識 Boss 的有效命中才開始計時；Boss 階段切換不會提前結算，最終 Boss 死亡或捕捉成功的瞬間會凍結傷害、時間與 DPS 快照。主 HUD 的完整快照不會逾時消失或因 F3 設定改動而重設，會原值保留到下一次 `F2`；死亡後才抵達的技能尾段傷害也不會另開新場覆蓋結果。切換成「所有野生帕魯」時則不因目標死亡凍結，會持續累計到再次按 `F2`。競技場內 Boss 與大世界 Boss 標記目標都會接受；普通野生帕魯預設排除。
+
+實機已確認目前 Palworld／UE4SS 會在 Lua 動態 UMG 與 `PrintString` 路徑造成 GameThread 存取違規。顯示層因此隔離成隨附的 Windows WPF 程序：Lua 只寫入本機 UTF-8 結構化狀態檔，不再從傷害回呼呼叫 Unreal UI。面板只在 Palworld 位於前景時顯示，遊戲關閉後約 10 秒自行退出。
+
+目前 `v0.5.19` 保留嚴格的技能來源規則：只有引擎提供可可靠對接的 Waza、效果或來源鏈證據才進入具名技能桶；多筆候選、來源衝突、逾時或物件世代不符仍維持「未辨識傷害」。全程不按傷害大小、目前／最近動作、`BasePower`＋元素或三格技能猜測。灼燒與中毒維持獨立狀態傷害方向。使用 `F2` 隨時開始新測試（傷害歸零），使用 `F3` 開啟原生設定與本次測試詳情：
+
+- 顯示語言（跟隨遊戲／17 種指定語言）
+- 技能 DPS 面板開關
+- 人物／武器傷害（預設關閉）
+- 手動測試區間／每個目標自動分場
+- Boss 與頭目（預設）／所有野生帕魯（僅額外診斷）
+- 完整／精簡資料密度（預設精簡長條）
+- 內部英文技能代碼（預設不顯示）
+- 左／右安全區、左上／右上位置與 75%／85%／100%／115% 縮放
+- 自動分場的戰後結果顯示時間
+- 聊天輸出關閉／摘要／完整
+- `F2` 開始新測試（歸零並在第一下命中開始計時）
+
+手動設定保存在 `Scripts/config.lua`。完整逐次施放證據仍會寫入 `UE4SS.log`：
 
 ```text
-[BossDPS] 开始统计：Boss名称 已进入战斗
-[BossDPS] 击杀播报：玩家A 的 帕鲁昵称 击败了 Boss名称｜用时 104秒｜团队DPS 8,185｜团队伤害 851,258｜3人
-[BossDPS] MVP #1 玩家A｜伤害 600,904｜70.6%｜DPS 5,778
-[BossDPS] #2 玩家B｜伤害 243,426｜28.6%｜DPS 2,341
-[BossDPS] #3 玩家C｜伤害 6,928｜0.8%｜DPS 67
+[PalSkillDPSAnalyzer] diagnostic-source boss=... source_kind=pal source=... damage=... dps=... hits=... candidates=...
+[PalSkillDPSAnalyzer] diagnostic-candidate boss=... candidate=... localized=... damage=... encounter_dps=... casts=... panel_cd=... actual_interval=... action_duration=... action_dps=... reuse_gap=... lifecycle_coverage=...
+[PalSkillDPSAnalyzer] diagnostic-cast boss=... candidate=... cast=... damage=... hits=... action_duration=... cast_dps=... hit_window=... lifecycle=...
 ```
 
-默认保留开始提示，方便确认模组已识别当前 Boss；10 秒实时播报、趣味点评、角色/帕鲁奖项和逐只帕鲁明细保持关闭。这些组件都可以在配置中独立开启。
+帕魯攻擊使用每次施放、技能效果實例、父子效果、`AttackFilter.Waza`、Blueprint OnAttack 與最終 OnDamage 的精確來源鏈。原生 Event v2 中，沒有精確來源的命中直接顯示「未辨識傷害」；即時三格裝備、目前／最近動作、`BasePower` 與元素只保留為診斷資訊，不得決定正式技能桶。三格外的內建補招只有在引擎提供直接 Waza 證據時才標示為「普攻｜技能名稱」。解包證據與來源鏈計畫見 `docs/SKILL_EFFECT_ATTRIBUTION.md` 與 `docs/ATTRIBUTION_HOOK_PROBE_PLAN.md`。
 
-## 功能
-
-- Boss 首次受到可归属给玩家的有效伤害时自动开始统计。
-- 普通 Boss 实例独立记录；月亮领主的身体、头部和双手合并为一场遭遇，同一时间存在的两个复合 Boss 仍按共同 Owner/父 Actor 隔离。
-- 支持击杀、捕捉和长时间无伤害三种结算路径。
-- 玩家本人和其所有帕鲁伤害合并为玩家综合排名。
-- 内部仍按玩家角色和每只帕鲁分别记录，可选显示详细奖项和队内明细。
-- 坐骑技能优先归属实际帕鲁；玩家武器伤害归属玩家角色。
-- 帕鲁名称优先使用玩家自定义昵称。
-- Boss 名优先使用游戏本地化名称，不显示冗长的 `/Game/...` 对象路径。
-- 只向本场造成过伤害的玩家发送消息，旁观者和其他在线玩家不会收到。
-- 所有收件人通过一个 `TArray<FGuid>` 批量发送，同一行不会按参与人数重复。
-- 有界事件队列和游戏线程消息泵避免在原生伤害回调中调用 UObject/UFunction。
-- 普通目标负缓存以及攻击来源、玩家和帕鲁元数据缓存减少多段技能产生的游戏线程反射查询。
-
-## 环境要求
-
-- Windows Palworld Dedicated Server 1.0
-- UE4SS 3.0.1 `c2ac246`（原生采集器二进制的精确 ABI 目标）
-- 服务端文件访问权限
-
-Lua 回退路径仍可兼容其他 UE4SS 3.x，但随 Release 提供的 C++ DLL 只支持上面的精确版本。升级 Palworld 或 UE4SS 后应重新编译原生组件；不匹配时不要强行加载旧 DLL。
-
-## 安装
-
-1. 停止专用服务器。
-2. 安装并确认 UE4SS 版本为 3.0.1 `c2ac246`。
-3. 下载 Release 压缩包并解压。
-4. 将压缩包中的两个文件夹一起复制到：
-
-   ```text
-   PalServer/Pal/Binaries/Win64/ue4ss/Mods/
-   ```
-
-5. 确认目录结构如下：
-
-   ```text
-   BossDPSNativeCollector/
-   ├─ enabled.txt
-   └─ dlls/
-      └─ main.dll
-
-   BossDPSBroadcast/
-   ├─ enabled.txt
-   └─ Scripts/
-      ├─ main.lua
-      ├─ config.lua
-      └─ commentary.lua
-   ```
-
-6. 启动服务器，在 `ue4ss/UE4SS.log` 中搜索：
-
-   ```text
-   [BossDPSBroadcast] loaded v3.4.0; collector=native
-   ```
-
-若显示 `collector=lua-fallback`，统计仍可工作，但高频伤害仍走旧 Lua 路径。更新旧版本时，先备份自己的 `Scripts/config.lua`，再覆盖模组文件并重新应用配置。
-
-## 配置
-
-编辑 `BossDPSBroadcast/Scripts/config.lua`，保存后重启服务器一次。
-
-| 配置项 | 默认值 | 作用 |
-|---|---:|---|
-| `EnableDPSRecording` | `true` | 总开关；关闭后不记录也不发送任何战报 |
-| `Language` | `"auto"` | 自动跟随 Palworld 语言，也可显式指定 `en`、`zh-CN`、`fr` 等 |
-| `PreferNativeCollector` | `true` | 可用时优先使用 C++ 聚合采集 |
-| `RequireNativeCollector` | `false` | 原生组件不可用时禁止 Lua 回退；一般不要开启 |
-| `NativeDrainIntervalMilliseconds` | `50` | Lua 拉取原生聚合桶的间隔 |
-| `NativeMaxBucketsPerDrain` | `512` | 单轮最多处理的聚合来源数量 |
-| `LocalOnlyMessages` | `false` | 仅单机/房主发行包使用；只向本机参与者显示战报 |
-| `BroadcastStart` | `true` | 首次有效命中时发送一行开始确认 |
-| `EnableProgressReports` | `false` | 发送周期性实时战况 |
-| `ProgressIntervalSeconds` | `10` | 实时战况间隔秒数 |
-| `ProgressMaxRows` | `4` | 实时战况最多显示的玩家数 |
-| `EnableFunComments` | `false` | 开启阈值点评和结算点评 |
-| `EnableDetailedAwards` | `false` | 显示最高队伍、玩家角色和帕鲁奖项 |
-| `EnablePalDamageBreakdown` | `false` | 显示玩家角色及每只帕鲁的伤害、占比和 DPS；创意工坊单机版默认 `true` |
-| `EnableTeamDetails` | `false` | 旧版兼容别名；设为 `true` 也会开启同一份明细 |
-| `TeamDetailMaxRows` | `12` | 队内明细最大行数 |
-| `MarkTopAsMVP` | `true` | 将第一名标记为 `MVP #1` |
-| `MaxResultRows` | `10` | 最终综合排名最大行数 |
-| `ShowDPS` | `true` | 在最终排名中显示个人 DPS |
-| `InactivityTimeoutSeconds` | `60` | 无伤害多久后结束未完成战斗 |
-| `CleanupIntervalSeconds` | `10` | 超时检查间隔 |
-| `MessageIntervalMilliseconds` | `1000` | 消息行之间的发送间隔 |
-| `NonBossCacheSeconds` | `60` | 普通非 Boss 目标的快速判定缓存时间 |
-| `CompositePartJoinWindowSeconds` | `15` | 无共同 Owner 信息时，复合 Boss 部位加入同场遭遇的兜底窗口 |
-
-完整示例和预设见 [配置说明](docs/CONFIGURATION.md)。
-
-## 统计口径
-
-- 团队伤害：本场所有已归属 `ActualDamage` 的总和。
-- 玩家综合伤害：玩家角色伤害加该玩家所有帕鲁伤害。
-- 当前 DPS：最近一次实时播报窗口的伤害除以实际窗口时长。
-- 最终 DPS：整场累计伤害除以战斗持续时间。
-- 并列时按有效命中次数排序，再按显示名稳定排序。
-- 普通多 Boss 按实际 Actor 实例分别统计；仅配置中明确列出的复合 Boss 部位会合并。
-
-## 常见问题
-
-### 完全没有战报
-
-检查两个 `enabled.txt` 是否存在、`EnableDPSRecording` 是否为 `true`，并在 `UE4SS.log` 中确认出现 `loaded v3.4.0`。
-
-### 别人的 Boss 战也发给我，或三个人重复三遍
-
-这是旧版将单个 `FGuid` 错当成收件人数组导致的问题。v3.0.0 及以上版本使用一次调用中的完整 `TArray<FGuid>`。确认日志加载的是 v3.4.0，而不是旧版本。
-
-### 月亮领主出现四次统计或战斗时明显卡顿
-
-v3.4.0 会先在 C++ 中合并同一目标/来源的高频命中；Lua 再将身体、头部和左右部件合并成一场遭遇。确认日志显示 `collector=native`，并且只出现一次 `session started boss=月亮领主`。
-
-### 怎么显示每一只帕鲁的伤害
-
-在 `Scripts/config.lua` 中设置：
+## 預設測試模式
 
 ```lua
-config.EnablePalDamageBreakdown = true
+config.EnableSkillDiagnostics = true
+config.SkillDiagnosticsOnly = true
+config.MeasurementMode = "manual"
+config.TargetScope = "boss"
+config.IncludePlayerDamage = false
+config.SkillDiagnosticChatMode = "off"
+config.EnableSkillDPSHUD = true
+config.EnableExternalHUD = true
+config.ExternalHUDAutoLaunch = true
+config.DumpDamageSchema = false
+config.SkillDiagnosticLogCasts = true
 ```
 
-结算会额外列出玩家角色和每只参战帕鲁的伤害、队内占比及 DPS，帕鲁优先显示玩家设置的昵称。专用服务器默认关闭以减少聊天行数；创意工坊单机版从 v1.2.0 起默认开启。修改后需要重启游戏或服务器一次。
+要另外測試人物武器，將 `IncludePlayerDamage` 設為 `true`，完整重開遊戲，再以一場只使用一種武器的 Boss 戰進行測試。
 
-### 竞技场能否统计
+## Steam 創意工坊單機安裝
 
-如果“竞技场”指 Boss、塔主或召唤 Boss 的战斗场地，只要开战时出现“开始统计”，逐只帕鲁明细就会正常结算。如果指玩家对战的 PvP 竞技场，则当前 Boss 模式不会统计：模组会主动排除玩家拥有的目标，避免把对手帕鲁误判成世界 Boss。
-
-### 捕捉后不立即结算
-
-确认日志中出现：
+診斷包只需要 `UE4SS Experimental (Palworld)`。PalSchema 是許多資料型 Mod 的常見前置，但本 Mod 不修改資料表，因此不是必要依賴。Palworld Mod 管理器會把 Lua 腳本安裝到：
 
 ```text
-capture completion hook=/Script/Pal.PalUtility:PalCaptureSuccess
+Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\
 ```
 
-未识别的特殊捕捉流程仍会由无伤害超时兜底。
+開發中的本機建包：
 
-### 聊天窗口信息太多
+```powershell
+powershell -ExecutionPolicy Bypass -File .\workshop\build_workshop.ps1
+```
 
-使用默认服务端配置，或关闭 `BroadcastStart`、`EnableProgressReports`、`EnableFunComments`、`EnableDetailedAwards`、`EnablePalDamageBreakdown` 和 `EnableTeamDetails`。
+輸出位於 `workshop/dist/PalSkillDPSAnalyzerSP-Workshop-v0.5.19.zip`。專案保留獨立的 `Info.json`、PackageName 與 Workshop Published File ID，不會覆蓋上游 Mod；套件包含 Lua、遊戲內 CommonUI 主介面 PAK 與 LogicMods 啟動 PAK。本版已通過完整離線測試，以及 Palworld v0.5.19 的 F3 滑鼠操作與 Boss 最終快照實機驗收。
 
-## 测试
+## 驗證流程
 
-离线测试需要 Node.js/npm，测试过程不会连接或重启 PalServer：
+1. 啟用本 Mod 與 UE4SS Experimental。
+2. 進入世界後按 F2 歸零，再使用帕魯攻擊一隻競技場／石板 Boss 或有 Boss 標記的大世界頭目；計時從第一下可接受 Boss 傷害開始。
+3. 確認左側即時儀表沒有左右跳動，且晶鑽之雨沒有再被歸到暗能彈。
+4. 測試後保留 `UE4SS.log`，供技能建立、最終傷害與動作生命週期逐筆核對。
+5. 以原生 capabilities 中的 `attack_matches`、`exact_hits`、`unresolved_hits`，以及 `diagnostic-candidate`／`diagnostic-cast` 行確認精確來源鏈與顯示結果；沒有 exact 證據的命中不得進入具名技能桶。
+6. 如需測武器，先在 `config.lua` 開啟人物傷害，完整重開遊戲，另開一場全程只使用同一武器。
+
+## 適用邊界
+
+- 正式目標：Palworld 1.0 Windows 單人世界。
+- Boss 房間、塔主、地城／競技場 Boss、召喚／石板 Boss 與有 Boss／Alpha 標記的大世界頭目是正式目標；普通野生帕魯、基地群戰與 PvP 不是預設正式統計範圍。
+- 持續傷害、燃燒、中毒、同一泛用投射物承載多種技能等情況，可能先進入未知或合併候選。
+- 「面板 CD」來自遊戲技能資料庫；「實際開始間隔」是相鄰施放開始到開始，會包含 AI 選招、移動、距離與其他技能造成的等待，不等同純冷卻。
+- 「完整動作」只統計成功捕捉開始與結束的施放。報表的 `完整計時 n/m` 是覆蓋率；未完整捕捉時只保留首末命中窗，不把它冒充動作時間。
+- 原生 Event v2 逐擊事件在歸因前不聚合；若原生收集器不可用，Lua 相容模式仍可統計總傷，但不保證重疊持續技能的精確歸因。
+- `F3` 開啟／關閉遊戲內原生面板；用滑鼠切換設定頁與第二頁本次測試詳細資料。不註冊 `F1`，避免與其他常見 Mod 衝突。
+- 外部 HUD 會以本機心跳自我檢查並在中止後重新啟動；例外記錄位於 `Scripts/skill_dps_hud_overlay.log`。
+- 外部 HUD 需要 Windows PowerShell 5.1 與 WPF（Windows 10／11 內建）；若安全軟體阻擋 PowerShell，統計核心與 `UE4SS.log` 仍可運作，但畫面面板不會出現。
+
+## 測試
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\tests\run_all.ps1
 ```
 
-覆盖范围见 [测试说明](docs/TESTING.md)。
+離線測試不連線、不啟動或修改 Palworld。涉及新版 Palworld／UE4SS 的改版仍需重新進行受控 Boss 實機驗證；本版已完成該項驗收。
 
-## 许可与免责声明
+原生 C++ 來源收集器的工具鏈、鎖定版本、Git 邊界與 Workshop 發佈分工，見
+[`docs/NATIVE_DEVELOPMENT.md`](docs/NATIVE_DEVELOPMENT.md)。Visual Studio 與第三方
+依賴可保留在專案目錄，但不會被提交到 Git；乾淨 checkout 可由鎖定檔重新建立。
 
-项目采用 [MIT License](LICENSE)。本项目是非官方社区模组，与 Pocketpair 或 UE4SS 项目无隶属关系。使用服务端模组前请备份存档，并遵守服务器规则及相关软件许可。
+## 授權與來源
+
+MIT License。Boss 遭遇辨識、帕魯歸屬與安全訊息核心衍生自 [AsahiChan-Game/PalBossDPSBroadcast](https://github.com/AsahiChan-Game/PalBossDPSBroadcast)，詳細見 [NOTICE.md](NOTICE.md)。17 語言技能名稱表由 `tools/update_skill_names.ps1` 從 [PalDB Active Skills](https://paldb.cc/en/Active_Skills) 的遊戲本地化資料產生。本專案為獨立 Mod，與 Pocketpair、PalDB、Steam 或 UE4SS 無隸屬關係。

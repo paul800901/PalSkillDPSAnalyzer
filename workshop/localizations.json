@@ -1,19 +1,4 @@
 [
-  { "locale": "en", "steam": "english", "title": "Don't Check My DPS — Boss Damage Meter", "description": "DESCRIPTION.en.md" },
-  { "locale": "zh-CN", "steam": "schinese", "title": "不要查我DPS", "description": "DESCRIPTION.zh-CN.md" },
-  { "locale": "zh-TW", "steam": "tchinese", "title": "不要查我 DPS", "description": "DESCRIPTION.zh-TW.md" },
-  { "locale": "ja", "steam": "japanese", "title": "DPSを調べないで — ボスダメージメーター", "description": "DESCRIPTION.ja.md" },
-  { "locale": "fr", "steam": "french", "title": "Ne regardez pas mon DPS — Compteur de dégâts", "description": "DESCRIPTION.fr.md" },
-  { "locale": "it", "steam": "italian", "title": "Non controllare il mio DPS — Misuratore danni", "description": "DESCRIPTION.it.md" },
-  { "locale": "de", "steam": "german", "title": "Prüfe nicht meinen DPS — Boss-Schadensmesser", "description": "DESCRIPTION.de.md" },
-  { "locale": "es-ES", "steam": "spanish", "title": "No mires mi DPS — Medidor de daño", "description": "DESCRIPTION.es-ES.md" },
-  { "locale": "pt-BR", "steam": "brazilian", "title": "Não olhe meu DPS — Medidor de dano", "description": "DESCRIPTION.pt-BR.md" },
-  { "locale": "ru", "steam": "russian", "title": "Не проверяй мой DPS — Счётчик урона", "description": "DESCRIPTION.ru.md" },
-  { "locale": "ko", "steam": "koreana", "title": "내 DPS 보지 마 — 보스 피해량 측정기", "description": "DESCRIPTION.ko.md" },
-  { "locale": "id", "steam": "indonesian", "title": "Jangan Cek DPS Saya — Pengukur Damage Boss", "description": "DESCRIPTION.id.md" },
-  { "locale": "es-419", "steam": "latam", "title": "No mires mi DPS — Medidor de daño", "description": "DESCRIPTION.es-419.md" },
-  { "locale": "th", "steam": "thai", "title": "อย่าดู DPS ของฉัน — เครื่องวัดดาเมจบอส", "description": "DESCRIPTION.th.md" },
-  { "locale": "tr", "steam": "turkish", "title": "DPS'ime Bakma — Boss Hasar Ölçer", "description": "DESCRIPTION.tr.md" },
-  { "locale": "vi", "steam": "vietnamese", "title": "Đừng Xem DPS Của Tôi — Đồng Hồ Sát Thương Boss", "description": "DESCRIPTION.vi.md" },
-  { "locale": "pl", "steam": "polish", "title": "Nie Sprawdzaj Mojego DPS — Licznik Obrażeń Bossa", "description": "DESCRIPTION.pl.md" }
+  { "locale": "en", "steam": "english", "title": "Pal Skill DPS Analyzer — Damage Verification", "description": "DESCRIPTION.en.md" },
+  { "locale": "zh-TW", "steam": "tchinese", "title": "帕魯技能 DPS 分析器 — 傷害驗證", "description": "DESCRIPTION.zh-TW.md" }
 ]

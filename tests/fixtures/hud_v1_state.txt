@@ -1,0 +1,9 @@
+PAL_SKILL_DPS_HUD_V1
+sequence=1
+visible=1
+anchor=top-right
+scale=1.0
+settings=1
+---
+帕魯技能 DPS｜設定
+↑↓ 選擇  ←→／Enter 調整

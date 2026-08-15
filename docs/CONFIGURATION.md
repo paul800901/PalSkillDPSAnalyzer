@@ -1,144 +1,88 @@
-# 配置说明
+# 設定說明
 
-配置文件位于 `Scripts/config.lua`。所有开关都在服务端读取，修改后重启服务器一次即可生效，客户端无需改动。
+設定檔是 `Scripts/config.lua`。Steam 創意工坊單機版安裝後位於：
 
-## 推荐预设
-
-### 默认精简模式
-
-适合公共服务器，只显示结算摘要、MVP 和玩家综合排名：
-
-```lua
-config.EnableDPSRecording = true
-config.Language = "auto"
-config.BroadcastStart = true
-config.EnableProgressReports = false
-config.EnableFunComments = false
-config.EnableDetailedAwards = false
-config.EnablePalDamageBreakdown = false
-config.EnableTeamDetails = false
-config.MarkTopAsMVP = true
+```text
+Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\config.lua
 ```
 
-三位玩家参与时，通常发送一行开始确认和四行最终结算。
+v0.5.11 暫時停用不可靠的外部 F1 互動設定；請直接修改本檔並完整重開 Palworld。遊戲中按 `F2` 可隨時把本次測試歸零並重新待命。
 
-## 语言
+## 診斷模式
 
-`Language = "auto"` 会读取 Palworld 当前语言。也可以明确指定：
+| 設定 | 預設 | 用途 |
+|---|---:|---|
+| `EnableDPSRecording` | `true` | 傷害驗證總開關 |
+| `EnableSkillDiagnostics` | `true` | 建立技能／武器候選與原始證據 |
+| `SkillDiagnosticsOnly` | `true` | 只輸出驗證摘要，不輸出玩家排名 |
+| `IncludePlayerDamage` | `false` | 是否加入人物／武器來源 |
+| `DumpDamageSchema` | `false` | 選用：啟動後反射傷害事件欄位一次；目前 UE4SS 巢狀反射可能失敗 |
+| `SkillDiagnosticMaxSamplesPerCandidate` | `64` | 每個候選最多保留幾筆逐擊樣本；診斷版保留足夠多段技能命中供核對 |
+| `SkillDiagnosticMaxSchemaFields` | `128` | 反射欄位數上限 |
+| `SkillDiagnosticChatMode` | `"off"` | `off` 不使用聊天框；`summary` 只顯示完成摘要；`full` 顯示完整舊式報表 |
+| `SkillDiagnosticChatMaxRows` | `12` | `full` 模式的技能／武器明細上限 |
+| `SkillMarkerTTLSeconds` | `30` | 延遲投射物可沿用 Waza 技能代號的時間 |
+| `SkillMarkerMaxEntries` | `2048` | Waza 關聯快取的有界上限 |
+| `EquipWazaRefreshSeconds` | `5` | 三格裝備技能清單的 TTL；每次動作開始也會失效重讀，換技後分類會在下次命中時更新 |
+| `SkillActionPostHitSeconds` | `10` | 動作結束後，第一筆延遲命中可比對最近施放的秒數 |
+| `SkillActionConflictSeconds` | `1.25` | 兩個不同施放結束時間過近時視為衝突，不強行歸屬 |
+| `SkillEffectHitGapSeconds` | `3` | 已確認的同一延遲效果允許相鄰命中的最大間隔 |
+| `SkillEffectMaxLifetimeSeconds` | `45` | 已確認延遲效果可持續累計的最長時間 |
+| `PreferNativeCollector` | `true` | 優先使用具備逐命中與精確來源鏈能力的原生事件 API v2；未完成／不相容時自動退回 Lua |
+| `AllowLegacyNativeAggregate` | `false` | 是否允許只保留總傷、會丟失技能來源的舊原生聚合器；技能分析不建議開啟 |
+| `MeasurementMode` | `"manual"` | `manual` 由使用者控制測試區間；`target` 每個目標自動分場 |
+| `TargetScope` | `"boss"` | `boss` 接受競技場／塔／地城／石板 Boss 與有 Boss／Alpha 標記的大世界頭目；`all` 僅用於額外的非 Boss 診斷 |
 
-```lua
-config.Language = "fr"
-```
+帕魯測試請保持 `IncludePlayerDamage = false`。測試人物武器時改為 `true`，並建議每場只使用一種武器。
 
-支持 `en`、`zh-CN`、`zh-TW`、`ja`、`fr`、`it`、`de`、`es-ES`、`pt-BR`、`ru`、`ko`、`id`、`es-419`、`th`、`tr`、`vi` 和 `pl`。无法识别时回退英语。趣味点评梗池仍仅提供简体中文；其他语言即使开启该开关，也只显示完整本地化的核心战报。
+## 技能 DPS 面板
 
-## 原生采集器
+| 設定 | 預設 | 用途 |
+|---|---:|---|
+| `EnableSkillDPSHUD` | `true` | 顯示獨立技能 DPS 面板 |
+| `HUDRefreshMilliseconds` | `500` | 即時面板更新間隔 |
+| `HUDSettingsVersion` | `3` | 使用者 HUD 設定格式；舊版第一次載入會遷移成安全區傷害實驗室配置 |
+| `HUDDetailMode` | `"compact"` | `compact` 顯示比例長條；`full` 在每招下方展開所有計時 |
+| `HUDShowInternalSkillCode` | `false` | 是否在官方本地化名稱後附加內部英文 Waza／動作代碼 |
+| `HUDAnchor` | `"left-center"` | `left-center`、`right-center`、`top-left` 或 `top-right` |
+| `HUDScale` | `0.85` | F1 可選 0.75、0.85、1.0、1.15 |
+| `HUDMaxSkillRows` | `5` | 即時儀表最多顯示幾個技能；F1「本次測試」不受此限制 |
+| `HUDFinalResultSeconds` | `15` | `target` 模式結算後保留秒數；0 立即隱藏，-1 永久保留 |
+| `HUDKeepFinalResults` | `true` | 舊版相容設定；v3 以 `HUDFinalResultSeconds` 為準 |
+| `EnableExternalHUD` | `true` | 啟用不碰 Unreal UI 的透明 Windows HUD |
+| `EnableExternalHUDSettings` | `false` | 安全保護；原生 CommonUI 完成前禁止外部互動設定窗 |
+| `ExternalHUDAutoLaunch` | `true` | MOD 載入時自動啟動隨附 WPF 顯示程序 |
+| `HUDUseExperimentalUMG` | `false` | 相容保護；外部 HUD 不再呼叫此崩潰路徑 |
+| `HUDUseScreenTextFallback` | `false` | 相容保護；外部 HUD 不再呼叫會崩潰的 `PrintString` |
 
-专用服务器 v3.2 推荐保持：
+外部 HUD 僅是不可點擊的顯示層，不再搶 Windows 焦點、不變更 Palworld 游標、不 DisableInput，也不解除游標裁切。F1 在原生 CommonUI 設定頁完成前會 fail closed；按 `F2` 可清空目前測試資料但不修改歷史 log，`manual` 模式會重新待命直到第一筆有效傷害。原生暫停／設定選單、標題畫面、讀取中或沒有可控制角色時，外部 DPS 會自動隱藏。
+
+外部 HUD 的即時狀態檔是 `Scripts/skill_dps_hud_state.txt`；`skill_dps_hud_heartbeat.txt` 供 Lua 偵測顯示程序，WPF 例外寫入 `skill_dps_hud_overlay.log`。執行期只接受 `meter` 顯示文件，不接受舊版 `settings` 互動文件。面板不讀取或修改世界存檔；Palworld 不在前景時自動隱藏，遊戲程序結束後自動退出。
+
+## 結算口徑
+
+- 測試區間：`manual` 從歸零後第一筆符合 `TargetScope` 的有效傷害開始，預設可跨多隻 Boss 持續累計；`target` 依單一目標的擊殺、捕捉或逾時結算。
+- 來源：以實際攻擊者帕魯個體分組；坐騎、隊伍／跟隨帕魯及基地帕魯不因屬於同一玩家而合併。啟用人物後，人物角色另算一個來源。
+- 候選：優先使用 `EPalWazaID`；缺少 Waza 時使用去除實例編號的當前動作、投射物、武器來源或未知桶。
+- 泛用持續傷害：只有 `BasePower + AttackElementType` 在整場唯一對應到一個已知技能時才合併；有歧義時保持未解析。
+- 整場 DPS：候選累計傷害除以目前測試區間總秒數。
+- 平均每擊：候選累計傷害除以有效命中數。
+- 占比：候選傷害除以該來源的累計傷害。
+- 未知資料保留 `UNKNOWN_*`，不依傷害數字猜技能。
+
+## 相容設定
+
+專案保留上游 Boss 遭遇偵測需要的安全與快取設定。診斷版固定建議：
 
 ```lua
 config.PreferNativeCollector = true
-config.RequireNativeCollector = false
-config.NativeDrainIntervalMilliseconds = 50
-config.NativeMaxBucketsPerDrain = 512
+config.AllowLegacyNativeAggregate = false
+config.EnableProgressReports = false
+config.EnableDetailedAwards = false
+config.EnablePalDamageBreakdown = false
+config.EnableFunComments = false
 ```
 
-正常启动日志应显示 `collector=native`。如果 DLL 缺失、UE4SS ABI 不匹配或伤害结构反射失败，会显示 `collector=lua-fallback`，并继续使用旧 Lua 钩子。`RequireNativeCollector=true` 只适合性能诊断；开启后原生组件不可用会直接禁止伤害统计。
-
-`NativeDrainIntervalMilliseconds` 控制 Lua 多久拉取一次聚合结果，通常不应低于 50。`NativeMaxBucketsPerDrain` 限制的是不同目标/来源组合，不是命中次数；同一个多段技能的数百次命中通常只占一个桶。
-
-### 实时战况模式
-
-在默认配置基础上开启：
-
-```lua
-config.EnableProgressReports = true
-config.ProgressIntervalSeconds = 10
-config.ProgressMaxRows = 4
-```
-
-实时战况只发给已经对该 Boss 造成过伤害的玩家。石板 Boss 或长时间战斗可能产生较多消息，公共服务器建议保持关闭。
-
-### 显示玩家角色和每只帕鲁的伤害
-
-在默认配置基础上开启：
-
-```lua
-config.EnablePalDamageBreakdown = true
-config.TeamDetailMaxRows = 12
-```
-
-结算时会额外列出玩家角色和每只参战帕鲁的伤害、队内占比与 DPS。帕鲁优先显示玩家设置的昵称，未设置昵称时显示物种名。专用服务器默认关闭，避免多人战斗产生太多聊天行；创意工坊单机版从 v1.2.0 起默认开启。
-
-旧配置项 `EnableTeamDetails = true` 仍然有效，是同一功能的兼容别名。建议新配置统一改用 `EnablePalDamageBreakdown`。
-
-如果还想显示最高伤害队伍、最高伤害玩家角色和最高伤害帕鲁等奖项，可以另外开启：
-
-```lua
-config.EnableDetailedAwards = true
-```
-
-### 竞技场边界
-
-- Boss 房间、塔主战和召唤 Boss 场地：只要首次有效命中时出现“开始统计”，就支持玩家角色与逐只帕鲁的明细结算。
-- 玩家对战的 PvP 竞技场：当前 Boss 模式不统计。模组会主动排除玩家拥有的受击目标，避免把对手帕鲁误判成世界 Boss。
-
-### 完全关闭 DPS 模组
-
-```lua
-config.EnableDPSRecording = false
-```
-
-关闭后伤害、死亡和捕捉回调不会进入统计队列，也不会创建会话或发送消息。模组仍会被 UE4SS 加载，以便下次只改配置即可恢复。
-
-## 名称覆盖
-
-模组优先读取游戏本地化数据库。若某个 Boss 或帕鲁仍显示内部英文 ID，可以在配置末尾添加覆盖：
-
-```lua
-config.BossNameOverrides = {
-    InternalBossId = {
-        en = "English Boss Name",
-        ["zh-CN"] = "中文Boss名",
-    },
-}
-
-config.PalNameOverrides = {
-    InternalPalId = {
-        en = "English Pal Name",
-        ["zh-CN"] = "中文帕鲁名",
-    },
-}
-```
-
-玩家为帕鲁设置的昵称始终优先于物种覆盖名。
-
-## 安全参数
-
-以下参数一般不需要修改：
-
-```lua
-config.MaxPendingEvents = 8192
-config.MaxEventsPerDrain = 256
-config.MaxSourceOwnerCacheEntries = 2048
-config.NonBossCacheSeconds = 60
-config.TraceDamage = false
-```
-
-这些队列参数只约束纯 Lua 回退路径及死亡/捕捉事件。原生路径使用独立的聚合上限。队列满时仅丢弃额外伤害事件，结束事件仍会保留。`TraceDamage` 会产生大量日志，只建议在短时间诊断时开启。
-
-## 复合 Boss 部位
-
-月亮领主由多个可受伤 Actor 组成。默认配置会把这些部位合并成一场遭遇：
-
-```lua
-config.CompositePartJoinWindowSeconds = 15
-config.CompositeBossParts = {
-    YakushimaBoss002_B = { group = "YakushimaBoss002", terminal = true },
-    YakushimaBoss002_Head = { group = "YakushimaBoss002" },
-    YakushimaBoss002_L = { group = "YakushimaBoss002" },
-    YakushimaBoss002_R = { group = "YakushimaBoss002" },
-}
-```
-
-`terminal=true` 表示该主体死亡时结束整场遭遇；头部和双手提前被破坏不会单独结算。不要仅凭中文显示名添加部位，以免把两个同名 Boss 串到一起。
+只有原生事件 API 回報精確 cast／effect 來源鏈已就緒時才會啟用；舊聚合器不會被
+技能分析器誤選。原生來源鏈未完成或 ABI 不符時，會保留總傷並以未歸屬呈現，
+不使用時間、倍率或屬性冒充精確技能。

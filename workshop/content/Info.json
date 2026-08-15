@@ -1,11 +1,11 @@
 {
-  "ModName": "不要查我DPS",
-  "PackageName": "PalBossDPSBroadcastSP",
+  "ModName": "帕魯技能 DPS 分析器",
+  "PackageName": "PalSkillDPSAnalyzerSP",
   "Thumbnail": "thumbnail.png",
-  "Version": "1.2.0",
+  "Version": "0.5.19",
   "DebugMode": false,
   "MinRevision": 82182,
-  "Author": "AsahiChan-Game",
+  "Author": "paul800901",
   "Dependencies": [
     "UE4SSExperimentalPW"
   ],
@@ -17,6 +17,18 @@
       "Type": "Lua",
       "Targets": [
         "./Scripts"
+      ]
+    },
+    {
+      "Type": "Paks",
+      "Targets": [
+        "./Paks/"
+      ]
+    },
+    {
+      "Type": "LogicMods",
+      "Targets": [
+        "./LogicMods/"
       ]
     }
   ]

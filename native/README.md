@@ -1,37 +1,38 @@
-# 原生伤害采集器
+# 帕魯技能 DPS 原生來源收集器
 
-`BossDPSNativeCollector` 是 `BossDPSBroadcast` v3.2 的可选 C++ 前端。它在
-UE4SS 原生回调中只读取并累加伤害字段，不执行 Boss 判断、玩家/帕鲁归属查询或
-聊天广播。Lua 每隔很短时间拉取已经聚合的记录，继续负责原有战报逻辑。
+本目錄是 PalSkillDPSAnalyzer 的 C++ 收集層。舊版 collector 只能在最終傷害
+回呼中依 attacker／defender 聚合，會在技能歸因以前丟失事件順序。現階段正改為
+保存逐命中事件，沿 cast、SkillEffect、AttackFilter、DamageInfo 與 final damage
+傳遞來源；灼燒、中毒等來源不可回復的持續傷害獨立列為「狀態傷害」。
 
-## 兼容边界
+## 相容邊界
 
-当前二进制只针对专用服务器实际使用的 UE4SS 3.0.1
-`c2ac246447a8bcd92541070cb474044e7a2bbbe6` 和 MSVC 14.44 构建。升级
-UE4SS 后必须重新编译。加载或反射失败时，Lua 默认回退到原有纯 Lua 伤害钩子。
+目標是 Palworld 1.0 Windows 單機與目前 Workshop 安裝的 UE4SS Experimental。
+精確版本、runtime hash 與第三方 commit 見
+`tools/native-toolchain.lock.json`。遊戲或 UE4SS 更新後必須重做 ABI／hook 驗證；
+載入或反射失敗時不得把弱時間推定冒充精確技能來源。
 
-## 构建
+## 建置
 
-在仓库根目录运行：
+先依 `docs/NATIVE_DEVELOPMENT.md` 安裝並驗證工具鏈，再從倉庫根目錄執行：
 
 ```powershell
 .\native\build_native.ps1 `
-  -UE4SSDll "D:\PalServer\Pal\Binaries\Win64\ue4ss\UE4SS.dll"
+  -UE4SSDll "E:\Program Files (x86)\Steam\steamapps\common\Palworld\Mods\NativeMods\UE4SS\UE4SS.dll"
 ```
 
-脚本从服务器实际的 `UE4SS.dll` 导出表生成 import library，不会覆盖或修改
-UE4SS 本身。构建结果位于 `native/build-native/main.dll`，同时执行 200 万次并发伤害
-聚合压力测试。
+腳本從遊戲實際的 `UE4SS.dll` 匯出表產生 import library，不覆寫 UE4SS。建置結果
+位於 `native/build-native/main.dll`，並執行原生事件／守恆壓力測試。
 
 ## 安装结构
 
 ```text
-ue4ss/Mods/
+Mods/NativeMods/UE4SS/Mods/
 ├─ BossDPSNativeCollector/
 │  ├─ enabled.txt
 │  └─ dlls/
 │     └─ main.dll
-└─ BossDPSBroadcast/
+└─ PalSkillDPSAnalyzerSP/
    ├─ enabled.txt
    └─ Scripts/
       ├─ main.lua
@@ -39,5 +40,5 @@ ue4ss/Mods/
       └─ commentary.lua
 ```
 
-先停止服务器，安装两个目录，再启动。日志中同时出现
-`native damage hook ready` 和 `collector=native` 才表示原生路径已启用。
+安裝或覆寫 DLL 前必須完全關閉 Palworld。日誌需同時出現原生版本、鎖定 ABI、
+各 hook 註冊結果與逐事件收集狀態，才表示原生路徑真的啟用。
