@@ -1,0 +1,1 @@
+v0.5.19: added the complete Traditional Chinese description after English.｜v0.5.19：英文說明後新增完整繁體中文文本。
