@@ -37,11 +37,14 @@ $metadata = Get-Content -LiteralPath $metadataPath -Raw -Encoding UTF8 | Convert
 $publishedFileId = [string]$metadata.publishedfileid
 if ([string]::IsNullOrWhiteSpace($publishedFileId)) { $publishedFileId = "0" }
 
-$description = Get-Content -LiteralPath (Join-Path $workshopDirectory "DESCRIPTION.en.md") -Raw -Encoding UTF8
+$englishDescription = Get-Content -LiteralPath (Join-Path $workshopDirectory "DESCRIPTION.en.md") -Raw -Encoding UTF8
+$traditionalChineseDescription = Get-Content -LiteralPath (Join-Path $workshopDirectory "DESCRIPTION.zh-TW.md") -Raw -Encoding UTF8
+$description = $englishDescription.TrimEnd() + "`r`n[hr][/hr]`r`n" + $traditionalChineseDescription.TrimStart()
 # SteamCMD stores escaped newlines as the visible text "\n". Steam BBCode block tags
 # provide the layout, so collapse physical line breaks before writing the VDF.
 $description = $description.Replace("`r", "").Replace("`n", "")
-$workshopTitle = "Pal Skill DPS Analyzer - Damage Verification"
+$workshopTitle = (Get-Content -LiteralPath (Join-Path $workshopDirectory "TITLE.txt") -Raw -Encoding UTF8).Trim()
+$changeNote = (Get-Content -LiteralPath (Join-Path $workshopDirectory "CHANGENOTE.txt") -Raw -Encoding UTF8).Trim()
 $steamCmdDirectory = Split-Path -Parent ([System.IO.Path]::GetFullPath($SteamCmdPath))
 $stagingDirectory = Join-Path $steamCmdDirectory ("workshop\PalSkillDPSAnalyzerSP-{0}" -f $PID)
 $stagedContentDirectory = Join-Path $stagingDirectory "content"
@@ -58,7 +61,7 @@ $vdf = @(
     ('    "visibility" "{0}"' -f $Visibility)
     ('    "title" "{0}"' -f (ConvertTo-VdfValue $workshopTitle))
     ('    "description" "{0}"' -f (ConvertTo-VdfValue $description))
-    '    "changenote" "v0.5.19: native F3 CommonUI settings/details, five-field HUD, and complete Boss death/capture snapshots that remain unchanged until F2."'
+    ('    "changenote" "{0}"' -f (ConvertTo-VdfValue $changeNote))
     '}'
 ) -join "`r`n"
 [System.IO.File]::WriteAllText($vdfPath, $vdf, [System.Text.UTF8Encoding]::new($false))
@@ -76,9 +79,18 @@ if (-not $match.Success -or $match.Groups[1].Value -eq "0") {
 }
 
 $metadata.publishedfileid = $match.Groups[1].Value
-$metadata.changenote = "v0.5.19: native F3 CommonUI settings/details, five-field HUD, and complete Boss death/capture snapshots that remain unchanged until F2."
+$metadata.changenote = $changeNote
 $metadata.last_published_version = "0.5.19"
-$metadataJson = $metadata | ConvertTo-Json -Depth 4
+$publishedFileIdJson = ConvertTo-Json -InputObject ([string]$metadata.publishedfileid) -Compress
+$changeNoteJson = ConvertTo-Json -InputObject ([string]$metadata.changenote) -Compress
+$publishedVersionJson = ConvertTo-Json -InputObject ([string]$metadata.last_published_version) -Compress
+$metadataJson = @(
+    '{'
+    ('  "publishedfileid": {0},' -f $publishedFileIdJson)
+    ('  "changenote": {0},' -f $changeNoteJson)
+    ('  "last_published_version": {0}' -f $publishedVersionJson)
+    '}'
+) -join "`r`n"
 [System.IO.File]::WriteAllText($metadataPath, $metadataJson + "`r`n", [System.Text.UTF8Encoding]::new($false))
 
 Write-Host "Workshop upload succeeded. Published File ID: $($match.Groups[1].Value)"
