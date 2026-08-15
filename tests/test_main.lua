@@ -1,5 +1,14 @@
 package.path = "../Scripts/?.lua;" .. package.path
 
+-- Fengari does not expose filesystem writes. The HUD persistence path is
+-- exercised here without mutating the developer machine.
+io.open = io.open or function()
+    return {
+        write = function() end,
+        close = function() end,
+    }
+end
+
 local phase = "bootstrap"
 local callbacks = {}
 local post_callbacks = {}
@@ -45,6 +54,10 @@ local function object(fields, methods)
             end
             return storage[key]
         end,
+        __newindex = function(_, key, value)
+            require_game_thread("UObject member " .. tostring(key))
+            storage[key] = value
+        end,
     })
 end
 
@@ -78,6 +91,33 @@ local input_move_events = {}
 input_cursor_events = {}
 input_controller_action_events = {}
 input_pawn_action_events = {}
+input_mode_events = {}
+native_settings_events = {}
+native_settings_text = {}
+native_settings_page = nil
+native_settings_creation_count = 0
+native_ftext_set_count = 0
+console_command_callbacks = {}
+
+FText = setmetatable({}, {
+    __call = function(_, value)
+        local content = tostring(value or "")
+        return {
+            ToString = function() return content end,
+            type = function() return "FText" end,
+        }
+    end,
+})
+
+FName = setmetatable({}, {
+    __call = function(_, value)
+        local content = tostring(value or "")
+        return {
+            ToString = function() return content end,
+            type = function() return "FName" end,
+        }
+    end,
+})
 local_input_pawn = object({}, {
     DisableInput = function()
         input_pawn_action_events[#input_pawn_action_events + 1] = "disable"
@@ -86,10 +126,11 @@ local_input_pawn = object({}, {
         input_pawn_action_events[#input_pawn_action_events + 1] = "enable"
     end,
 })
-local local_player_controller = object({
+local_player_controller_fields = {
     PlayerState = player_one_state,
     bShowMouseCursor = false,
-}, {
+}
+local local_player_controller = object(local_player_controller_fields, {
     GetPawn = function()
         return local_input_pawn
     end,
@@ -100,6 +141,7 @@ local local_player_controller = object({
         input_move_events[#input_move_events + 1] = value == true
     end,
     SetShowMouseCursor = function(_, value)
+        local_player_controller_fields.bShowMouseCursor = value == true
         input_cursor_events[#input_cursor_events + 1] = value == true
     end,
     DisableInput = function()
@@ -173,6 +215,89 @@ local normal_target = actor("BP_Sheep_C_4", {
 })
 local world = object()
 game_paused = false
+
+native_ui = { named_widgets = {}, reset_count = 0, asset_loaded = false, asset_load_count = 0 }
+native_ui.text_widget = function(name)
+    local widget = object({}, {
+        SetText = function(_, value)
+            assert(type(value) == "table" and value:type() == "FText",
+                "native settings SetText must receive an FText value")
+            native_ftext_set_count = native_ftext_set_count + 1
+            native_settings_text[name] = value:ToString()
+        end,
+    })
+    native_ui.named_widgets[name] = widget
+    return widget
+end
+
+native_ui.switcher = object({}, {
+    SetActiveWidgetIndex = function(_, index)
+        native_settings_page = index
+    end,
+})
+native_ui.named_widgets.PSDPS_PageSwitcher = native_ui.switcher
+native_ui.text_widget("PSDPS_Title")
+native_ui.text_widget("PSDPS_Footer")
+native_ui.text_widget("PSDPS_DetailRows")
+for _, key in ipairs({
+    "Language",
+    "MeasurementMode",
+    "TargetScope",
+    "IncludePlayerDamage",
+    "EnableSkillDPSHUD",
+    "HUDAnchor",
+    "HUDScale",
+    "HUDFinalResultSeconds",
+    "SkillDiagnosticChatMode",
+}) do
+    native_ui.text_widget("PSDPS_" .. key .. "_Value")
+end
+
+native_ui.widget = object(native_ui.named_widgets, {
+    GetWidgetFromName = function()
+        error("native settings must use exposed Blueprint widget variables")
+    end,
+    AddToViewport = function(_, z_order)
+        assert(z_order == 10000, "native settings must use the intended viewport layer")
+        native_settings_events[#native_settings_events + 1] = "add"
+    end,
+    ActivateWidget = function()
+        native_settings_events[#native_settings_events + 1] = "activate"
+    end,
+    DeactivateWidget = function()
+        native_settings_events[#native_settings_events + 1] = "deactivate"
+    end,
+    RemoveFromParent = function()
+        native_settings_events[#native_settings_events + 1] = "remove"
+    end,
+    SetKeyboardFocus = function()
+        native_settings_events[#native_settings_events + 1] = "focus"
+    end,
+})
+native_ui.class = object()
+native_ui.asset = object({ GeneratedClass = native_ui.class })
+native_ui.widget_library = object({}, {
+    Create = function(_, context, widget_class, controller)
+        assert(context == world, "native settings used the wrong world")
+        assert(widget_class == native_ui.class, "native settings used the wrong widget class")
+        assert(controller == local_player_controller, "native settings used the wrong player controller")
+        native_settings_creation_count = native_settings_creation_count + 1
+        return native_ui.widget
+    end,
+    SetInputMode_UIOnlyEx = function(_, controller, widget, mouse_lock, flush_input)
+        assert(controller == local_player_controller and widget == native_ui.widget,
+            "UIOnly input mode did not target the native settings widget")
+        assert(mouse_lock == 0 and flush_input == true,
+            "UIOnly input mode did not request an unlocked, flushed cursor")
+        input_mode_events[#input_mode_events + 1] = "ui"
+    end,
+    SetInputMode_GameOnly = function(_, controller, flush_input)
+        assert(controller == local_player_controller and flush_input == true,
+            "GameOnly input restore used the wrong controller/options")
+        input_mode_events[#input_mode_events + 1] = "game"
+    end,
+})
+
 local gameplay_statics = object({}, {
     GetPlayerController = function(_, context, index)
         assert(context == world, "unexpected local-player world context")
@@ -314,6 +439,13 @@ local waza_enum = object({}, {
 
 function StaticFindObject(path)
     require_game_thread("StaticFindObject")
+    if path == "/Game/Mods/PalSkillDPSAnalyzerSP/WBP_PalSkillDPSSettings.WBP_PalSkillDPSSettings_C"
+        and native_ui.asset_loaded then
+        return native_ui.class
+    end
+    if path == "/Script/UMG.Default__WidgetBlueprintLibrary" then
+        return native_ui.widget_library
+    end
     if path == "/Script/Pal.Default__PalUtility" then
         return utility
     end
@@ -330,6 +462,22 @@ function StaticFindObject(path)
         return waza_enum
     end
     error("unexpected StaticFindObject path: " .. tostring(path))
+end
+
+function LoadAsset(path)
+    require_game_thread("LoadAsset")
+    assert(path == "/Game/Mods/PalSkillDPSAnalyzerSP/WBP_PalSkillDPSSettings.WBP_PalSkillDPSSettings",
+        "unexpected native settings asset path")
+    native_ui.asset_loaded = true
+    native_ui.asset_load_count = native_ui.asset_load_count + 1
+    return native_ui.asset, true, true
+end
+
+function RegisterConsoleCommandHandler(name, callback)
+    assert(phase == "bootstrap", "console command handler must register during bootstrap")
+    assert(name == "psdps" and type(callback) == "function",
+        "unexpected native settings console command registration")
+    console_command_callbacks[name] = callback
 end
 
 function FindFirstOf(type_name)
@@ -370,6 +518,7 @@ EngineTickAvailable = true
 Key = {
     F1 = "F1",
     F2 = "F2",
+    F3 = "F3",
     UP_ARROW = "UP",
     DOWN_ARROW = "DOWN",
     LEFT_ARROW = "LEFT",
@@ -549,12 +698,86 @@ assert(runtime_config.SkillDiagnosticLogCasts == true,
     "per-cast diagnostic log should default to enabled")
 assert(runtime_config.SkillActionMaxEntries >= 128,
     "action lifecycle cache must be bounded")
-assert(type(key_callbacks[Key.F1]) == "function", "F1 HUD settings key was not registered")
+assert(runtime_config.HUDMaxHitCastSamples == 6,
+    "per-cast hit history should default to six visible casts")
+assert(runtime_config.SkillPerCastHitMaxEntries == 4096,
+    "per-cast hit timestamps should have a bounded diagnostic limit")
+assert(type(runtime_config.SkillFullHitCaps) == "table"
+    and next(runtime_config.SkillFullHitCaps) == nil,
+    "full-hit baselines must start empty instead of guessing from observed hits")
+assert(runtime_config.EnableExternalHUDSettings == false,
+    "cross-process WPF settings must stay disabled")
+assert(runtime_config.EnableNativeCommonUISettings == true,
+    "F3 native CommonUI settings should default to enabled")
+assert(key_callbacks[Key.F1] == nil, "F1 must remain free for other mods")
+assert(type(key_callbacks[Key.F3]) == "function", "F3 HUD settings key was not registered")
 assert(type(key_callbacks[Key.F2]) == "function", "F2 damage-test reset key was not registered")
-assert(type(key_callbacks[Key.UP_ARROW]) == "function"
-    and type(key_callbacks[Key.DOWN_ARROW]) == "function"
-    and type(key_callbacks[Key.RETURN]) == "function",
-    "HUD settings navigation keys were not registered")
+assert(key_callbacks[Key.UP_ARROW] == nil and key_callbacks[Key.DOWN_ARROW] == nil
+    and key_callbacks[Key.LEFT_ARROW] == nil and key_callbacks[Key.RIGHT_ARROW] == nil
+    and key_callbacks[Key.RETURN] == nil,
+    "native mouse settings must not install the obsolete keyboard navigation layer")
+assert(type(console_command_callbacks.psdps) == "function",
+    "native settings command bridge was not registered")
+
+do
+    local casts = {
+        { key = "cast-1", started_at = 10, ended_at = 12, damage = 0, hits = 0 },
+        { key = "cast-2", started_at = 20, ended_at = 22, damage = 0, hits = 0 },
+        { key = "cast-3", started_at = 30, ended_at = 32, damage = 0, hits = 0 },
+    }
+    local grouped, unassigned =
+        BossDPSBroadcastTestApi.group_unlinked_hits_by_cast_window(casts, {
+            { at = 5, damage = 7, hits = 1 },
+            { at = 11, damage = 20, hits = 2 },
+            { at = 21, damage = 30, hits = 3 },
+        })
+    assert(grouped == 5 and unassigned == 1,
+        "same-skill cast windows did not conserve grouped and unassigned hits")
+    assert(casts[1].hits == 2 and casts[1].damage == 20,
+        "first cast window did not retain its own hits and damage")
+    assert(casts[2].hits == 3 and casts[2].damage == 30,
+        "second cast window did not retain its own hits and damage")
+    assert(casts[3].hits == 0,
+        "zero-damage cast must remain distinguishable from a hit cast")
+
+    local quality = BossDPSBroadcastTestApi.cast_hit_quality(casts, 50, true, 4)
+    assert(quality.hit_casts == 2 and quality.zero_damage_casts == 1,
+        "cast quality did not count effective and zero-damage casts")
+    assert(quality.per_cast_hits == "2/3/0" and quality.observed_max_hits == 3,
+        "cast quality did not preserve each cast's hit count")
+    assert(quality.per_cast_sample_count == 3 and quality.per_cast_total_samples == 3
+        and quality.per_cast_samples_truncated == false,
+        "cast quality did not expose its settled sample window")
+    assert(quality.minimum_hits == 0 and math.abs(quality.average_hits - (5 / 3)) < 0.001
+        and quality.maximum_hits == 3,
+        "cast quality did not preserve settled min/average/max hits")
+    assert(math.abs(quality.hit_completion - (5 / 12 * 100)) < 0.001,
+        "calibrated full-hit percentage used the wrong denominator")
+
+    local active = BossDPSBroadcastTestApi.cast_hit_quality({
+        { key = "active", started_at = 45, ended_at = nil, damage = 9, hits = 2 },
+    }, 50, false, 4)
+    assert(active.hit_casts == 1 and active.pending_casts == 1
+        and active.per_cast_hits == "" and active.per_cast_total_samples == 0
+        and active.hit_completion == nil,
+        "active casts must remain visibly unsettled instead of reporting a false miss/full-hit rate")
+
+    local many_casts = {}
+    for index = 1, 10 do
+        many_casts[#many_casts + 1] = {
+            key = "many-" .. tostring(index),
+            started_at = index,
+            ended_at = index + 0.5,
+            damage = index,
+            hits = index,
+        }
+    end
+    local recent = BossDPSBroadcastTestApi.cast_hit_quality(many_casts, 50, true, nil)
+    assert(recent.per_cast_hits == "5/6/7/8/9/10"
+        and recent.per_cast_sample_count == 6 and recent.per_cast_total_samples == 10
+        and recent.per_cast_samples_truncated == true,
+        "long cast history did not expose an unambiguous recent-sample window")
+end
 
 do
     hud_test_phase = phase
@@ -586,6 +809,20 @@ do
                         encounter_dps = 100,
                         hits = 4,
                         casts = 2,
+                        hit_casts = 2,
+                        zero_damage_casts = 0,
+                        pending_casts = 0,
+                        per_cast_hits = "2/2",
+                        per_cast_sample_count = 2,
+                        per_cast_total_samples = 2,
+                        per_cast_samples_truncated = false,
+                        observed_max_hits = 2,
+                        minimum_hits = 2,
+                        average_hits = 2,
+                        maximum_hits = 2,
+                        historical_max_hits = 2,
+                        full_hit_cap = nil,
+                        per_cast_grouping_approximate = false,
                         damage_per_cast = 1000,
                         panel_cd = 16,
                         actual_interval = 20.5,
@@ -635,6 +872,68 @@ do
     assert(string.find(BossDPSBroadcastTestApi.skill_hud.last_external_state.text,
         "\nR\t1\t1\t切割龍息\tBeamSlicer\t", 1, true) ~= nil,
         "structured HUD row did not receive localized skill data")
+    assert(string.find(BossDPSBroadcastTestApi.skill_hud.last_external_state.text,
+        "\t100.0000\t100.0000\t4\t2\t", 1, true) ~= nil,
+        "structured HUD row did not preserve the skill's independent DPS")
+    assert(string.find(BossDPSBroadcastTestApi.skill_hud.last_external_state.text,
+        "有效 2/2 · 0傷 0", 1, true) ~= nil,
+        "structured HUD row did not expose effective and zero-damage casts")
+    assert(string.find(BossDPSBroadcastTestApi.skill_hud.last_external_state.text,
+        "Hit 4 · 逐次 2/2 · 滿Hit 待校準", 1, true) ~= nil,
+        "structured HUD row did not expose per-cast hit counts")
+
+    snapshot.sources[1].skills[#snapshot.sources[1].skills + 1] = {
+        name = "暗能彈",
+        internal_code = "GravityShot",
+        category = "basic",
+        damage = 200,
+        encounter_dps = 10,
+        hits = 2,
+        casts = 1,
+        hit_casts = 1,
+        zero_damage_casts = 0,
+        pending_casts = 0,
+        per_cast_hits = "2",
+        observed_max_hits = 2,
+        damage_per_cast = 200,
+        panel_cd = 2,
+        actual_interval = 3,
+        action_duration = 1,
+        action_dps = 200,
+        reuse_gap = 2,
+        lifecycle_complete = 1,
+    }
+    BossDPSBroadcastTestApi.skill_hud:publish(snapshot)
+    assert(string.find(BossDPSBroadcastTestApi.skill_hud.last_external_state.text,
+        "\nR\t1\t2\t普攻｜暗能彈\tGravityShot\t200.0000\t10.0000\t", 1, true) ~= nil,
+        "basic attack row did not preserve its independent DPS")
+    assert(string.find(BossDPSBroadcastTestApi.skill_hud.last_external_state.text,
+        "\tbasic\n", 1, true) ~= nil,
+        "structured HUD row did not expose the basic-attack category")
+
+    local detail_model = BossDPSBroadcastTestApi.skill_hud:detail_skill({
+        casts = 11,
+        hit_casts = 5,
+        zero_damage_casts = 5,
+        pending_casts = 1,
+        hits = 5,
+        per_cast_hits = "0/0/0/1/1/1",
+        per_cast_sample_count = 6,
+        per_cast_total_samples = 10,
+        per_cast_samples_truncated = true,
+        per_cast_grouping_approximate = true,
+        minimum_hits = 0,
+        average_hits = 0.5,
+        maximum_hits = 1,
+        historical_max_hits = 1,
+    })
+    assert(string.find(detail_model.casts_text,
+        "施放 11 次｜有傷施放 5｜無傷施放 5｜統計中 1", 1, true) ~= nil
+        and string.find(detail_model.hits_text,
+            "最近 6 次施放命中段數（估算）：0, 0, 0, 1, 1, 1（共 10 次已結算）", 1, true) ~= nil
+        and string.find(detail_model.hits_text, "~", 1, true) == nil
+        and string.find(detail_model.range_text, "含無傷施放", 1, true) ~= nil,
+        "detail model did not explain pending, estimated, truncated, and zero-damage casts")
 
     runtime_config.HUDDetailMode = "full"
     local _, _, detailed_body = BossDPSBroadcastTestApi.skill_hud:format_snapshot(snapshot)
@@ -673,21 +972,114 @@ do
         "HUD did not switch the skill name to Japanese")
     assert(BossDPSBroadcastTestApi.skill_hud.setting_keys[1] == "reset",
         "Start new test must be the first settings action")
+    runtime_config.Language = "zh-TW"
     previous_phase = phase
     phase = "game"
-    assert(BossDPSBroadcastTestApi.skill_hud:toggle_settings() == false,
-        "F1 must fail closed while native CommonUI settings are unavailable")
-    assert(BossDPSBroadcastTestApi.skill_hud.settings_open == false,
-        "failed native settings open must not expose the external workspace")
+    native_ui.event_count = function(expected)
+        local count = 0
+        for _, event in ipairs(native_settings_events) do
+            if event == expected then count = count + 1 end
+        end
+        return count
+    end
+    assert(BossDPSBroadcastTestApi.skill_hud:toggle_settings() == true
+        and BossDPSBroadcastTestApi.skill_hud.settings_open == true
+        and BossDPSBroadcastTestApi.skill_hud.settings_page == 0,
+        "F3 did not open the settings page")
+    assert(native_ui.asset_load_count == 1
+        and native_settings_creation_count == 1
+        and native_ui.event_count("add") == 1
+        and native_ui.event_count("activate") == 1
+        and native_ui.event_count("focus") == 1,
+        "F3 did not create and activate one native settings widget")
+    assert(native_settings_page == 0,
+        "native settings widget did not select its first page")
+    assert(input_mode_events[#input_mode_events] == "ui"
+        and input_cursor_events[#input_cursor_events] == true
+        and local_player_controller_fields.bShowMouseCursor == true,
+        "native settings widget did not acquire UI-only input and a visible cursor")
+    assert(BossDPSBroadcastTestApi.skill_hud.last_external_state.visible == false,
+        "opening native settings did not hide the display-only DPS meter")
+    assert(native_settings_text.PSDPS_Title ~= nil
+        and native_settings_text.PSDPS_Title ~= "",
+        "native settings title was not populated")
+    assert(string.find(native_settings_text.PSDPS_DetailRows or "",
+        "累計傷害 2,000", 1, true) ~= nil
+        and string.find(native_settings_text.PSDPS_DetailRows or "", "個目標", 1, true) == nil
+        and string.find(native_settings_text.PSDPS_DetailRows or "",
+            "總命中段數 4｜每次施放命中段數：2, 2", 1, true) ~= nil
+        and string.find(native_settings_text.PSDPS_DetailRows or "",
+            "每次施放命中段數（含無傷施放）：最低 2.0｜平均 2.0｜最高 2.0", 1, true) ~= nil
+        and string.find(native_settings_text.PSDPS_DetailRows or "",
+            "本次遊戲最高單次施放 2.0 段｜理論最高命中段數 尚無資料", 1, true) ~= nil,
+        "native detail page did not receive the detailed hit statistics")
+
+    assert(console_command_callbacks.psdps("psdps", { "ui", "tab", "details" }) == true,
+        "native details-tab button command was not accepted")
+    run_game_tasks()
+    assert(BossDPSBroadcastTestApi.skill_hud.settings_open == true
+        and BossDPSBroadcastTestApi.skill_hud.settings_page == 1
+        and native_settings_page == 1
+        and string.find(native_settings_text.PSDPS_Title or "", "本次測試詳情", 1, true) ~= nil,
+        "native details-tab button did not switch the existing widget")
+
+    native_ui.frozen_creation_count = native_settings_creation_count
+    native_ui.frozen_add_count = native_ui.event_count("add")
+    phase = "game"
+    BossDPSBroadcastTestApi.skill_hud:publish(snapshot)
+    assert(native_settings_creation_count == native_ui.frozen_creation_count
+        and native_ui.event_count("add") == native_ui.frozen_add_count,
+        "periodic snapshots rebuilt or re-added the native settings widget")
+
+    native_ui.previous_scale = runtime_config.HUDScale
+    native_ui.previous_scale_text = native_settings_text.PSDPS_HUDScale_Value
+    phase = "game"
+    assert(console_command_callbacks.psdps("psdps", { "ui", "cycle", "HUDScale", "1" }) == true,
+        "native setting arrow command was not accepted")
+    run_game_tasks()
+    assert(runtime_config.HUDScale ~= native_ui.previous_scale
+        and native_settings_text.PSDPS_HUDScale_Value ~= nil
+        and native_settings_text.PSDPS_HUDScale_Value ~= native_ui.previous_scale_text
+        and native_settings_text.PSDPS_HUDScale_Value
+            == BossDPSBroadcastTestApi.skill_hud:setting_value_text("HUDScale")
+        and native_ftext_set_count > 0,
+        "native setting arrow did not update its setting and visible value")
+
+    native_ui.original_reset = BossDPSBroadcastTestApi.skill_hud.on_reset
+    BossDPSBroadcastTestApi.skill_hud.on_reset = function()
+        native_ui.reset_count = native_ui.reset_count + 1
+    end
+    phase = "game"
+    assert(console_command_callbacks.psdps("psdps", { "ui", "reset" }) == true,
+        "native reset button command was not accepted")
+    run_game_tasks()
+    assert(native_ui.reset_count == 1 and BossDPSBroadcastTestApi.skill_hud.reset_notice ~= "",
+        "native reset button did not reset the current test exactly once")
+    BossDPSBroadcastTestApi.skill_hud.on_reset = native_ui.original_reset
+
+    phase = "game"
+    assert(console_command_callbacks.psdps("psdps", { "ui", "close" }) == true,
+        "native close button command was not accepted")
+    run_game_tasks()
+    assert(BossDPSBroadcastTestApi.skill_hud.settings_open == false
+        and native_ui.event_count("deactivate") == 1
+        and native_ui.event_count("remove") == 1,
+        "native close button did not deactivate and remove the settings widget")
+    assert(input_mode_events[#input_mode_events] == "game"
+        and input_cursor_events[#input_cursor_events] == false
+        and local_player_controller_fields.bShowMouseCursor == false,
+        "closing native settings did not restore GameOnly input and hide the cursor")
     assert(#input_look_events == 0 and #input_move_events == 0
         and #input_controller_action_events == 0 and #input_pawn_action_events == 0
-        and #input_cursor_events == 0,
-        "external settings failure must not change Palworld input or cursor")
+        and #input_cursor_events == 2,
+        "native settings must not disable the pawn/controller or suppress movement manually")
+
     local original_hotkey_reset = BossDPSBroadcastTestApi.skill_hud.on_reset
     local hotkey_reset_count = 0
     BossDPSBroadcastTestApi.skill_hud.on_reset = function()
         hotkey_reset_count = hotkey_reset_count + 1
     end
+    phase = "game"
     key_callbacks[Key.F2]()
     run_game_tasks()
     assert(hotkey_reset_count == 1,
@@ -701,55 +1093,22 @@ do
     assert(hotkey_reset_count == 1,
         "F2 key auto-repeat was not debounced to a single reset")
     assert(BossDPSBroadcastTestApi.skill_hud.settings_open == false,
-        "F2 reset must not open the disabled external settings workspace")
+        "F2 reset must not open the F3 settings workspace")
     BossDPSBroadcastTestApi.skill_hud.on_reset = original_hotkey_reset
-    -- The settings document can still be formatted offline; it is no longer
-    -- exposed as a live cross-process interactive surface.
-    BossDPSBroadcastTestApi.skill_hud.settings_open = true
-    BossDPSBroadcastTestApi.skill_hud:render_settings()
-    assert(BossDPSBroadcastTestApi.skill_hud.last_external_state.view == "settings",
-        "offline settings document fixture missing")
-    assert(string.find(BossDPSBroadcastTestApi.skill_hud.last_external_state.text,
-        "view=settings", 1, true) ~= nil, "settings workspace protocol missing")
-    assert(string.find(BossDPSBroadcastTestApi.skill_hud.last_external_state.text,
-        "\nR\t1\t1\t", 1, true) ~= nil,
-        "F1 current-test tab did not receive the complete result rows")
-    BossDPSBroadcastTestApi.skill_hud:sync_input_lock(true)
-    assert(#input_look_events == 0 and #input_move_events == 0
-        and #input_controller_action_events == 0 and #input_pawn_action_events == 0
-        and #input_cursor_events == 0,
-        "input-lock maintenance must remain disabled for external windows")
-    local frozen_settings_sequence = BossDPSBroadcastTestApi.skill_hud.state_sequence
-    BossDPSBroadcastTestApi.skill_hud:publish(snapshot)
-    assert(BossDPSBroadcastTestApi.skill_hud.state_sequence == frozen_settings_sequence,
-        "periodic snapshots must not rebuild the interactive settings workspace")
-    local original_reset = BossDPSBroadcastTestApi.skill_hud.on_reset
-    local reset_count = 0
-    BossDPSBroadcastTestApi.skill_hud.on_reset = function() reset_count = reset_count + 1 end
-    assert(BossDPSBroadcastTestApi.skill_hud:process_external_command_line(
-        "cmd-test-reset-1\tcycle\treset\t1") == true,
-        "identified reset command should be handled")
-    assert(reset_count == 1, "identified reset command should execute exactly once")
-    assert(BossDPSBroadcastTestApi.skill_hud.command_ack == "cmd-test-reset-1",
-        "HUD command acknowledgement was not retained")
-    assert(string.find(BossDPSBroadcastTestApi.skill_hud.last_external_state.text,
-        "command_ack=cmd-test-reset-1", 1, true) ~= nil,
-        "settings state did not acknowledge the reset command")
-    assert(BossDPSBroadcastTestApi.skill_hud.reset_notice ~= "",
-        "reset command should expose an immediate waiting confirmation")
-    BossDPSBroadcastTestApi.skill_hud:process_external_command_line(
-        "cmd-test-reset-1\tcycle\treset\t1")
-    assert(reset_count == 1, "duplicate reset command must be deduplicated")
-    BossDPSBroadcastTestApi.skill_hud.on_reset = original_reset
-    BossDPSBroadcastTestApi.skill_hud:close_settings()
-    local previous_close_phase = phase
+
     phase = "game"
-    local cursor_after_close = local_player_controller.bShowMouseCursor
-    phase = previous_close_phase
-    assert(#input_look_events == 0 and #input_move_events == 0
-        and #input_controller_action_events == 0 and #input_pawn_action_events == 0
-        and #input_cursor_events == 0 and cursor_after_close == false,
-        "closing the offline fixture must not touch Palworld input or cursor")
+    key_callbacks[Key.F3]()
+    run_game_tasks()
+    assert(BossDPSBroadcastTestApi.skill_hud.settings_open == true
+        and native_settings_creation_count == 1
+        and native_ui.event_count("add") == 2,
+        "F3 did not reopen the same native settings widget")
+    phase = "game"
+    key_callbacks[Key.F3]()
+    run_game_tasks()
+    assert(BossDPSBroadcastTestApi.skill_hud.settings_open == false
+        and native_ui.event_count("remove") == 2,
+        "second F3 press did not close the native settings widget")
 
     -- Palworld stays the foreground process on its own pause/options screen.
     -- The overlay must use gameplay state rather than process foreground alone.
@@ -759,8 +1118,9 @@ do
         "native pause/options menu did not hide the DPS overlay")
     assert(BossDPSBroadcastTestApi.skill_hud:toggle_settings() == false
         and BossDPSBroadcastTestApi.skill_hud.settings_open == false,
-        "F1 workspace opened on a native menu instead of gameplay")
+        "F3 workspace opened on a native menu instead of gameplay")
     game_paused = false
+    phase = "game"
     local_player_controller.bShowMouseCursor = true
     BossDPSBroadcastTestApi.skill_hud:publish(snapshot)
     assert(BossDPSBroadcastTestApi.skill_hud.last_external_state.visible == false,
@@ -834,6 +1194,9 @@ runtime_config.EnableDetailedAwards = true
 runtime_config.EnableTeamDetails = true
 runtime_config.MeasurementMode = "target"
 runtime_config.TargetScope = "boss"
+phase = "game"
+BossDPSBroadcastTestApi.reset_skill_diagnostics()
+phase = "idle"
 
 local commentary = require("commentary")
 local commentary_base = {
@@ -1210,6 +1573,21 @@ run_game_tasks()
 fake_game_time = 2022
 action_end(current_action)
 run_game_tasks()
+
+-- A cast can be fully swallowed by boss invulnerability/HP lock or miss every
+-- projectile. It must remain visible as an observed equipped skill with DMG 0
+-- instead of disappearing from the three-skill comparison.
+fake_game_time = 2025
+current_action = actor("BP_ActionDarkBall_C_2147000005", {
+    GetWazaID = function() return 501 end,
+    GetActionCharacter = function() return action_pal end,
+})
+action_begin(current_action)
+run_game_tasks()
+fake_game_time = 2026
+action_end(current_action)
+run_game_tasks()
+
 current_action = actor("BP_ActionFlareTornado_C_2147000003")
 damage(action_pal, action_boss, 100, { BasePower = 200, AttackElementType = 2 })
 run_game_tasks()
@@ -1266,6 +1644,9 @@ do
         "live HUD state was not published")
     assert(string.find(live_action_state.text, "切割龙息", 1, true) ~= nil,
         "live HUD did not show the inferred active equipped skill")
+    assert(string.find(live_action_state.text,
+        "\tDarkBall\t0.0000\t0.0000\t0.0000\t0\t1\t", 1, true) ~= nil,
+        "an observed equipped cast with zero effective damage disappeared from the HUD")
     assert(string.find(live_action_state.text,
         "\t未归属伤害\tUNRESOLVED_PAL_ATTACK_BP_200_ELEMENT_9\t", 1, true) ~= nil,
         "ambiguous damage did not hide its internal identifier from the visible label")
@@ -2259,9 +2640,10 @@ assert(string.find(BossDPSBroadcastTestApi.skill_hud.last_external_state.text,
     "基地帕魯", 1, true) ~= nil and string.find(BossDPSBroadcastTestApi.skill_hud.last_external_state.text,
     "棉花糖", 1, true) ~= nil, "manual meter did not expose both Pal groups")
 phase = "game"
-assert(BossDPSBroadcastTestApi.skill_hud:toggle_settings() == false
-    and BossDPSBroadcastTestApi.skill_hud.settings_open == false,
-    "manual mode exposed the disabled external settings workspace")
+assert(BossDPSBroadcastTestApi.skill_hud:toggle_settings() == true
+    and BossDPSBroadcastTestApi.skill_hud.settings_open == true,
+    "manual mode did not expose the F3 settings workspace")
+BossDPSBroadcastTestApi.skill_hud:close_settings()
 BossDPSBroadcastTestApi.reset_skill_diagnostics()
 phase = "idle"
 manual_session = BossDPSBroadcastTestApi.sessions["__PAL_SKILL_DPS_MANUAL_TEST__"]
@@ -2274,6 +2656,126 @@ runtime_config.SkillDiagnosticsOnly = false
 end
 run_manual_damage_lab_test()
 run_manual_damage_lab_test = nil
+
+-- Boss-only manual tests freeze at the final Boss death/capture. A known
+-- non-terminal composite part is a phase transition and must keep recording.
+function run_manual_boss_snapshot_test()
+runtime_config.MeasurementMode = "manual"
+runtime_config.TargetScope = "boss"
+runtime_config.IncludePlayerDamage = false
+runtime_config.SkillDiagnosticsOnly = true
+phase = "game"
+BossDPSBroadcastTestApi.reset_skill_diagnostics()
+phase = "idle"
+
+local phase_anchor = actor("BP_YakushimaBoss002_Controller_C_901")
+local phase_head = boss_actor("BP_YakushimaBoss002_Head_C_902", { Owner = phase_anchor })
+local phase_body = boss_actor("BP_YakushimaBoss002_B_C_903", { Owner = phase_anchor })
+fake_game_time = 3000
+waza(player_two_pal, phase_head, 501)
+damage(player_two_pal, phase_head, 100)
+run_game_tasks()
+fake_game_time = 3005
+death(phase_head)
+run_game_tasks()
+local boss_session = BossDPSBroadcastTestApi.sessions["__PAL_SKILL_DPS_MANUAL_TEST__"]
+assert(boss_session ~= nil and boss_session.finished ~= true,
+    "non-terminal Boss phase froze the manual Boss snapshot")
+
+waza(player_two_pal, phase_body, 501)
+damage(player_two_pal, phase_body, 200)
+run_game_tasks()
+fake_game_time = 3012
+death(phase_body)
+run_game_tasks()
+local frozen = BossDPSBroadcastTestApi.skill_hud.latest_snapshot
+assert(BossDPSBroadcastTestApi.sessions["__PAL_SKILL_DPS_MANUAL_TEST__"] == nil
+    and frozen ~= nil and frozen.state == "finished" and frozen.reason == "defeated"
+    and math.abs(frozen.duration - 12) < 0.001
+    and math.abs(frozen.encounter_dps - 25) < 0.001,
+    "final Boss death did not freeze the manual snapshot at the death time")
+assert(string.find(BossDPSBroadcastTestApi.skill_hud.last_external_state.text,
+        "\nexpires_at=0\n", 1, true) ~= nil,
+    "manual Boss snapshot was given an automatic HUD expiry")
+local ignored_after_finish = BossDPSBroadcastTestApi.metrics.ignored_post_finish_damage
+-- Real multi-hit effects can deliver their last segments after the death hook.
+-- They must be discarded until F2, not treated as the first hits of a new test.
+waza(player_two_pal, phase_body, 501)
+damage(player_two_pal, phase_body, 40)
+damage(player_two_pal, phase_body, 60)
+run_game_tasks()
+assert(BossDPSBroadcastTestApi.sessions["__PAL_SKILL_DPS_MANUAL_TEST__"] == nil
+    and BossDPSBroadcastTestApi.skill_hud.latest_snapshot == frozen
+    and frozen.total_damage == 300
+    and BossDPSBroadcastTestApi.metrics.ignored_post_finish_damage
+        == ignored_after_finish + 2,
+    "post-death hit segments replaced the frozen Boss result")
+fake_game_time = 3060
+phase = "game"
+BossDPSBroadcastTestApi.publish_current_skill_hud()
+phase = "idle"
+assert(BossDPSBroadcastTestApi.skill_hud.latest_snapshot == frozen
+    and math.abs(frozen.duration - 12) < 0.001
+    and math.abs(frozen.encounter_dps - 25) < 0.001,
+    "F3/HUD refresh changed a frozen Boss result")
+
+local saved_mode = runtime_config.MeasurementMode
+local saved_scope = runtime_config.TargetScope
+local saved_save_settings = BossDPSBroadcastTestApi.skill_hud.save_settings
+local reset_from_setting = 0
+local ignored_after_setting = BossDPSBroadcastTestApi.metrics.ignored_post_finish_damage
+local saved_reset_callback = BossDPSBroadcastTestApi.skill_hud.on_reset
+BossDPSBroadcastTestApi.skill_hud.save_settings = function() return true end
+BossDPSBroadcastTestApi.skill_hud.on_reset = function()
+    reset_from_setting = reset_from_setting + 1
+end
+BossDPSBroadcastTestApi.skill_hud:cycle_setting("MeasurementMode", 1)
+BossDPSBroadcastTestApi.skill_hud:cycle_setting("TargetScope", 1)
+assert(reset_from_setting == 0
+    and BossDPSBroadcastTestApi.skill_hud.latest_snapshot == frozen
+    and frozen.total_damage == 300,
+    "F3 measurement settings reset or replaced the frozen Boss result")
+local post_setting_target = boss_actor("BP_RaidBoss_PostSettingTail_C_905")
+waza(player_two_pal, post_setting_target, 501)
+damage(player_two_pal, post_setting_target, 70)
+run_game_tasks()
+assert(BossDPSBroadcastTestApi.sessions["__PAL_SKILL_DPS_MANUAL_TEST__"] == nil
+    and BossDPSBroadcastTestApi.skill_hud.latest_snapshot == frozen
+    and frozen.total_damage == 300
+    and BossDPSBroadcastTestApi.metrics.ignored_post_finish_damage
+        == ignored_after_setting + 1,
+    "F3 automatic/all settings bypassed the frozen Boss result lock")
+runtime_config.MeasurementMode = saved_mode
+runtime_config.TargetScope = saved_scope
+BossDPSBroadcastTestApi.skill_hud.save_settings = saved_save_settings
+BossDPSBroadcastTestApi.skill_hud.on_reset = saved_reset_callback
+
+phase = "game"
+BossDPSBroadcastTestApi.reset_skill_diagnostics()
+phase = "idle"
+local captured_boss = boss_actor("BP_RaidBoss_ManualCapture_C_904")
+fake_game_time = 3100
+waza(player_two_pal, captured_boss, 501)
+damage(player_two_pal, captured_boss, 90)
+run_game_tasks()
+fake_game_time = 3109
+captured(captured_boss, player_two_pal)
+run_game_tasks()
+local captured_snapshot = BossDPSBroadcastTestApi.skill_hud.latest_snapshot
+assert(captured_snapshot ~= nil and captured_snapshot.state == "finished"
+    and captured_snapshot.reason == "captured" and math.abs(captured_snapshot.duration - 9) < 0.001,
+    "captured Boss did not freeze the manual Boss snapshot")
+
+runtime_config.MeasurementMode = "target"
+runtime_config.TargetScope = "boss"
+runtime_config.IncludePlayerDamage = true
+runtime_config.SkillDiagnosticsOnly = false
+phase = "game"
+BossDPSBroadcastTestApi.reset_skill_diagnostics()
+phase = "idle"
+end
+run_manual_boss_snapshot_test()
+run_manual_boss_snapshot_test = nil
 
 -- Native event API v2: every final hit arrives separately with a stable
 -- sequence and object-token diagnostics. It must be preferred by the runtime
@@ -2742,4 +3244,4 @@ assert(#delivered_by_uid[test_guid_key(uid_spectator)] == 0, "spectator received
 
 assert(#BossDPSBroadcastTestApi.sessions == 0, "sessions table must be map-like")
 assert(original_os_time ~= nil)
-print("PalSkillDPSAnalyzer v0.5.18 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed")
+print("PalSkillDPSAnalyzer v0.5.19 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed")

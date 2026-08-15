@@ -10,6 +10,7 @@ $distDirectory = Join-Path $workshopDirectory "dist"
 New-Item -ItemType Directory -Path $contentScripts -Force | Out-Null
 New-Item -ItemType Directory -Path $contentLocales -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $projectDirectory "Scripts\main.lua") -Destination (Join-Path $contentScripts "main.lua") -Force
+Copy-Item -LiteralPath (Join-Path $projectDirectory "Scripts\config.lua") -Destination (Join-Path $contentScripts "config.lua") -Force
 Copy-Item -LiteralPath (Join-Path $projectDirectory "Scripts\hud.lua") -Destination (Join-Path $contentScripts "hud.lua") -Force
 Copy-Item -LiteralPath (Join-Path $projectDirectory "Scripts\commentary.lua") -Destination (Join-Path $contentScripts "commentary.lua") -Force
 Copy-Item -LiteralPath (Join-Path $projectDirectory "Scripts\localization.lua") -Destination (Join-Path $contentScripts "localization.lua") -Force
@@ -23,6 +24,10 @@ Copy-Item -LiteralPath (Join-Path $projectDirectory "Scripts\skill_dps_overlay_l
 Copy-Item -Path (Join-Path $projectDirectory "Scripts\locales\*.lua") -Destination $contentLocales -Force
 Copy-Item -LiteralPath (Join-Path $workshopDirectory "assets\thumbnail-pal-skill-dps-v1.png") -Destination (Join-Path $contentDirectory "thumbnail.png") -Force
 
+$nativeUiBuild = Join-Path $projectDirectory "ui-authoring\build_native_ui.ps1"
+& powershell -NoProfile -ExecutionPolicy Bypass -File $nativeUiBuild
+if ($LASTEXITCODE -ne 0) { throw "Native CommonUI package build failed" }
+
 $infoPath = Join-Path $contentDirectory "Info.json"
 $info = Get-Content -LiteralPath $infoPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $expectedWorkshopTitle = -join @(
@@ -31,20 +36,25 @@ $expectedWorkshopTitle = -join @(
 )
 if ($info.ModName -ne $expectedWorkshopTitle) { throw "Unexpected Workshop ModName" }
 if ($info.PackageName -ne "PalSkillDPSAnalyzerSP") { throw "Unexpected Workshop PackageName" }
-if ($info.Version -ne "0.5.18") { throw "Unexpected Workshop version" }
+if ($info.Version -ne "0.5.19") { throw "Unexpected Workshop version" }
 if ($info.Dependencies -notcontains "UE4SSExperimentalPW") { throw "UE4SS dependency missing" }
-if ($info.InstallRule.Count -ne 1 -or $info.InstallRule[0].Type -ne "Lua") { throw "Lua InstallRule missing" }
+$installRuleTypes = @($info.InstallRule | ForEach-Object { $_.Type })
+if ($info.InstallRule.Count -ne 3 -or $installRuleTypes -notcontains "Lua" -or $installRuleTypes -notcontains "Paks" -or $installRuleTypes -notcontains "LogicMods") {
+    throw "Lua/Paks/LogicMods InstallRule missing"
+}
 
 $configPath = Join-Path $contentScripts "config.lua"
 $configText = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8
 foreach ($requiredSetting in @(
-    "config.LocalOnlyMessages = true",
+    "config.LocalOnlyMessages = false",
     "config.EnableSkillDiagnostics = true",
     "config.SkillDiagnosticsOnly = true",
     "config.EnableSkillSourceChain = true",
     "config.EnableBoundedSkillInference = true",
     "config.IncludePlayerDamage = false",
     'config.SkillDiagnosticChatMode = "off"',
+    "config.SkillDiagnosticLogNativeProbeReport = false",
+    "config.SkillDiagnosticNativeStatusIntervalHits = 0",
     "config.EnableSkillDPSHUD = true",
     'config.MeasurementMode = "manual"',
     'config.TargetScope = "boss"',
@@ -52,6 +62,7 @@ foreach ($requiredSetting in @(
     'config.HUDDetailMode = "compact"',
     "config.EnableExternalHUD = true",
     "config.EnableExternalHUDSettings = false",
+    "config.EnableNativeCommonUISettings = true",
     "config.ExternalHUDAutoLaunch = true",
     "config.HUDUseExperimentalUMG = false",
     "config.HUDUseScreenTextFallback = false",
@@ -63,6 +74,11 @@ foreach ($requiredSetting in @(
 )) {
     if (-not $configText.Contains($requiredSetting)) { throw "Workshop config missing: $requiredSetting" }
 }
+
+$nativeUiPak = Join-Path $contentDirectory "Paks\PalSkillDPSAnalyzerSP_P.pak"
+if (-not (Test-Path -LiteralPath $nativeUiPak)) { throw "Native CommonUI pak missing" }
+$logicModsPak = Join-Path $contentDirectory "LogicMods\PalSkillDPSAnalyzerSP.pak"
+if (-not (Test-Path -LiteralPath $logicModsPak)) { throw "LogicMods bootstrap pak missing" }
 
 $thumbnailPath = Join-Path $contentDirectory "thumbnail.png"
 if (-not (Test-Path -LiteralPath $thumbnailPath)) { throw "Workshop thumbnail.png missing" }
@@ -105,7 +121,7 @@ foreach ($localePath in Get-ChildItem -LiteralPath $contentLocales -Filter "*.lu
 }
 
 New-Item -ItemType Directory -Path $distDirectory -Force | Out-Null
-$zipPath = Join-Path $distDirectory "PalSkillDPSAnalyzerSP-Workshop-v0.5.18.zip"
+$zipPath = Join-Path $distDirectory "PalSkillDPSAnalyzerSP-Workshop-v0.5.19.zip"
 Compress-Archive -Path (Join-Path $contentDirectory "*") -DestinationPath $zipPath -CompressionLevel Optimal -Force
 
 Write-Host "Workshop package ready: $zipPath"

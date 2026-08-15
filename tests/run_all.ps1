@@ -16,6 +16,7 @@ $overlayScript = Join-Path $projectDirectory "Scripts\skill_dps_overlay.ps1"
 $overlayLauncher = Join-Path $projectDirectory "Scripts\skill_dps_overlay_launcher.vbs"
 $hudV1Fixture = Join-Path $testDirectory "fixtures\hud_v1_state.txt"
 $hudV2Fixture = Join-Path $testDirectory "fixtures\hud_v2_state.txt"
+$hudV2RankChangeFixture = Join-Path $testDirectory "fixtures\hud_v2_rank_change_state.txt"
 $hudV2SettingsFixture = Join-Path $testDirectory "fixtures\hud_v2_settings_state.txt"
 $hudV2SettingsEmptyFixture = Join-Path $testDirectory "fixtures\hud_v2_settings_empty_state.txt"
 $localeDirectory = Join-Path $projectDirectory "Scripts\locales"
@@ -68,7 +69,7 @@ if ($forbiddenMatches) {
     $forbiddenMatches | ForEach-Object { $_.Line } | Write-Host
     throw "forbidden API found in main.lua"
 }
-$forbiddenHud = "StaticConstructObject|WidgetBlueprintLibrary|PrintString|AddToViewport"
+$forbiddenHud = "StaticConstructObject|PrintString"
 $hudForbiddenMatches = Select-String -LiteralPath $hudScript -Pattern $forbiddenHud
 if ($hudForbiddenMatches) {
     $hudForbiddenMatches | ForEach-Object { $_.Line } | Write-Host
@@ -76,15 +77,22 @@ if ($hudForbiddenMatches) {
 }
 $hudText = Get-Content -LiteralPath $hudScript -Raw -Encoding UTF8
 foreach ($requiredHudFeature in @(
-    'config.EnableExternalHUDSettings ~= true',
-    'external input path disabled',
+    'selected_tab=',
+    'Key.F3',
+    'settings/details hotkey=',
     'watchdog_external_overlay',
     'command_ack=',
     'external HUD heartbeat stale',
     'external HUD relaunch suppressed after 3 attempts',
     'skill_dps_overlay_launcher.vbs',
     'wscript.exe',
-    'sync_gameplay_visibility'
+    'sync_gameplay_visibility',
+    '/Game/Mods/PalSkillDPSAnalyzerSP/WBP_PalSkillDPSSettings',
+    'SetInputMode_UIOnlyEx',
+    'SetInputMode_GameOnly',
+    'ActivateWidget',
+    'RemoveFromParent',
+    'register_console_command_handler'
 )) {
     if (-not $hudText.Contains($requiredHudFeature)) {
         throw "HUD recovery/input-lock feature missing: $requiredHudFeature"
@@ -93,7 +101,6 @@ foreach ($requiredHudFeature in @(
 foreach ($forbiddenInputFeature in @(
     'SetIgnoreLookInput',
     'SetIgnoreMoveInput',
-    'bShowMouseCursor',
     'DisableInput',
     'EnableInput'
 )) {
@@ -115,8 +122,12 @@ foreach ($requiredOverlayFeature in @(
     '[object]::ReferenceEquals($capturedTabs, $script:settingsTabs)',
     'Assert-HudWindow ([bool]$script:lastSettingsOpen) $false',
     '0x0020',
-    '"DMG " + (Format-HudInteger $row.Damage)',
-    'Format-HudDecimal $row.Dps'
+    '$damageLabel + " " + (Format-HudInteger $row.Damage)',
+    'Format-HudDecimal $row.Dps',
+    '$subline = "{0} DPS',
+    '{1}%" -f (Format-HudDecimal $row.Dps), (Format-HudDecimal $row.Share)',
+    '$contextLine = $duration',
+    'New-HudDetailRow'
 )) {
     if (-not $overlayText.Contains($requiredOverlayFeature)) {
         throw "external HUD recovery feature missing: $requiredOverlayFeature"
@@ -152,6 +163,7 @@ foreach ($file in @(
     $overlayLauncher,
     $hudV1Fixture,
     $hudV2Fixture,
+    $hudV2RankChangeFixture,
     $hudV2SettingsFixture,
     $hudV2SettingsEmptyFixture,
     (Join-Path $testDirectory "test_main.lua"),
@@ -197,11 +209,21 @@ $expectedWorkshopTitle = -join @(
 )
 if ($workshopInfo.ModName -ne $expectedWorkshopTitle) { throw "unexpected Workshop ModName" }
 if ($workshopInfo.PackageName -ne "PalSkillDPSAnalyzerSP") { throw "unexpected Workshop PackageName" }
-if ($workshopInfo.Version -ne "0.5.18") { throw "unexpected Workshop version" }
+if ($workshopInfo.Version -ne "0.5.19") { throw "unexpected Workshop version" }
 if ($workshopInfo.Dependencies -notcontains "UE4SSExperimentalPW") { throw "Workshop UE4SS dependency missing" }
-if ($workshopInfo.InstallRule.Count -ne 1 -or $workshopInfo.InstallRule[0].Type -ne "Lua") {
-    throw "Workshop Lua InstallRule missing"
+if ($workshopInfo.InstallRule.Count -ne 3) {
+    throw "Workshop Lua/Paks/LogicMods InstallRule count mismatch"
 }
+$workshopInstallRuleTypes = @($workshopInfo.InstallRule | ForEach-Object { $_.Type })
+if ($workshopInstallRuleTypes -notcontains "Lua" -or
+    $workshopInstallRuleTypes -notcontains "Paks" -or
+    $workshopInstallRuleTypes -notcontains "LogicMods") {
+    throw "Workshop Lua/Paks/LogicMods InstallRule missing"
+}
+$nativeUiPak = Join-Path $workshopDirectory "Paks\PalSkillDPSAnalyzerSP_P.pak"
+if (-not (Test-Path -LiteralPath $nativeUiPak)) { throw "Workshop native CommonUI pak missing" }
+$logicModsPak = Join-Path $workshopDirectory "LogicMods\PalSkillDPSAnalyzerSP.pak"
+if (-not (Test-Path -LiteralPath $logicModsPak)) { throw "Workshop LogicMods bootstrap pak missing" }
 foreach ($sharedName in @("main.lua", "hud.lua", "commentary.lua", "localization.lua", "hud_strings.lua", "skill_names.lua", "skill_effect_attribution.lua", "cast_effect_attribution.lua", "runtime_source_chain.lua")) {
     $sharedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $projectDirectory "Scripts\$sharedName")).Hash
     $workshopHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $workshopScripts $sharedName)).Hash
@@ -231,13 +253,15 @@ foreach ($localePath in $sharedLocales) {
 }
 $workshopConfig = Get-Content -LiteralPath (Join-Path $workshopScripts "config.lua") -Raw -Encoding UTF8
 foreach ($requiredSetting in @(
-    "config.LocalOnlyMessages = true",
+    "config.LocalOnlyMessages = false",
     "config.EnableSkillDiagnostics = true",
     "config.SkillDiagnosticsOnly = true",
     "config.EnableSkillSourceChain = true",
     "config.EnableBoundedSkillInference = true",
     "config.IncludePlayerDamage = false",
     'config.SkillDiagnosticChatMode = "off"',
+    "config.SkillDiagnosticLogNativeProbeReport = false",
+    "config.SkillDiagnosticNativeStatusIntervalHits = 0",
     "config.EnableSkillDPSHUD = true",
     'config.MeasurementMode = "manual"',
     'config.TargetScope = "boss"',
@@ -246,6 +270,7 @@ foreach ($requiredSetting in @(
     "config.EnableExternalHUD = true",
     "config.ExternalHUDAutoLaunch = true",
     "config.EnableExternalHUDSettings = false",
+    "config.EnableNativeCommonUISettings = true",
     "config.HUDUseExperimentalUMG = false",
     "config.HUDUseScreenTextFallback = false",
     "config.HUDShowInternalSkillCode = false",
@@ -313,8 +338,9 @@ if ($LASTEXITCODE -ne 0 -or -not ($v1Validation -match "view=text rows=0")) {
     throw "external HUD V1 settings view runtime validation failed"
 }
 $v2Validation = & $windowsPowerShell -NoLogo -NoProfile -NonInteractive -STA -ExecutionPolicy Bypass `
-    -File $overlayScript -StatePath $hudV2Fixture -ValidationMode
-if ($LASTEXITCODE -ne 0 -or -not ($v2Validation -match "view=meter rows=2")) {
+    -File $overlayScript -StatePath $hudV2Fixture -ValidationMode `
+    -ValidationUpdateStatePath $hudV2RankChangeFixture
+if ($LASTEXITCODE -ne 0 -or -not ($v2Validation -match "view=meter rows=4")) {
     throw "external HUD V2 meter runtime validation failed"
 }
 if (-not ($v2Validation -match "meter_rebuilds=1")) {
@@ -322,6 +348,18 @@ if (-not ($v2Validation -match "meter_rebuilds=1")) {
 }
 if (-not ($v2Validation -match "position_moves=1")) {
     throw "external HUD moved more than once while processing unchanged-anchor data snapshots"
+}
+if (-not ($v2Validation -match "rank_ordered=1")) {
+    throw "external HUD did not render final damage ranking from highest to lowest"
+}
+if (-not ($v2Validation -match "rank_reordered_in_place=1")) {
+    throw "external HUD replaced row objects instead of moving persistent rows in place"
+}
+if (-not ($v2Validation -match "rank_gradient=1")) {
+    throw "external HUD rank colors do not match the bright-blue gradient/basic-attack palette"
+}
+if (-not ($v2Validation -match "core_fields_only=1")) {
+    throw "external HUD live rows expose fields outside skill name/damage/DPS/share, or duration left the header"
 }
 $settingsValidation = & $windowsPowerShell -NoLogo -NoProfile -NonInteractive -STA -ExecutionPolicy Bypass `
     -File $overlayScript -StatePath $hudV2SettingsFixture -ValidationMode
@@ -357,7 +395,7 @@ try {
     $testOutput = & npx --yes --package=fengari-node-cli fengari test_main.lua 2>&1
     $testExitCode = $LASTEXITCODE
     $testOutput | Write-Host
-    if ($testExitCode -ne 0 -or -not ($testOutput -match "v0\.5\.18 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed")) {
+    if ($testExitCode -ne 0 -or -not ($testOutput -match "v0\.5\.19 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed")) {
         throw "Lua integration test failed or did not reach its completion marker"
     }
     $localeOutput = & npx --yes --package=fengari-node-cli fengari test_localization.lua 2>&1

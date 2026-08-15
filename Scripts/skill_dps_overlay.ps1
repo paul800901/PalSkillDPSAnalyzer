@@ -5,6 +5,7 @@ param(
     [string]$HeartbeatPath = "",
     [string]$LogPath = "",
     [switch]$ValidationMode,
+    [string]$ValidationUpdateStatePath = "",
     [string]$ValidationScreenshotPath
 )
 
@@ -73,6 +74,28 @@ trap {
 
 function New-HudBrush([string]$color) {
     return [Windows.Media.BrushConverter]::new().ConvertFromString($color)
+}
+
+function Get-HudSkillFillColor([pscustomobject]$row) {
+    if ($row.Unresolved) { return "#735F4811" }
+    if ([string]$row.Category -eq "basic") { return "#5E456B78" }
+    switch ([int]$row.Rank) {
+        1 { return "#8A1AC7E8" }
+        2 { return "#7015A5C4" }
+        3 { return "#58127F9B" }
+        default { return "#46105F78" }
+    }
+}
+
+function Get-HudSkillRankColor([pscustomobject]$row) {
+    if ($row.Unresolved) { return "#FFE0B96D" }
+    if ([string]$row.Category -eq "basic") { return "#FF91AAB2" }
+    switch ([int]$row.Rank) {
+        1 { return "#FF8BEAFF" }
+        2 { return "#FF65D3EC" }
+        3 { return "#FF48AFC9" }
+        default { return "#FF6EAEC0" }
+    }
 }
 
 function ConvertFrom-HudField([string]$value) {
@@ -386,99 +409,119 @@ function Show-HudText([string]$content, [double]$scale) {
     [void]$contentHost.Children.Add($text)
 }
 
-function New-HudSkillRow([pscustomobject]$row, [double]$maximumDamage, [double]$scale, [bool]$fullDetail, [hashtable]$sink) {
+function New-HudSkillRow([pscustomobject]$row, [double]$maximumDamage, [double]$scale, [bool]$fullDetail, [hashtable]$sink, [string]$damageLabel) {
     if ($null -eq $sink) { $sink = @{} }
     $rowBorder = [Windows.Controls.Border]::new()
     $rowBorder.BorderBrush = New-HudBrush "#20FFFFFF"
     $rowBorder.BorderThickness = [Windows.Thickness]::new(0, 0, 0, 1)
-    $rowBorder.MinHeight = 45 * $scale
+    $rowBorder.MinHeight = 46 * $scale
 
     $layer = [Windows.Controls.Grid]::new()
     $fill = [Windows.Controls.Border]::new()
     $fill.HorizontalAlignment = [Windows.HorizontalAlignment]::Left
     $ratio = if ($maximumDamage -gt 0) { [Math]::Max(0, [Math]::Min(1, $row.Damage / $maximumDamage)) } else { 0 }
-    $fill.Width = 360 * $scale * $ratio
-    if ($row.Unresolved) {
-        $fill.Background = New-HudBrush "#735F4811"
-    } else {
-        $fill.Background = New-HudBrush "#6B158BA4"
-    }
+    $fill.Width = 420 * $scale * $ratio
+    $fill.Background = New-HudBrush (Get-HudSkillFillColor $row)
     [void]$layer.Children.Add($fill)
 
     $vertical = [Windows.Controls.StackPanel]::new()
     $primary = [Windows.Controls.Grid]::new()
-    $primary.MinHeight = 45 * $scale
+    $primary.MinHeight = 46 * $scale
     $primary.Margin = [Windows.Thickness]::new(8 * $scale, 0, 10 * $scale, 0)
-    [void]$primary.ColumnDefinitions.Add([Windows.Controls.ColumnDefinition]@{ Width = [Windows.GridLength]::new(26 * $scale) })
     [void]$primary.ColumnDefinitions.Add([Windows.Controls.ColumnDefinition]@{ Width = [Windows.GridLength]::new(1, [Windows.GridUnitType]::Star) })
-    [void]$primary.ColumnDefinitions.Add([Windows.Controls.ColumnDefinition]@{ Width = [Windows.GridLength]::new(94 * $scale) })
-
-    $rank = New-HudText ([string]$row.Rank) (11 * $scale) "#FF74D9EC" ([Windows.FontWeights]::Normal)
-    $rank.HorizontalAlignment = [Windows.HorizontalAlignment]::Center
-    $rank.VerticalAlignment = [Windows.VerticalAlignment]::Center
-    [Windows.Controls.Grid]::SetColumn($rank, 0)
-    [void]$primary.Children.Add($rank)
+    [void]$primary.ColumnDefinitions.Add([Windows.Controls.ColumnDefinition]@{ Width = [Windows.GridLength]::new(150 * $scale) })
 
     $nameGroup = [Windows.Controls.StackPanel]::new()
     $nameGroup.VerticalAlignment = [Windows.VerticalAlignment]::Center
     $name = New-HudText $row.Name (13 * $scale) "#FFF3FBFD" ([Windows.FontWeights]::Medium)
     $nameGroup.Children.Add($name) | Out-Null
-    $counts = $row.CompactCounts
-    if ([string]::IsNullOrWhiteSpace($counts)) { $counts = "x{0}" -f $row.Casts }
-    $subline = "{0} DPS  ·  {1}%  ·  {2}" -f (Format-HudDecimal $row.Dps), (Format-HudDecimal $row.Share), $counts
+    $subline = "{0} DPS  ·  {1}%" -f (Format-HudDecimal $row.Dps), (Format-HudDecimal $row.Share)
     $sub = New-HudText $subline (9.5 * $scale) "#FF9ABBC3" ([Windows.FontWeights]::Normal)
     $sub.Margin = [Windows.Thickness]::new(0, 1 * $scale, 0, 0)
     $nameGroup.Children.Add($sub) | Out-Null
-    [Windows.Controls.Grid]::SetColumn($nameGroup, 1)
+    [Windows.Controls.Grid]::SetColumn($nameGroup, 0)
     [void]$primary.Children.Add($nameGroup)
 
-    $damage = New-HudText ("DMG " + (Format-HudInteger $row.Damage)) (13.5 * $scale) "#FFFFFFFF" ([Windows.FontWeights]::SemiBold)
+    $damage = New-HudText ($damageLabel + " " + (Format-HudInteger $row.Damage)) (13.5 * $scale) "#FFFFFFFF" ([Windows.FontWeights]::SemiBold)
     $damage.HorizontalAlignment = [Windows.HorizontalAlignment]::Right
     $damage.VerticalAlignment = [Windows.VerticalAlignment]::Center
-    [Windows.Controls.Grid]::SetColumn($damage, 2)
+    [Windows.Controls.Grid]::SetColumn($damage, 1)
     [void]$primary.Children.Add($damage)
     [void]$vertical.Children.Add($primary)
-
-    $detailBlocks = [Collections.Generic.List[object]]::new()
-    if ($fullDetail) {
-        $details = [Windows.Controls.StackPanel]::new()
-        $details.Margin = [Windows.Thickness]::new(34 * $scale, 0, 10 * $scale, 7 * $scale)
-        foreach ($detailLine in @($row.Timing, $row.Cooldown)) {
-            if (-not [string]::IsNullOrWhiteSpace($detailLine)) {
-                $detail = New-HudText $detailLine.Trim() (9.3 * $scale) "#FFB7CDD2" ([Windows.FontWeights]::Normal)
-                $detail.Margin = [Windows.Thickness]::new(0, 1 * $scale, 0, 0)
-                [void]$details.Children.Add($detail)
-                $detailBlocks.Add($detail)
-            }
-        }
-        [void]$vertical.Children.Add($details)
-    }
 
     [void]$layer.Children.Add($vertical)
     $rowBorder.Child = $layer
     $sink.Name = $name
+    $sink.RankValue = [int]$row.Rank
     $sink.Sub = $sub
     $sink.Damage = $damage
     $sink.Fill = $fill
-    $sink.Details = $detailBlocks
     $sink.Row = $rowBorder
     return $rowBorder
 }
 
-function Update-HudSkillRow([hashtable]$cached, [pscustomobject]$row, [double]$maximumDamage, [double]$scale, [bool]$fullDetail) {
+function Update-HudSkillRow([hashtable]$cached, [pscustomobject]$row, [double]$maximumDamage, [double]$scale, [bool]$fullDetail, [string]$damageLabel) {
     # In-place update: only the text and the bar width change. The visual tree
     # stays the same, so WPF does not re-measure/layout the whole meter.
     $cached.Name.Text = [string]$row.Name
-    $counts = $row.CompactCounts
-    if ([string]::IsNullOrWhiteSpace($counts)) { $counts = "x{0}" -f $row.Casts }
-    $cached.Sub.Text = "{0} DPS  ·  {1}%  ·  {2}" -f (Format-HudDecimal $row.Dps), (Format-HudDecimal $row.Share), $counts
-    $cached.Damage.Text = "DMG " + (Format-HudInteger $row.Damage)
+    $cached.RankValue = [int]$row.Rank
+    $cached.Sub.Text = "{0} DPS  ·  {1}%" -f (Format-HudDecimal $row.Dps), (Format-HudDecimal $row.Share)
+    $cached.Damage.Text = $damageLabel + " " + (Format-HudInteger $row.Damage)
     $ratio = if ($maximumDamage -gt 0) { [Math]::Max(0, [Math]::Min(1, $row.Damage / $maximumDamage)) } else { 0 }
-    $cached.Fill.Width = 360 * $scale * $ratio
-    if ($fullDetail -and $cached.Details.Count -ge 2) {
-        $cached.Details[0].Text = [string]$row.Timing
-        $cached.Details[1].Text = [string]$row.Cooldown
+    $cached.Fill.Width = 420 * $scale * $ratio
+    $cached.Fill.Background = New-HudBrush (Get-HudSkillFillColor $row)
+}
+
+function Add-HudTextBlocks([Windows.DependencyObject]$root, [Collections.Generic.List[object]]$sink) {
+    if ($null -eq $root) { return }
+    if ($root -is [Windows.Controls.TextBlock]) {
+        [void]$sink.Add($root)
     }
+    $childCount = [Windows.Media.VisualTreeHelper]::GetChildrenCount($root)
+    for ($index = 0; $index -lt $childCount; $index++) {
+        Add-HudTextBlocks ([Windows.Media.VisualTreeHelper]::GetChild($root, $index)) $sink
+    }
+}
+
+function New-HudDetailRow([pscustomobject]$row, [double]$maximumDamage, [string]$damageLabel) {
+    $rowBorder = [Windows.Controls.Border]::new()
+    $rowBorder.BorderBrush = New-HudBrush "#3058C7DE"
+    $rowBorder.BorderThickness = [Windows.Thickness]::new(1)
+    $rowBorder.CornerRadius = [Windows.CornerRadius]::new(5)
+    $rowBorder.Margin = [Windows.Thickness]::new(2, 3, 2, 5)
+
+    $layer = [Windows.Controls.Grid]::new()
+    $fill = [Windows.Controls.Border]::new()
+    $fill.HorizontalAlignment = [Windows.HorizontalAlignment]::Left
+    $ratio = if ($maximumDamage -gt 0) { [Math]::Max(0, [Math]::Min(1, $row.Damage / $maximumDamage)) } else { 0 }
+    $fill.Width = 560 * $ratio
+    $fill.Background = New-HudBrush (Get-HudSkillFillColor $row)
+    [void]$layer.Children.Add($fill)
+
+    $content = [Windows.Controls.StackPanel]::new()
+    $content.Margin = [Windows.Thickness]::new(10, 7, 10, 8)
+    $header = [Windows.Controls.Grid]::new()
+    [void]$header.ColumnDefinitions.Add([Windows.Controls.ColumnDefinition]@{ Width = [Windows.GridLength]::new(1, [Windows.GridUnitType]::Star) })
+    [void]$header.ColumnDefinitions.Add([Windows.Controls.ColumnDefinition]@{ Width = [Windows.GridLength]::Auto })
+    $name = New-HudText ("{0}. {1}" -f $row.Rank, $row.Name) 12.5 "#FFF3FBFD" ([Windows.FontWeights]::SemiBold)
+    [void]$header.Children.Add($name)
+    $damage = New-HudText ("{0} {1}  ·  {2} DPS  ·  {3}%" -f
+        $damageLabel, (Format-HudInteger $row.Damage), (Format-HudDecimal $row.Dps),
+        (Format-HudDecimal $row.Share)) 11.5 "#FFFFFFFF" ([Windows.FontWeights]::SemiBold)
+    $damage.HorizontalAlignment = [Windows.HorizontalAlignment]::Right
+    [Windows.Controls.Grid]::SetColumn($damage, 1)
+    [void]$header.Children.Add($damage)
+    [void]$content.Children.Add($header)
+    foreach ($detailLine in @($row.DetailCasts, $row.DetailHits, $row.DetailRange, $row.DetailLimits)) {
+        if (-not [string]::IsNullOrWhiteSpace($detailLine)) {
+            $detail = New-HudText ([string]$detailLine) 10.2 "#FFB6CED4" ([Windows.FontWeights]::Normal)
+            $detail.Margin = [Windows.Thickness]::new(0, 3, 0, 0)
+            [void]$content.Children.Add($detail)
+        }
+    }
+    [void]$layer.Children.Add($content)
+    $rowBorder.Child = $layer
+    return $rowBorder
 }
 
 function Show-HudMeter([hashtable]$values, [string]$body, [double]$scale) {
@@ -521,6 +564,8 @@ function Show-HudMeter([hashtable]$values, [string]$body, [double]$scale) {
                 Timing = ConvertFrom-HudField $fields[18]
                 Cooldown = ConvertFrom-HudField $fields[19]
                 CompactCounts = ConvertFrom-HudField $fields[20]
+                HitQuality = if ($fields.Count -ge 22) { ConvertFrom-HudField $fields[21] } else { "" }
+                Category = if ($fields.Count -ge 23) { ConvertFrom-HudField $fields[22] } else { "skill" }
             })
         } elseif ($fields[0] -eq "W" -and $fields.Count -ge 2) {
             $waiting = ConvertFrom-HudField $fields[1]
@@ -528,21 +573,18 @@ function Show-HudMeter([hashtable]$values, [string]$body, [double]$scale) {
     }
 
     $detail = [string]$values.detail
-    $fullDetail = $detail -eq "full"
+    $fullDetail = $false
     $primarySource = ConvertFrom-HudField ([string]$values.primary_source)
     if ([string]::IsNullOrWhiteSpace($primarySource)) {
         $primarySource = ConvertFrom-HudField ([string]$values.title)
     }
-    $boss = ConvertFrom-HudField ([string]$values.boss)
-    $stateLabel = ConvertFrom-HudField ([string]$values.state_label)
     $duration = Format-HudDuration (ConvertTo-HudNumber ([string]$values.duration))
-    $targetCountLabel = if ([string]$values.measurement_mode -eq "manual") {
-        ConvertFrom-HudField ([string]$values.target_count_label)
-    } else { "" }
-    $context = @($boss, $targetCountLabel, $stateLabel, $duration) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-    $contextLine = ($context -join "  ·  ")
+    $contextLine = $duration
+    $shortcutHint = ConvertFrom-HudField ([string]$values.shortcut_hint)
     $encounterDps = ConvertTo-HudNumber ([string]$values.encounter_dps)
-    $damageLine = "DMG " + (Format-HudInteger (ConvertTo-HudNumber ([string]$values.total_damage)))
+    $damageLabel = ConvertFrom-HudField ([string]$values.damage_label)
+    if ([string]::IsNullOrWhiteSpace($damageLabel)) { $damageLabel = "DMG" }
+    $damageLine = $damageLabel + " " + (Format-HudInteger (ConvertTo-HudNumber ([string]$values.total_damage)))
     $dpsLine = (Format-HudDecimal $encounterDps) + " DPS"
     $sourceCount = [int](ConvertTo-HudNumber ([string]$values.source_count))
 
@@ -552,20 +594,19 @@ function Show-HudMeter([hashtable]$values, [string]$body, [double]$scale) {
     # whole content on every damage tick.
     $rebuild = $null -eq $script:meterUi -or
         [Math]::Abs([double]$script:meterUi.Scale - [double]$scale) -gt 0.01 -or
-        $script:meterUi.Detail -ne $detail -or
         $script:lastRenderedView -ne "meter"
 
     if ($rebuild) {
         $script:settingsTabs = $null
         $contentHost.Children.Clear()
         $border.Padding = [Windows.Thickness]::new(0)
-        $border.Width = 360 * $scale
+        $border.Width = 420 * $scale
         $border.Height = [double]::NaN
         $border.MinHeight = 0
         $border.MaxHeight = [double]::PositiveInfinity
         # A fixed outer rectangle removes the two-pass WPF desired-size race that
         # previously alternated the meter between left and right anchors.
-        $window.Width = 360 * $scale
+        $window.Width = 420 * $scale
 
         $panel = [Windows.Controls.StackPanel]::new()
         $header = [Windows.Controls.Grid]::new()
@@ -602,9 +643,15 @@ function Show-HudMeter([hashtable]$values, [string]$body, [double]$scale) {
         $rowHost = [Windows.Controls.StackPanel]::new()
         [void]$panel.Children.Add($rowHost)
 
+        $shortcutText = New-HudText $shortcutHint (9 * $scale) "#FF789DA6" ([Windows.FontWeights]::Normal)
+        $shortcutText.HorizontalAlignment = [Windows.HorizontalAlignment]::Right
+        $shortcutText.Margin = [Windows.Thickness]::new(12 * $scale, 5 * $scale, 12 * $scale, 7 * $scale)
+        [void]$panel.Children.Add($shortcutText)
+
         $script:meterUi = @{
             Scale = $scale
             Detail = $detail
+            DamageLabel = $damageLabel
             HeaderSource = $sourceName
             HeaderContext = $contextText
             HeaderDamage = $damageText
@@ -613,6 +660,7 @@ function Show-HudMeter([hashtable]$values, [string]$body, [double]$scale) {
             Rows = @{}
             SourceHeaders = @{}
             WaitingText = $null
+            Shortcut = $shortcutText
             LastHeight = 0
         }
         $script:meterRebuilds++
@@ -624,6 +672,8 @@ function Show-HudMeter([hashtable]$values, [string]$body, [double]$scale) {
         $script:meterUi.HeaderContext.Text = $contextLine
         $script:meterUi.HeaderDamage.Text = $damageLine
         $script:meterUi.HeaderDps.Text = $dpsLine
+        $script:meterUi.Shortcut.Text = $shortcutHint
+        $script:meterUi.DamageLabel = $damageLabel
     }
 
     # ---- Skill rows: create once, update numbers, add/remove only on change.
@@ -654,6 +704,7 @@ function Show-HudMeter([hashtable]$values, [string]$body, [double]$scale) {
         $seen = @{}
         $liveSources = @{}
         $lastSourceIndex = $null
+        $desiredVisuals = [Collections.Generic.List[object]]::new()
         foreach ($row in $rows) {
             $key = "$($row.SourceIndex)|$($row.InternalCode)"
             $seen[$key] = $true
@@ -668,15 +719,17 @@ function Show-HudMeter([hashtable]$values, [string]$body, [double]$scale) {
                 } else {
                     $script:meterUi.SourceHeaders[$row.SourceIndex].Text = $sources[$row.SourceIndex].Name
                 }
+                [void]$desiredVisuals.Add($script:meterUi.SourceHeaders[$row.SourceIndex])
             }
             if ($script:meterUi.Rows.ContainsKey($key)) {
-                Update-HudSkillRow $script:meterUi.Rows[$key] $row $maximumDamage $scale $fullDetail
+                Update-HudSkillRow $script:meterUi.Rows[$key] $row $maximumDamage $scale $fullDetail $damageLabel
             } else {
                 $sink = @{}
-                $rowBorder = New-HudSkillRow $row $maximumDamage $scale $fullDetail $sink
+                $rowBorder = New-HudSkillRow $row $maximumDamage $scale $fullDetail $sink $damageLabel
                 [void]$script:meterUi.RowHost.Children.Add($rowBorder)
                 $script:meterUi.Rows[$key] = $sink
             }
+            [void]$desiredVisuals.Add($script:meterUi.Rows[$key].Row)
         }
         foreach ($key in @($script:meterUi.Rows.Keys)) {
             if (-not $seen.ContainsKey($key)) {
@@ -690,12 +743,25 @@ function Show-HudMeter([hashtable]$values, [string]$body, [double]$scale) {
                 $script:meterUi.SourceHeaders.Remove($key)
             }
         }
+
+        # Lua publishes damage-ranked rows. Reuse every existing row and only
+        # move it when its rank actually changes; this preserves the fixed
+        # visual tree during ordinary number ticks while keeping the visible
+        # order strictly highest damage to lowest damage.
+        for ($desiredIndex = 0; $desiredIndex -lt $desiredVisuals.Count; $desiredIndex++) {
+            $visual = $desiredVisuals[$desiredIndex]
+            $currentIndex = $script:meterUi.RowHost.Children.IndexOf($visual)
+            if ($currentIndex -ne $desiredIndex) {
+                $script:meterUi.RowHost.Children.Remove($visual)
+                $script:meterUi.RowHost.Children.Insert($desiredIndex, $visual)
+            }
+        }
     }
 
     # Window height only changes when the row count changes; the fixed meter
     # width plus unchanged height mean no re-layout while damage numbers tick.
-    $newHeight = [Math]::Min(520 * $scale,
-        [Math]::Max(118 * $scale, (102 + 45 * $rows.Count) * $scale))
+    $newHeight = [Math]::Min(540 * $scale,
+        [Math]::Max(118 * $scale, (118 + 46 * $rows.Count) * $scale))
     if ([Math]::Abs([double]$script:meterUi.LastHeight - [double]$newHeight) -gt 0.5) {
         $window.Height = $newHeight
         $script:meterUi.LastHeight = $newHeight
@@ -724,6 +790,12 @@ function Show-HudSettings([hashtable]$values, [string]$body) {
     $sources = @{}
     $sourceOrder = [Collections.Generic.List[string]]::new()
     $resultRows = [Collections.Generic.List[object]]::new()
+    $damageLabel = ConvertFrom-HudField ([string]$values.damage_label)
+    if ([string]::IsNullOrWhiteSpace($damageLabel)) { $damageLabel = "DMG" }
+    $settingsTitle = ConvertFrom-HudField ([string]$values.settings_title)
+    $resultsTitle = ConvertFrom-HudField ([string]$values.results_title)
+    $requestedTitleTab = [Math]::Max(0, [Math]::Min(1,
+        [int](ConvertTo-HudNumber ([string]$values.selected_tab))))
     foreach ($line in ($body -split "\r?\n")) {
         if ([string]::IsNullOrWhiteSpace($line)) { continue }
         $fields = $line.Split([char]9)
@@ -767,6 +839,22 @@ function Show-HudSettings([hashtable]$values, [string]$body) {
                 Unresolved = $fields[17] -eq "1"
                 Timing = ConvertFrom-HudField $fields[18]
                 Cooldown = ConvertFrom-HudField $fields[19]
+                Category = if ($fields.Count -ge 21) { ConvertFrom-HudField $fields[20] } else { "skill" }
+                HitCasts = if ($fields.Count -ge 22) { [int](ConvertTo-HudNumber $fields[21]) } else { 0 }
+                ZeroDamageCasts = if ($fields.Count -ge 23) { [int](ConvertTo-HudNumber $fields[22]) } else { 0 }
+                PendingCasts = if ($fields.Count -ge 24) { [int](ConvertTo-HudNumber $fields[23]) } else { 0 }
+                PerCastHits = if ($fields.Count -ge 25) { ConvertFrom-HudField $fields[24] } else { "" }
+                MinimumHits = if ($fields.Count -ge 26) { ConvertTo-HudNumber $fields[25] } else { 0 }
+                AverageHits = if ($fields.Count -ge 27) { ConvertTo-HudNumber $fields[26] } else { 0 }
+                MaximumHits = if ($fields.Count -ge 28) { ConvertTo-HudNumber $fields[27] } else { 0 }
+                HistoricalMaxHits = if ($fields.Count -ge 29) { ConvertTo-HudNumber $fields[28] } else { 0 }
+                FullHitCap = if ($fields.Count -ge 30) { ConvertTo-HudNumber $fields[29] } else { 0 }
+                Approximate = $fields.Count -ge 31 -and $fields[30] -eq "1"
+                UnassignedHits = if ($fields.Count -ge 32) { [int](ConvertTo-HudNumber $fields[31]) } else { 0 }
+                DetailCasts = if ($fields.Count -ge 33) { ConvertFrom-HudField $fields[32] } else { "" }
+                DetailHits = if ($fields.Count -ge 34) { ConvertFrom-HudField $fields[33] } else { "" }
+                DetailRange = if ($fields.Count -ge 35) { ConvertFrom-HudField $fields[34] } else { "" }
+                DetailLimits = if ($fields.Count -ge 36) { ConvertFrom-HudField $fields[35] } else { "" }
             })
         }
     }
@@ -789,7 +877,8 @@ function Show-HudSettings([hashtable]$values, [string]$body) {
     [void]$heading.ColumnDefinitions.Add([Windows.Controls.ColumnDefinition]@{ Width = [Windows.GridLength]::new(1, [Windows.GridUnitType]::Star) })
     [void]$heading.ColumnDefinitions.Add([Windows.Controls.ColumnDefinition]@{ Width = [Windows.GridLength]::Auto })
     $headingText = [Windows.Controls.StackPanel]::new()
-    [void]$headingText.Children.Add((New-HudText (ConvertFrom-HudField ([string]$values.title)) 20 "#FFF4FBFD" ([Windows.FontWeights]::SemiBold)))
+    $headingTitle = New-HudText $(if ($requestedTitleTab -eq 1) { $resultsTitle } else { $settingsTitle }) 20 "#FFF4FBFD" ([Windows.FontWeights]::SemiBold)
+    [void]$headingText.Children.Add($headingTitle)
     $note = New-HudText (ConvertFrom-HudField ([string]$values.note)) 11 "#FF9CBCC4" ([Windows.FontWeights]::Normal)
     $note.Margin = [Windows.Thickness]::new(0, 4, 0, 0)
     $note.TextWrapping = [Windows.TextWrapping]::Wrap
@@ -934,10 +1023,11 @@ function Show-HudSettings([hashtable]$values, [string]$body) {
         $empty.TextWrapping = [Windows.TextWrapping]::Wrap
         [void]$resultsPanel.Children.Add($empty)
     } else {
-        $summary = "{0}  ·  DMG {2}  ·  {1} DPS" -f
+        $summary = "{0}  ·  {3} {2}  ·  {1} DPS" -f
             (ConvertFrom-HudField ([string]$values.result_context)),
             (Format-HudDecimal (ConvertTo-HudNumber ([string]$values.result_dps))),
-            (Format-HudInteger (ConvertTo-HudNumber ([string]$values.result_damage)))
+            (Format-HudInteger (ConvertTo-HudNumber ([string]$values.result_damage))),
+            $damageLabel
         $summaryText = New-HudText $summary 12 "#FFB9D5DB" ([Windows.FontWeights]::Medium)
         $summaryText.Margin = [Windows.Thickness]::new(6, 2, 6, 10)
         [void]$resultsPanel.Children.Add($summaryText)
@@ -946,13 +1036,14 @@ function Show-HudSettings([hashtable]$values, [string]$body) {
         foreach ($row in $resultRows) {
             if ($row.SourceIndex -ne $lastSourceIndex -and $sources.ContainsKey($row.SourceIndex)) {
                 $source = $sources[$row.SourceIndex]
-                $sourceHeader = New-HudText ("{0}   DMG {2}   {1} DPS" -f $source.Name,
-                    (Format-HudDecimal $source.Dps), (Format-HudInteger $source.Damage)) 12.5 "#FF74D9EC" ([Windows.FontWeights]::SemiBold)
+                $sourceHeader = New-HudText ("{0}   {3} {2}   {1} DPS" -f $source.Name,
+                    (Format-HudDecimal $source.Dps), (Format-HudInteger $source.Damage),
+                    $damageLabel) 12.5 "#FF74D9EC" ([Windows.FontWeights]::SemiBold)
                 $sourceHeader.Margin = [Windows.Thickness]::new(6, $(if ($null -eq $lastSourceIndex) { 2 } else { 13 }), 6, 5)
                 [void]$resultsPanel.Children.Add($sourceHeader)
                 $lastSourceIndex = $row.SourceIndex
             }
-            $skillRow = New-HudSkillRow $row $maximumDamage 1.0 $false
+            $skillRow = New-HudDetailRow $row $maximumDamage $damageLabel
             $skillRow.Width = 560
             [void]$resultsPanel.Children.Add($skillRow)
         }
@@ -965,8 +1056,13 @@ function Show-HudSettings([hashtable]$values, [string]$body) {
     }).GetNewClosure())
     $resultsTab.Content = $resultsScroll
     [void]$tabs.Items.Add($resultsTab)
-    $tabs.SelectedIndex = [Math]::Max(0, [Math]::Min(1, $script:settingsSelectedTab))
+    $requestedTab = [int](ConvertTo-HudNumber ([string]$values.selected_tab))
+    $tabs.SelectedIndex = [Math]::Max(0, [Math]::Min(1, $requestedTab))
+    $script:settingsSelectedTab = $tabs.SelectedIndex
     $capturedTabs = $tabs
+    $capturedHeadingTitle = $headingTitle
+    $capturedSettingsTitle = $settingsTitle
+    $capturedResultsTitle = $resultsTitle
     $tabs.Add_SelectionChanged(({
         param($sender, $eventArgs)
         # Removing an old TabControl during a state refresh changes its
@@ -975,6 +1071,11 @@ function Show-HudSettings([hashtable]$values, [string]$body) {
         if ([object]::ReferenceEquals($capturedTabs, $script:settingsTabs) -and
             $capturedTabs.SelectedIndex -ge 0) {
             $script:settingsSelectedTab = $capturedTabs.SelectedIndex
+            $capturedHeadingTitle.Text = if ($capturedTabs.SelectedIndex -eq 1) {
+                $capturedResultsTitle
+            } else {
+                $capturedSettingsTitle
+            }
         }
     }).GetNewClosure())
 
@@ -1023,10 +1124,9 @@ function Read-HudState {
     $wasSettingsOpen = $script:lastSettingsOpen
     $script:shouldBeVisible = $values.visible -eq "1"
     $requestedSettings = $values.settings -eq "1" -or $values.view -eq "settings"
-    # Runtime external settings are intentionally disabled. Keep fixture
-    # rendering available only to offline validation while native CommonUI is
-    # under development; a stale settings document must never capture input.
-    $script:lastSettingsOpen = $ValidationMode -and $requestedSettings
+    # The settings workspace remains display-only and click-through. Lua owns
+    # the F3 page cycle, so the external window never captures game input.
+    $script:lastSettingsOpen = $requestedSettings
     $script:lastAnchor = if ($values.anchor -in @("left-center", "right-center", "top-left", "top-right", "center")) {
         [string]$values.anchor
     } else { "left-center" }
@@ -1040,11 +1140,8 @@ function Read-HudState {
     [void][double]::TryParse([string]$values.expires_at, [Globalization.NumberStyles]::Float,
         [Globalization.CultureInfo]::InvariantCulture, [ref]$parsedExpiry)
     $script:expiresAt = $parsedExpiry
-    if ($ValidationMode -and $protocol -eq "PAL_SKILL_DPS_HUD_V2" -and $values.view -eq "settings") {
+    if ($protocol -eq "PAL_SKILL_DPS_HUD_V2" -and $values.view -eq "settings") {
         Show-HudSettings $values $parts[1].TrimEnd("`r", "`n")
-    } elseif ($requestedSettings -and -not $ValidationMode) {
-        $script:shouldBeVisible = $false
-        return
     } elseif ($protocol -eq "PAL_SKILL_DPS_HUD_V2" -and $values.view -eq "meter") {
         Show-HudMeter $values $parts[1].TrimEnd("`r", "`n") $script:lastScale
     } else {
@@ -1071,12 +1168,101 @@ $window.Dispatcher.add_UnhandledException({
 
 if ($ValidationMode) {
     Read-HudState
+    $rankOrdered = "n/a"
+    $rankReorderedInPlace = "n/a"
+    $rankGradient = "n/a"
+    $coreFieldsOnly = "n/a"
     if ($lastRenderedView -eq "meter") {
-        # Feed the same meter document again as if Lua published another 0.5 s
-        # snapshot. The visual tree must NOT be rebuilt: meter_rebuilds stays
-        # at 1 (the initial build) and only header/row text updates in place.
+        $initialRows = @{}
+        $initialOrder = [Collections.Generic.List[string]]::new()
+        foreach ($key in @($script:meterUi.Rows.Keys)) {
+            $initialRows[$key] = $script:meterUi.Rows[$key].Row
+        }
+        foreach ($visual in $script:meterUi.RowHost.Children) {
+            foreach ($key in @($script:meterUi.Rows.Keys)) {
+                if ([object]::ReferenceEquals($visual, $script:meterUi.Rows[$key].Row)) {
+                    [void]$initialOrder.Add([string]$key)
+                    break
+                }
+            }
+        }
+
+        # Feed a changed damage ranking as the next 0.5 s snapshot. Rows must
+        # move in place: no tree rebuild and no replacement row objects.
+        if (-not [string]::IsNullOrWhiteSpace($ValidationUpdateStatePath)) {
+            $StatePath = $ValidationUpdateStatePath
+        }
         $script:lastSequence = -1
         Read-HudState
+
+        $finalOrder = [Collections.Generic.List[string]]::new()
+        $expectedRank = 1
+        $ordered = $true
+        foreach ($visual in $script:meterUi.RowHost.Children) {
+            foreach ($key in @($script:meterUi.Rows.Keys)) {
+                $cached = $script:meterUi.Rows[$key]
+                if ([object]::ReferenceEquals($visual, $cached.Row)) {
+                    [void]$finalOrder.Add([string]$key)
+                    if ([int]$cached.RankValue -ne $expectedRank) { $ordered = $false }
+                    $expectedRank++
+                    break
+                }
+            }
+        }
+        $rankOrdered = if ($ordered -and $finalOrder.Count -eq $script:meterUi.Rows.Count) { "1" } else { "0" }
+
+        $sameObjects = $initialRows.Count -eq $script:meterUi.Rows.Count
+        foreach ($key in @($initialRows.Keys)) {
+            if (-not $script:meterUi.Rows.ContainsKey($key) -or
+                -not [object]::ReferenceEquals($initialRows[$key], $script:meterUi.Rows[$key].Row)) {
+                $sameObjects = $false
+            }
+        }
+        $orderChanged = ($initialOrder -join "|") -ne ($finalOrder -join "|")
+        $rankReorderedInPlace = if ($sameObjects -and $orderChanged) { "1" } else { "0" }
+
+        $gradientOk = $true
+        $skillColors = @{}
+        foreach ($key in @($script:meterUi.Rows.Keys)) {
+            $cached = $script:meterUi.Rows[$key]
+            $rank = [int]$cached.RankValue
+            $actual = $cached.Fill.Background.ToString()
+            if ($key -like "*|GravityShot") {
+                if ($actual -ne "#5E456B78") { $gradientOk = $false }
+            } elseif ($rank -ge 1 -and $rank -le 3) {
+                $expected = @("", "#8A1AC7E8", "#7015A5C4", "#58127F9B")[$rank]
+                if ($actual -ne $expected) { $gradientOk = $false }
+                $skillColors[$rank] = $actual
+            }
+        }
+        if ($skillColors.Count -ne 3 -or
+            $skillColors[1] -eq $skillColors[2] -or
+            $skillColors[2] -eq $skillColors[3] -or
+            $skillColors[1] -eq $skillColors[3]) {
+            $gradientOk = $false
+        }
+        $rankGradient = if ($gradientOk) { "1" } else { "0" }
+
+        # The live row has exactly three visible text values: skill name,
+        # per-skill DPS/share, and per-skill total damage. Encounter time stays
+        # in the header. Cast/Hit diagnostics belong exclusively to F3 page 2.
+        $damagePrefix = [string]$script:meterUi.DamageLabel
+        if ([string]::IsNullOrWhiteSpace($damagePrefix)) { $damagePrefix = "DMG" }
+        $damagePattern = '^' + [regex]::Escape($damagePrefix) + ' '
+        $coreOk = $script:meterUi.HeaderContext.Text -match '^\d{2}:\d{2}$'
+        foreach ($key in @($script:meterUi.Rows.Keys)) {
+            $cached = $script:meterUi.Rows[$key]
+            $textBlocks = [Collections.Generic.List[object]]::new()
+            Add-HudTextBlocks $cached.Row $textBlocks
+            if ($textBlocks.Count -ne 3 -or
+                [string]::IsNullOrWhiteSpace($cached.Name.Text) -or
+                $cached.Sub.Text -notmatch ' DPS\s+·\s+.*%$' -or
+                $cached.Damage.Text -notmatch $damagePattern) {
+                $coreOk = $false
+            }
+        }
+        $coreFieldsOnly = if ($coreOk) { "1" } else { "0" }
+
         # Exercise the same single positioning owner used at runtime. Two data
         # snapshots with the same anchor/work area/width must produce one move.
         Set-HudPosition $script:lastAnchor
@@ -1116,8 +1302,10 @@ if ($ValidationMode) {
         $stream = [IO.File]::Open($ValidationScreenshotPath, [IO.FileMode]::Create)
         try { $encoder.Save($stream) } finally { $stream.Dispose() }
     }
-    Write-Output ("HUD validation view={0} rows={1} desired={2:0.0}x{3:0.0} tab_stable={4} meter_rebuilds={5} position_moves={6}" -f
-        $lastRenderedView, $lastRenderedRows, $desired.Width, $desired.Height, $tabStable, $script:meterRebuilds, $script:positionMoves)
+    Write-Output ("HUD validation view={0} rows={1} desired={2:0.0}x{3:0.0} tab_stable={4} meter_rebuilds={5} position_moves={6} rank_ordered={7} rank_reordered_in_place={8} rank_gradient={9} core_fields_only={10}" -f
+        $lastRenderedView, $lastRenderedRows, $desired.Width, $desired.Height, $tabStable,
+        $script:meterRebuilds, $script:positionMoves, $rankOrdered, $rankReorderedInPlace, $rankGradient,
+        $coreFieldsOnly)
     $mutex.ReleaseMutex()
     $mutex.Dispose()
     exit 0
@@ -1126,7 +1314,7 @@ if ($ValidationMode) {
 $window.add_PreviewKeyDown({
     param($sender, $eventArgs)
     if (-not $script:lastSettingsOpen) { return }
-    if ($eventArgs.Key -in @([Windows.Input.Key]::F1, [Windows.Input.Key]::Escape)) {
+    if ($eventArgs.Key -in @([Windows.Input.Key]::F3, [Windows.Input.Key]::Escape)) {
         Write-HudCommand "close"
         $eventArgs.Handled = $true
         return

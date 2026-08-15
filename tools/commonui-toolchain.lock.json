@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "target": "Palworld 1.0 Windows x64 / Unreal Engine 5.1 CommonUI LogicMod",
+  "unreal_engine": {
+    "repository": "https://github.com/EpicGames/UnrealEngine.git",
+    "branch": "5.1",
+    "commit": "9bd9c8450210e0785ab2f53e71a6f5e4dd880df4",
+    "install_directory": ".toolchain/UnrealEngine-5.1"
+  },
+  "palworld_modding_kit": {
+    "repository": "https://github.com/localcc/PalworldModdingKit.git",
+    "branch": "main",
+    "commit": "62fad4130238cb0aadf024b87496e7387d5f4bf5",
+    "install_directory": ".toolchain/PalworldModdingKit"
+  }
+}

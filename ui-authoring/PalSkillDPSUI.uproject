@@ -1,0 +1,24 @@
+{
+  "FileVersion": 3,
+  "EngineAssociation": "",
+  "Category": "Palworld Mod Authoring",
+  "Description": "Authoring project for the native Pal Skill DPS settings UI.",
+  "Modules": [
+    {
+      "Name": "PalSkillDPSUI",
+      "Type": "Runtime",
+      "LoadingPhase": "Default"
+    },
+    {
+      "Name": "PalSkillDPSUIEditor",
+      "Type": "Editor",
+      "LoadingPhase": "Default"
+    }
+  ],
+  "Plugins": [
+    {
+      "Name": "CommonUI",
+      "Enabled": true
+    }
+  ]
+}

@@ -5,7 +5,7 @@ local config = {}
 config.EnableDPSRecording = true
 
 -- HUD, settings, skill-name, and chat-report language. "auto" follows
--- Palworld's current language when it can be detected. F1 can switch this at
+-- Palworld's current language when it can be detected. F3 can switch this at
 -- runtime, or use en, zh-CN, zh-TW, ja, fr, it, de, es-ES, pt-BR, ru, ko,
 -- id, es-419, th, tr, vi or pl here.
 config.Language = "auto"
@@ -49,7 +49,9 @@ config.EnableSkillSourceChain = true
 -- never teach the exact signature table, and ambiguous overlaps stay unresolved.
 config.EnableBoundedSkillInference = true
 -- A damage lab is more useful when the operator controls the sampling window.
--- "manual" keeps one test open across many targets until F1 -> Start new test;
+-- "manual" keeps one test open until F2 starts a new test. In Boss-only scope,
+-- the final Boss death/capture freezes the result; non-terminal phases do not.
+-- In all-target scope, target deaths never freeze the manual test.
 -- "target" automatically creates a separate test for each damaged target.
 config.MeasurementMode = "manual"
 -- "boss" accepts arena/tower/raid/tablet Bosses and open-world Alpha/Boss
@@ -66,27 +68,40 @@ config.SkillDiagnosticMaxSchemaFields = 128
 config.SkillDiagnosticChatMaxRows = 12
 -- Diagnostic results use a dedicated in-game HUD by default. Chat output is
 -- retained only as an optional compatibility mode: "off", "summary", or
--- "full". The F1 panel can change this without editing the file.
+-- "full". The F3 panel can change this without editing the file.
 config.SkillDiagnosticChatMode = "off"
 
--- Dedicated skill-DPS HUD. F1 opens the settings panel; arrow keys and Enter
--- change values. User choices are persisted beside these scripts.
+-- Dedicated skill-DPS HUD. F3 opens/closes the native settings workspace;
+-- its Settings and Current Test tabs are mouse-clickable. User choices are
+-- persisted beside these scripts.
 config.EnableSkillDPSHUD = true
 config.HUDRefreshMilliseconds = 500
 config.HUDSettingsVersion = 3
 -- Compact is the public default: one proportional bar per skill with damage,
 -- share, casts and encounter DPS. "full" reveals timing diagnostics below
--- every row when the user deliberately switches modes in F1.
+-- every row when the user deliberately switches modes in F3.
 config.HUDDetailMode = "compact"
 -- Keep the panel compact: show the official localized skill name by default.
--- F1 can reveal the internal English Waza/action code when diagnosing a skill.
+-- F3 can reveal the internal English Waza/action code when diagnosing a skill.
 config.HUDShowInternalSkillCode = false
 config.HUDAnchor = "left-center"
 config.HUDScale = 0.85
 config.HUDMaxSkillRows = 5
+-- Per-row cast quality keeps only the latest N cast hit counts on the compact
+-- HUD. The complete per-cast list remains available in UE4SS.log.
+config.HUDMaxHitCastSamples = 6
+-- Raw hit timestamps are retained only to split exact skill damage back into
+-- individual observed casts when the engine did not propagate a cast token.
+-- This does not affect total damage or skill attribution.
+config.SkillPerCastHitMaxEntries = 4096
+-- Optional laboratory baselines. Add an internal Waza code only after a clean
+-- single-skill test establishes its theoretical hits per cast. Until then the
+-- HUD reports observed hits without inventing a "full-hit" percentage.
+config.SkillFullHitCaps = {}
 config.HUDKeepFinalResults = true
--- Final automatic-target results remain briefly, rather than covering loading
--- screens indefinitely. -1 keeps them until the next test; 0 hides at once.
+-- This setting applies only to automatic per-target results. A manually
+-- controlled Boss result always remains unchanged until the operator presses
+-- F2; -1 keeps automatic results until the next test, and 0 hides them at once.
 config.HUDFinalResultSeconds = 15
 -- Current Palworld/UE4SS builds crash when a Lua-only mod constructs UMG or
 -- calls PrintString from the live damage path. The shipped HUD is therefore a
@@ -97,6 +112,7 @@ config.ExternalHUDAutoLaunch = true
 -- The external window is display-only. Interactive settings require a native
 -- Palworld CommonUI surface; cross-process mouse/focus control is disabled.
 config.EnableExternalHUDSettings = false
+config.EnableNativeCommonUISettings = true
 -- Retained as explicit compatibility guards for older user settings. Neither
 -- unsafe backend is called by current releases, even if an old settings file says true.
 config.HUDUseExperimentalUMG = false
@@ -105,6 +121,11 @@ config.HUDUseScreenTextFallback = false
 -- additionally keep one row per observed cast for later comparison.
 config.SkillDiagnosticLogCasts = true
 config.SkillDiagnosticMaxCastLogRows = 128
+-- Native probe reports are intentionally verbose and can produce very large
+-- UE4SS.log lines on multi-hit skills. Keep the compact native status, but
+-- require an explicit developer opt-in for full probe dumps/checkpoints.
+config.SkillDiagnosticLogNativeProbeReport = false
+config.SkillDiagnosticNativeStatusIntervalHits = 0
 config.SkillActionMaxEntries = 4096
 -- Bounded inference may use these windows only after exact evidence fails.
 -- Ambiguous overlapping recent casts remain unresolved.

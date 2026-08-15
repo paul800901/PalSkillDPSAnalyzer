@@ -58,7 +58,7 @@ $vdf = @(
     ('    "visibility" "{0}"' -f $Visibility)
     ('    "title" "{0}"' -f (ConvertTo-VdfValue $workshopTitle))
     ('    "description" "{0}"' -f (ConvertTo-VdfValue $description))
-    '    "changenote" "v0.5.18: uniquely pairs a pending final Boss hit with a later exact Pal skill source; ambiguous or expired hits remain unresolved."'
+    '    "changenote" "v0.5.19: native F3 CommonUI settings/details, five-field HUD, and complete Boss death/capture snapshots that remain unchanged until F2."'
     '}'
 ) -join "`r`n"
 [System.IO.File]::WriteAllText($vdfPath, $vdf, [System.Text.UTF8Encoding]::new($false))
@@ -76,8 +76,8 @@ if (-not $match.Success -or $match.Groups[1].Value -eq "0") {
 }
 
 $metadata.publishedfileid = $match.Groups[1].Value
-$metadata.changenote = "v0.5.18: uniquely pairs a pending final Boss hit with a later exact Pal skill source; ambiguous or expired hits remain unresolved."
-$metadata.last_published_version = "0.5.18"
+$metadata.changenote = "v0.5.19: native F3 CommonUI settings/details, five-field HUD, and complete Boss death/capture snapshots that remain unchanged until F2."
+$metadata.last_published_version = "0.5.19"
 $metadataJson = $metadata | ConvertTo-Json -Depth 4
 [System.IO.File]::WriteAllText($metadataPath, $metadataJson + "`r`n", [System.Text.UTF8Encoding]::new($false))
 

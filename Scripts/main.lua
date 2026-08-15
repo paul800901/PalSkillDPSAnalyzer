@@ -28,6 +28,10 @@ local hooks = {
     death = false,
     captured = false,
     captured_count = 0,
+    -- A finished manual Boss result owns the HUD until the operator explicitly
+    -- resets. Delayed multi-hit damage can arrive after the death/capture hook;
+    -- it must not auto-open a replacement session and overwrite the snapshot.
+    manual_boss_result_locked = false,
 }
 local cached_pal_utility = nil
 local cached_gameplay_statics = nil
@@ -77,6 +81,7 @@ local metrics = {
     native_hits = 0,
     native_events = 0,
     ignored_player_damage = 0,
+    ignored_post_finish_damage = 0,
     waza_markers = 0,
     waza_matches = 0,
     skill_candidates = 0,
@@ -102,7 +107,8 @@ hooks.log_native_diagnostic_status = function(reason)
         metrics.errors = metrics.errors + 1
         log("native diagnostic status failed: " .. tostring(status))
     end
-    if type(BossDPSNativeProbeReport) == "function" then
+    if config.SkillDiagnosticLogNativeProbeReport == true
+        and type(BossDPSNativeProbeReport) == "function" then
         local report_ok, report = pcall(BossDPSNativeProbeReport)
         if report_ok then
             log("native damage handler probe reason=" .. tostring(reason)
@@ -570,7 +576,7 @@ end
 -- The Windows HUD is useful only while a playable pawn owns the screen. The
 -- same Palworld process also owns the title screen, loading screens and native
 -- pause/options menus, so foreground-process checks alone cannot distinguish
--- those states. F1's own workspace is allowed after it has acquired the pawn;
+-- those states. F3's own workspace is allowed after it has acquired the pawn;
 -- its cursor flag must not make the workspace hide itself.
 local function local_gameplay_available(settings_open)
     local world = find_world_context()
@@ -1116,7 +1122,7 @@ end
 local function ranked_damage_entries(entries)
     local rows = {}
     for _, entry in pairs(entries or {}) do
-        if entry.damage > 0 then
+        if (entry.damage or 0) > 0 or entry.display_even_zero == true then
             rows[#rows + 1] = entry
         end
     end
@@ -2218,12 +2224,12 @@ local function action_lifecycle_details(action)
     }
 end
 
-local function get_target_info(actor, utility)
+local function get_target_info(actor, utility, target_scope)
     local boss_info = get_boss_info(actor, utility)
     if boss_info ~= nil then
         return boss_info
     end
-    if tostring(config.TargetScope or "boss") ~= "all"
+    if tostring(target_scope or config.TargetScope or "boss") ~= "all"
         or not is_valid(actor) or actor_is_player_owned(actor, utility) then
         return nil
     end
@@ -2482,6 +2488,8 @@ local function record_skill_candidate(session, source, event, source_actor, dama
             hits = 0,
             samples = 0,
             casts = {},
+            unlinked_hits = {},
+            unlinked_hit_overflow = 0,
         }
         source.skill_candidates[evidence.key] = candidate
         session.skill_candidate_count = (session.skill_candidate_count or 0) + 1
@@ -2528,6 +2536,20 @@ local function record_skill_candidate(session, source, event, source_actor, dama
                 and evidence.observed_at
                 or math.max(cast.last_hit_at, evidence.observed_at)
         end
+    elseif evidence.observed_at ~= nil then
+        local maximum = math.max(
+            1,
+            math.floor(to_number(config.SkillPerCastHitMaxEntries))
+        )
+        if #candidate.unlinked_hits < maximum then
+            candidate.unlinked_hits[#candidate.unlinked_hits + 1] = {
+                at = evidence.observed_at,
+                damage = damage,
+                hits = hit_count,
+            }
+        else
+            candidate.unlinked_hit_overflow = candidate.unlinked_hit_overflow + hit_count
+        end
     end
     local sample_limit = math.max(
         0,
@@ -2554,8 +2576,62 @@ end
 
 -- Live and final output use the same raw buckets. Weak evidence must not become
 -- authoritative merely because only one known skill shares the signature.
-local function snapshot_skill_candidates(source)
-    return source.skill_candidates or {}
+local function snapshot_skill_candidates(source, session)
+    local snapshot = {}
+    for key, candidate in pairs(source.skill_candidates or {}) do
+        snapshot[key] = candidate
+    end
+
+    -- Damage events alone cannot describe a cast that the boss ignored because
+    -- it was invulnerable/HP-locked, or because every projectile missed. Keep
+    -- those observed equipped-skill casts in the display with DMG 0. This does
+    -- not assign any hit or damage: the action lifecycle only proves that the
+    -- skill was cast, while the authoritative damage buckets remain unchanged.
+    if session == nil or source.kind ~= "pal"
+        or source.runtime_actor_keys == nil
+        or source.equipped_waza_codes == nil then
+        return snapshot
+    end
+    local session_start = session.started_game_at or 0
+    local session_finish = session.finished_game_at or math.huge
+    for _, ordered_record in ipairs(action_record_order) do
+        local record = ordered_record.record
+        local code = canonical_skill_name(record and record.code or "")
+        local actor_matches = record ~= nil and record.actor_key ~= nil
+            and source.runtime_actor_keys[record.actor_key] == true
+        local equipped = code ~= "" and source.equipped_waza_codes[code] == true
+        local started_before_finish = record ~= nil and (record.started_at == nil
+            or record.started_at <= session_finish)
+        local ended_after_start = record ~= nil and (record.ended_at == nil
+            or record.ended_at >= session_start)
+        local key = "skill:" .. code
+        if actor_matches and equipped and started_before_finish and ended_after_start
+            and snapshot[key] == nil then
+            snapshot[key] = {
+                name = code,
+                localized_name = record.localized_name or "",
+                panel_cool_time = record.panel_cool_time,
+                waza_id = record.waza_id,
+                evidence_key = key,
+                fields = "observed_cast_only",
+                causer_full_name = "none",
+                causer_class_name = "none",
+                source_full_name = "none",
+                confidence = "observed_cast_only",
+                attribution_sources = {},
+                exact_damage = 0,
+                inferred_damage = 0,
+                damage = 0,
+                hits = 0,
+                samples = 0,
+                casts = {},
+                unlinked_hits = {},
+                unlinked_hit_overflow = 0,
+                display_even_zero = true,
+            }
+        end
+    end
+    return snapshot
 end
 
 local function session_recipients(session)
@@ -2779,10 +2855,164 @@ local function diagnostic_skill_display_name(candidate, translator_code)
     return code
 end
 
+hooks.cast_quality = {}
+
+function hooks.cast_quality.row_copy(cast, key)
+    return {
+        key = tostring(key or cast.key or ""),
+        damage = tonumber(cast.damage) or 0,
+        hits = math.max(0, math.floor(tonumber(cast.hits) or 0)),
+        first_hit_at = tonumber(cast.first_hit_at),
+        last_hit_at = tonumber(cast.last_hit_at),
+        started_at = tonumber(cast.started_at),
+        ended_at = tonumber(cast.ended_at),
+        grouping = tostring(cast.grouping or "exact"),
+    }
+end
+
+-- Some Pal damage paths keep the exact Waza but discard the cast token before
+-- final damage. For display only, retain those exact-skill hits and partition
+-- them by consecutive starts of the same skill. This never changes which
+-- skill owns damage. The HUD marks the resulting per-cast list with '~' so a
+-- deterministic time-window partition is never presented as an engine token.
+function hooks.cast_quality.group_unlinked_hits_by_cast_window(casts, hit_events)
+    local action_casts = {}
+    for _, cast in ipairs(casts or {}) do
+        if tonumber(cast.started_at) ~= nil then
+            action_casts[#action_casts + 1] = cast
+        end
+    end
+    table.sort(action_casts, function(a, b)
+        if a.started_at == b.started_at then
+            return tostring(a.key) < tostring(b.key)
+        end
+        return a.started_at < b.started_at
+    end)
+
+    local ordered_hits = {}
+    for _, hit in ipairs(hit_events or {}) do
+        if tonumber(hit.at) ~= nil then
+            ordered_hits[#ordered_hits + 1] = hit
+        end
+    end
+    table.sort(ordered_hits, function(a, b)
+        return tonumber(a.at) < tonumber(b.at)
+    end)
+
+    local cast_index = 0
+    local grouped_hits = 0
+    local unassigned_hits = 0
+    for _, hit in ipairs(ordered_hits) do
+        local observed_at = tonumber(hit.at)
+        while cast_index < #action_casts
+            and action_casts[cast_index + 1].started_at <= observed_at do
+            cast_index = cast_index + 1
+        end
+        local hit_count = math.max(0, math.floor(tonumber(hit.hits) or 0))
+        local damage = tonumber(hit.damage) or 0
+        local cast = action_casts[cast_index]
+        if cast ~= nil then
+            local previous_hits = math.max(0, math.floor(tonumber(cast.hits) or 0))
+            cast.hits = previous_hits + hit_count
+            cast.damage = (tonumber(cast.damage) or 0) + damage
+            cast.first_hit_at = cast.first_hit_at == nil
+                and observed_at or math.min(cast.first_hit_at, observed_at)
+            cast.last_hit_at = cast.last_hit_at == nil
+                and observed_at or math.max(cast.last_hit_at, observed_at)
+            cast.grouping = previous_hits > 0 and "mixed" or "window"
+            grouped_hits = grouped_hits + hit_count
+        else
+            unassigned_hits = unassigned_hits + hit_count
+        end
+    end
+    return grouped_hits, unassigned_hits
+end
+
+hooks.cast_quality.historical_maxima = hooks.cast_quality.historical_maxima or {}
+
+function hooks.cast_quality.summarize(casts, now, session_finished, full_hit_cap)
+    local settled_after = math.max(1, tonumber(config.SkillActionPostHitSeconds) or 10)
+    local maximum_samples = math.max(1, math.floor(tonumber(config.HUDMaxHitCastSamples) or 6))
+    local hit_casts = 0
+    local zero_damage_casts = 0
+    local pending_casts = 0
+    local observed_max_hits = 0
+    local settled_casts = 0
+    local settled_hits = 0
+    local minimum_hits = nil
+    local maximum_hits = nil
+    local samples = {}
+
+    for _, cast in ipairs(casts or {}) do
+        local hits = math.max(0, math.floor(tonumber(cast.hits) or 0))
+        local ended_at = tonumber(cast.ended_at)
+        local settled = session_finished == true
+            or (ended_at ~= nil and now ~= nil and now - ended_at >= settled_after)
+        if hits > 0 then
+            hit_casts = hit_casts + 1
+            observed_max_hits = math.max(observed_max_hits, hits)
+            if settled then
+                settled_casts = settled_casts + 1
+                settled_hits = settled_hits + hits
+                minimum_hits = minimum_hits == nil and hits or math.min(minimum_hits, hits)
+                maximum_hits = maximum_hits == nil and hits or math.max(maximum_hits, hits)
+                samples[#samples + 1] = tostring(hits)
+            else
+                pending_casts = pending_casts + 1
+            end
+        else
+            if settled then
+                zero_damage_casts = zero_damage_casts + 1
+                settled_casts = settled_casts + 1
+                minimum_hits = minimum_hits == nil and 0 or math.min(minimum_hits, 0)
+                maximum_hits = maximum_hits == nil and 0 or math.max(maximum_hits, 0)
+                samples[#samples + 1] = "0"
+            else
+                pending_casts = pending_casts + 1
+            end
+        end
+    end
+
+    local first_sample = math.max(1, #samples - maximum_samples + 1)
+    local visible_samples = {}
+    for index = first_sample, #samples do
+        visible_samples[#visible_samples + 1] = samples[index]
+    end
+
+    local cap = finite_positive_number(full_hit_cap)
+    local completion = nil
+    if cap ~= nil and settled_casts > 0 then
+        completion = settled_hits / (cap * settled_casts) * 100
+    end
+
+    return {
+        hit_casts = hit_casts,
+        zero_damage_casts = zero_damage_casts,
+        pending_casts = pending_casts,
+        observed_max_hits = observed_max_hits,
+        per_cast_hits = table.concat(visible_samples, "/"),
+        per_cast_sample_count = #visible_samples,
+        per_cast_total_samples = #samples,
+        per_cast_samples_truncated = first_sample > 1,
+        settled_casts = settled_casts,
+        settled_hits = settled_hits,
+        minimum_hits = minimum_hits,
+        average_hits = settled_casts > 0 and settled_hits / settled_casts or nil,
+        maximum_hits = maximum_hits,
+        full_hit_cap = cap,
+        hit_completion = completion,
+    }
+end
+
 local function candidate_timing(session, source, candidate)
     candidate.casts = candidate.casts or {}
     local canonical_name = canonical_skill_name(candidate.name)
-    for action_key, record in pairs(action_records) do
+    local casts = {}
+    local casts_by_key = {}
+    local consumed_candidate_casts = {}
+
+    for _, ordered_record in ipairs(action_record_order) do
+        local record = ordered_record.record
         local actor_matches = record.actor_key ~= nil
             and source.runtime_actor_keys ~= nil
             and source.runtime_actor_keys[record.actor_key] == true
@@ -2792,27 +3022,35 @@ local function candidate_timing(session, source, candidate)
         local ended_after_start = record.ended_at == nil
             or record.ended_at >= (session.started_game_at or 0)
         if actor_matches and skill_matches and started_before_finish and ended_after_start then
-            local cast = candidate.casts[action_key]
-            if cast == nil then
-                cast = { key = action_key, damage = 0, hits = 0 }
-                candidate.casts[action_key] = cast
-            end
-        end
-    end
-
-    local casts = {}
-    for action_key, cast in pairs(candidate.casts) do
-        local record = action_records[action_key]
-        if record ~= nil then
+            local cast_key = tostring(record.cast_id or record.key)
+            local candidate_key = candidate.casts[cast_key] ~= nil and cast_key
+                or (candidate.casts[record.key] ~= nil and record.key or nil)
+            local original = candidate_key ~= nil and candidate.casts[candidate_key]
+                or { key = cast_key, damage = 0, hits = 0 }
+            local cast = hooks.cast_quality.row_copy(original, cast_key)
             cast.started_at = record.started_at
             cast.ended_at = record.ended_at
+            cast.action_record = true
+            casts[#casts + 1] = cast
+            casts_by_key[cast_key] = cast
+            if candidate_key ~= nil then
+                consumed_candidate_casts[candidate_key] = true
+            end
             candidate.localized_name = (candidate.localized_name ~= nil
                 and candidate.localized_name ~= "")
                 and candidate.localized_name or record.localized_name
             candidate.panel_cool_time = candidate.panel_cool_time
                 or record.panel_cool_time
         end
-        casts[#casts + 1] = cast
+    end
+
+    for action_key, cast in pairs(candidate.casts) do
+        if consumed_candidate_casts[action_key] ~= true
+            and casts_by_key[tostring(action_key)] == nil then
+            local copied = hooks.cast_quality.row_copy(cast, action_key)
+            casts[#casts + 1] = copied
+            casts_by_key[tostring(action_key)] = copied
+        end
     end
     table.sort(casts, function(a, b)
         local left = a.started_at or a.first_hit_at or a.ended_at or math.huge
@@ -2822,6 +3060,11 @@ local function candidate_timing(session, source, candidate)
         end
         return left < right
     end)
+
+    local window_grouped_hits, unassigned_hits =
+        hooks.cast_quality.group_unlinked_hits_by_cast_window(casts, candidate.unlinked_hits)
+    unassigned_hits = unassigned_hits
+        + math.max(0, math.floor(tonumber(candidate.unlinked_hit_overflow) or 0))
 
     local action_durations = {}
     local action_damage = 0
@@ -2867,6 +3110,21 @@ local function candidate_timing(session, source, candidate)
     local action_stats = number_stats(action_durations)
     local interval_stats = number_stats(intervals)
     local panel_cd = finite_positive_number(candidate.panel_cool_time)
+    local full_hit_caps = type(config.SkillFullHitCaps) == "table"
+        and config.SkillFullHitCaps or {}
+    local hit_quality = hooks.cast_quality.summarize(
+        casts,
+        session.finished_game_at or game_time_seconds(),
+        session.finished_game_at ~= nil,
+        full_hit_caps[canonical_name] or full_hit_caps[tostring(candidate.name or "")]
+    )
+    if window_grouped_hits > 0 then
+        hit_quality.grouping_approximate = true
+    else
+        hit_quality.grouping_approximate = false
+    end
+    hit_quality.window_grouped_hits = window_grouped_hits
+    hit_quality.unassigned_hits = unassigned_hits
     local timing = {
         casts = casts,
         cast_count = #casts,
@@ -2884,6 +3142,7 @@ local function candidate_timing(session, source, candidate)
         panel_delta = interval_stats ~= nil and panel_cd ~= nil
             and interval_stats.average - panel_cd
             or nil,
+        hit_quality = hit_quality,
     }
     return timing
 end
@@ -2915,10 +3174,15 @@ local function diagnostic_snapshot(session, state, reason)
             hits = source.hits or 0,
             skills = {},
         }
-        for _, candidate in ipairs(ranked_damage_entries(snapshot_skill_candidates(source))) do
+        for _, candidate in ipairs(ranked_damage_entries(snapshot_skill_candidates(source, session))) do
             local timing = candidate_timing(session, source, candidate)
             local internal_code = tostring(candidate.name or "UNKNOWN")
             local localized_name = tostring(candidate.localized_name or "")
+            local observed_maximum = tonumber(timing.hit_quality.maximum_hits)
+                or tonumber(timing.hit_quality.observed_max_hits) or 0
+            if observed_maximum > (hooks.cast_quality.historical_maxima[internal_code] or 0) then
+                hooks.cast_quality.historical_maxima[internal_code] = observed_maximum
+            end
             source_row.skills[#source_row.skills + 1] = {
                 name = skill_display_name(internal_code, localized_name),
                 runtime_name = localized_name,
@@ -2928,6 +3192,22 @@ local function diagnostic_snapshot(session, state, reason)
                 encounter_dps = candidate.damage / duration,
                 hits = candidate.hits or 0,
                 casts = timing.cast_count,
+                hit_casts = timing.hit_quality.hit_casts,
+                zero_damage_casts = timing.hit_quality.zero_damage_casts,
+                pending_casts = timing.hit_quality.pending_casts,
+                per_cast_hits = timing.hit_quality.per_cast_hits,
+                per_cast_sample_count = timing.hit_quality.per_cast_sample_count,
+                per_cast_total_samples = timing.hit_quality.per_cast_total_samples,
+                per_cast_samples_truncated = timing.hit_quality.per_cast_samples_truncated,
+                observed_max_hits = timing.hit_quality.observed_max_hits,
+                minimum_hits = timing.hit_quality.minimum_hits,
+                average_hits = timing.hit_quality.average_hits,
+                maximum_hits = timing.hit_quality.maximum_hits,
+                historical_max_hits = hooks.cast_quality.historical_maxima[internal_code],
+                full_hit_cap = timing.hit_quality.full_hit_cap,
+                hit_completion = timing.hit_quality.hit_completion,
+                per_cast_grouping_approximate = timing.hit_quality.grouping_approximate,
+                unassigned_hits = timing.hit_quality.unassigned_hits,
                 damage_per_cast = timing.average_cast_damage,
                 panel_cd = timing.panel_cool_time,
                 actual_interval = timing.interval_stats and timing.interval_stats.average or nil,
@@ -2999,6 +3279,9 @@ local function finish_skill_diagnostics(session, duration, reason, recipients)
     ))
 
     for _, source in ipairs(sources) do
+        -- Keep zero-damage observed casts as a HUD-only diagnostic row. The
+        -- final damage report counts actual damage candidates, so a blocked or
+        -- missed cast does not inflate the report's candidate total.
         local candidates = ranked_damage_entries(source.skill_candidates)
         candidate_total = candidate_total + #candidates
         log(string.format(
@@ -3190,6 +3473,9 @@ local function bind_session_actor(session, boss_info)
     if session.composite_anchor == nil and boss_info.composite_anchor ~= nil then
         session.composite_anchor = boss_info.composite_anchor
     end
+    if session.composite_group == nil and boss_info.composite_group ~= nil then
+        session.composite_group = boss_info.composite_group
+    end
 
     if boss_info.address ~= nil then
         session.actor_addresses[boss_info.address] = true
@@ -3255,6 +3541,11 @@ local function finish_session(session, reason)
     end
     session.finished = true
     session.finished_game_at = game_time_seconds()
+    if session.manual == true
+        and tostring(session.target_scope or "boss") == "boss"
+        and (reason == "defeated" or reason == "captured") then
+        hooks.manual_boss_result_locked = true
+    end
     sessions[session.key] = nil
     for address in pairs(session.actor_addresses or {}) do
         session_addresses[address] = nil
@@ -3408,6 +3699,7 @@ local function start_session(boss_info)
         name = boss_info.name,
         manual = boss_info.manual == true,
         manual_armed = boss_info.manual == true,
+        target_scope = tostring(config.TargetScope or "boss"),
         target_count = 0,
         composite_group = boss_info.composite_group,
         composite_anchor = boss_info.composite_anchor,
@@ -3447,6 +3739,7 @@ local function ensure_manual_session()
     local key = "__PAL_SKILL_DPS_MANUAL_TEST__"
     local session = sessions[key]
     if session ~= nil and session.finished ~= true then return session end
+    if hooks.manual_boss_result_locked then return nil end
     return start_session({
         key = key,
         name = tr("hud_manual_test"),
@@ -3468,6 +3761,9 @@ local function record_damage(
     if session.manual == true and session.manual_armed == true then
         local now = os.time()
         session.manual_armed = false
+        -- The reset action arms one coherent test policy. F3 may prepare new
+        -- settings, but only the next F2 adopts them; the current test must not
+        -- change scope before/after its first accepted hit.
         session.started_at = now
         session.started_game_at = game_time_seconds()
         session.last_damage_at = now
@@ -3754,8 +4050,21 @@ local function process_damage_event(event)
         return
     end
 
+    -- A finalized manual Boss result owns both the data model and main HUD.
+    -- Check this before reading live settings so switching F3 to automatic/all
+    -- cannot route a tail hit into a new session and replace the snapshot.
+    if hooks.manual_boss_result_locked then
+        metrics.ignored_post_finish_damage = metrics.ignored_post_finish_damage
+            + math.max(1, math.floor(to_number(event.hits)))
+        return
+    end
+
     local address = actor_address(event.defender)
-    local scope_all = tostring(config.TargetScope or "boss") == "all"
+    local active_manual = sessions["__PAL_SKILL_DPS_MANUAL_TEST__"]
+    local effective_target_scope = active_manual ~= nil
+        and tostring(active_manual.target_scope or "boss")
+        or tostring(config.TargetScope or "boss")
+    local scope_all = effective_target_scope == "all"
     if not scope_all and non_boss_cache_hit(address) then
         return
     end
@@ -3796,14 +4105,19 @@ local function process_damage_event(event)
 
     local target_info = nil
     if session == nil then
-        target_info = get_target_info(event.defender, utility)
+        target_info = get_target_info(event.defender, utility, effective_target_scope)
         if target_info == nil then
             if not scope_all then remember_non_boss(address, event.target_key) end
             return
         end
 
-        if tostring(config.MeasurementMode or "target") == "manual" then
-            session = ensure_manual_session()
+        if active_manual ~= nil or tostring(config.MeasurementMode or "target") == "manual" then
+            session = active_manual or ensure_manual_session()
+            if session == nil then
+                metrics.ignored_post_finish_damage = metrics.ignored_post_finish_damage
+                    + math.max(1, math.floor(to_number(event.hits)))
+                return
+            end
             local already_bound = (target_info.address ~= nil
                 and session.actor_addresses[target_info.address] == true)
                 or (target_info.key ~= nil and session.actor_keys[target_info.key] == true)
@@ -3975,8 +4289,11 @@ local function drain_native_damage()
         metrics.native_buckets = metrics.native_buckets + 1
         metrics.native_hits = metrics.native_hits
             + math.max(1, math.floor(to_number(event.hits)))
-        if config.EnableSkillDiagnostics == true
-            and metrics.native_hits - hooks.last_native_status_hit_report >= 64 then
+        local native_status_interval = math.max(0, math.floor(
+            to_number(config.SkillDiagnosticNativeStatusIntervalHits)
+        ))
+        if config.EnableSkillDiagnostics == true and native_status_interval > 0
+            and metrics.native_hits - hooks.last_native_status_hit_report >= native_status_interval then
             hooks.last_native_status_hit_report = metrics.native_hits
             hooks.log_native_diagnostic_status("hit-checkpoint-" .. tostring(metrics.native_hits))
         end
@@ -4017,11 +4334,32 @@ local function process_finish_event(event)
     end
     if session ~= nil then
         if session.manual == true then
+            local part = (matched_address ~= nil and session.actor_parts_by_address[matched_address])
+                or (matched_key ~= nil and session.actor_parts_by_key[matched_key])
+            local nonterminal_part = event.reason == "defeated"
+                and part ~= nil and part.terminal ~= true
+            local boss_scope = tostring(session.target_scope or "boss") == "boss"
+            if boss_scope and not nonterminal_part
+                and (event.reason == "defeated" or event.reason == "captured") then
+                log(string.format(
+                    "manual boss test finalized reason=%s target=%s",
+                    tostring(event.reason), tostring(matched_key or matched_address)
+                ))
+                finish_session(session, event.reason)
+                return
+            end
             unbind_session_actor(session, matched_address, matched_key)
-            log(string.format(
-                "manual test target ended reason=%s target=%s; recording remains active",
-                tostring(event.reason), tostring(matched_key or matched_address)
-            ))
+            if nonterminal_part then
+                log(string.format(
+                    "manual boss phase ended target=%s; recording remains active",
+                    tostring(matched_key or matched_address)
+                ))
+            else
+                log(string.format(
+                    "manual non-boss target ended reason=%s target=%s; recording remains active",
+                    tostring(event.reason), tostring(matched_key or matched_address)
+                ))
+            end
             return
         elseif event.reason == "defeated" and session.composite_group ~= nil then
             local part = (matched_address ~= nil and session.actor_parts_by_address[matched_address])
@@ -4422,6 +4760,7 @@ local function activate_final_damage_hook()
 end
 
 local function reset_skill_diagnostics()
+    hooks.manual_boss_result_locked = false
     hooks.log_native_diagnostic_status("before-reset")
     if type(BossDPSNativeResetEvents) == "function" then
         local ok, err = pcall(BossDPSNativeResetEvents)
@@ -4861,7 +5200,7 @@ local function register_hooks()
 
     if hooks.damage and hooks.death then
         log(string.format(
-            "loaded v0.5.18-reverse-pair-probe; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s chat_mode=%s waza_hook=%s action_hooks=%s/%s effect_hook=%s filter_hook=%s effect_attack_hooks=%d local_only=%s; captured_hooks=%d",
+            "loaded v0.5.19-core-hud; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s chat_mode=%s waza_hook=%s action_hooks=%s/%s effect_hook=%s filter_hook=%s effect_attack_hooks=%d local_only=%s; captured_hooks=%d",
             hooks.damage_mode,
             tostring(config.EnableDPSRecording ~= false),
             tostring(config.EnableSkillDiagnostics == true),
@@ -4894,8 +5233,12 @@ skill_hud = hud_module.new({
     translate = tr,
     get_skill_name = skill_display_name,
     on_reset = reset_skill_diagnostics,
+    load_asset = rawget(_G, "LoadAsset"),
+    static_find_object = rawget(_G, "StaticFindObject"),
+    register_console_command_handler = rawget(_G, "RegisterConsoleCommandHandler"),
 })
 skill_hud:initialize_external()
+skill_hud:register_console_commands()
 skill_hud:register_keybinds()
 
 register_hooks()
@@ -4920,6 +5263,8 @@ if rawget(_G, "__BOSS_DPS_TEST") == true then
         publish_progress = publish_progress,
         publish_current_skill_hud = publish_current_skill_hud,
         reset_skill_diagnostics = reset_skill_diagnostics,
+        cast_hit_quality = hooks.cast_quality.summarize,
+        group_unlinked_hits_by_cast_window = hooks.cast_quality.group_unlinked_hits_by_cast_window,
         skill_display_name = skill_display_name,
         skill_hud = skill_hud,
     }

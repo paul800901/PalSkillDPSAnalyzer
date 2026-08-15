@@ -23,8 +23,8 @@ config.IncludePlayerDamage = true
 Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\config.lua
 ```
 
-這是 v0.5.18 唯一反向配對實測版。部分 Boss 實際傷害會早於技能 OnAttack 來源；未歸屬傷害最多暫存 1 秒，只有攻擊者與 Boss 目標完全相同且待配傷害恰好一筆時才補回技能。多筆候選、衝突或逾時仍顯示「未辨識傷害」，不使用傷害大小、目前動作、最近施放、倍率＋元素或三格技能猜測。預設採手動 Boss 測試區間；按 F2 可隨時歸零。灼燒與中毒若沒有施加來源仍不會冒充某個技能。即時儀表是固定尺寸、不可點擊的純顯示層；舊 F1 外部設定窗仍停用。只需要 UE4SS Experimental；PalSchema 不是必要依賴。原生 DLL 的正式 Workshop 套件化與本版實機驗收仍在進行中。
+這是 v0.5.19 五項核心 HUD 版。首頁只顯示技能名稱、累計傷害、DPS、占比與測試時間；F2 可隨時歸零，F3 開啟／關閉遊戲內原生設定面板。用滑鼠切換設定與本次測試分頁；施放次數、有傷施放／無傷施放、總命中段數、每次施放命中段數、每次施放命中段數最低／平均／最高（含無傷施放）、本次遊戲最高單次施放段數與理論最高命中段數只放在第二頁。手動 Boss 測試會在 Boss 最終死亡或捕捉時鎖定完整結果，主 HUD 保持原值到下一次 F2，延遲尾傷不會另開新場覆蓋。技能歸因只接受可靠來源；多筆候選、衝突或逾時仍顯示「未辨識傷害」，不使用傷害大小、目前動作、最近施放、倍率＋元素或三格技能猜測。灼燒與中毒若沒有施加來源也不會冒充某個技能。只需要 UE4SS Experimental；PalSchema 不是必要依賴。
 
 專案：https://github.com/paul800901/PalSkillDPSAnalyzer
 
-MIT License。核心衍生自 AsahiChan-Game/PalBossDPSBroadcast。本專案是非官方社群 Mod，與 Pocketpair、Steam 或 UE4SS 無隸屬關係。
+本專案是獨立維護的 MIT 衍生作品。Boss 遭遇辨識、帕魯歸屬與安全訊息核心源自 AsahiChan-Game/PalBossDPSBroadcast；技能逐擊歸因、DPS HUD、原生 F3 CommonUI、施放／命中統計與 Boss 結算快照由本專案後續開發。這是非官方社群 Mod，與 Pocketpair、Steam 或 UE4SS 無隸屬關係。
