@@ -3,6 +3,8 @@ $ErrorActionPreference = "Stop"
 $authoringDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectDirectory = Split-Path -Parent $authoringDirectory
 $engineDirectory = Join-Path $projectDirectory ".toolchain\UnrealEngine-5.1"
+$autoSdkDirectory = Join-Path $projectDirectory ".toolchain\AutoSDK"
+$localNetFxHeader = Join-Path $autoSdkDirectory "HostWin64\Win64\Windows Kits\NETFXSDK\4.6.2\Include\um\mscoree.h"
 $editor = Join-Path $engineDirectory "Engine\Binaries\Win64\UnrealEditor-Cmd.exe"
 $unrealPak = Join-Path $engineDirectory "Engine\Binaries\Win64\UnrealPak.exe"
 $buildTool = Join-Path $engineDirectory "Engine\Build\BatchFiles\Build.bat"
@@ -29,6 +31,11 @@ foreach ($required in @($editor, $unrealPak, $buildTool, $uproject, $mountMarker
     if (-not (Test-Path -LiteralPath $required)) {
         throw "Native UI toolchain input missing: $required"
     }
+}
+
+if (Test-Path -LiteralPath $localNetFxHeader -PathType Leaf) {
+    $env:UE_SDKS_ROOT = $autoSdkDirectory
+    Write-Host "Using project-local AutoSDK root: $autoSdkDirectory"
 }
 
 & $buildTool PalSkillDPSUIEditor Win64 Development "-Project=$uproject" -WaitMutex -NoHotReloadFromIDE
