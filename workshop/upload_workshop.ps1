@@ -43,8 +43,16 @@ $description = $englishDescription.TrimEnd() + "`r`n[hr][/hr]`r`n" + $traditiona
 # SteamCMD stores escaped newlines as the visible text "\n". Steam BBCode block tags
 # provide the layout, so collapse physical line breaks before writing the VDF.
 $description = $description.Replace("`r", "").Replace("`n", "")
+$descriptionBytes = [System.Text.Encoding]::UTF8.GetByteCount($description)
+if ($descriptionBytes -gt 8000) {
+    throw "Workshop description exceeds Steam's 8000-byte limit: $descriptionBytes bytes"
+}
 $workshopTitle = (Get-Content -LiteralPath (Join-Path $workshopDirectory "TITLE.txt") -Raw -Encoding UTF8).Trim()
 $changeNote = (Get-Content -LiteralPath (Join-Path $workshopDirectory "CHANGENOTE.txt") -Raw -Encoding UTF8).Trim()
+$changeNoteBytes = [System.Text.Encoding]::UTF8.GetByteCount($changeNote)
+if ($changeNoteBytes -gt 8000) {
+    throw "Workshop change note exceeds Steam's 8000-byte limit: $changeNoteBytes bytes"
+}
 $steamCmdDirectory = Split-Path -Parent ([System.IO.Path]::GetFullPath($SteamCmdPath))
 $stagingDirectory = Join-Path $steamCmdDirectory ("workshop\PalSkillDPSAnalyzerSP-{0}" -f $PID)
 $stagedContentDirectory = Join-Path $stagingDirectory "content"
@@ -80,7 +88,7 @@ if (-not $match.Success -or $match.Groups[1].Value -eq "0") {
 
 $metadata.publishedfileid = $match.Groups[1].Value
 $metadata.changenote = $changeNote
-$metadata.last_published_version = "0.5.19"
+$metadata.last_published_version = "0.5.27"
 $publishedFileIdJson = ConvertTo-Json -InputObject ([string]$metadata.publishedfileid) -Compress
 $changeNoteJson = ConvertTo-Json -InputObject ([string]$metadata.changenote) -Compress
 $publishedVersionJson = ConvertTo-Json -InputObject ([string]$metadata.last_published_version) -Compress

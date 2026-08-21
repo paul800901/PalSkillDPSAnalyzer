@@ -25,7 +25,7 @@ command_ack=cmd-fixture-1
 B	reset	測試控制	開始新測試（傷害歸零）	按 Enter	1
 P	Language	一般	顯示語言	繁體中文	0
 P	MeasurementMode	測量方式	測試分場方式	手動測試區間	0
-P	TargetScope	測量方式	可測量目標	所有野生帕魯	0
+P	TargetScope	測量方式	測試類型	野外／副本 Boss	0
 P	HUDAnchor	戰鬥儀表	面板位置	左側安全區	0
 S	1	夜幕魔蝠	8442	35.0701	81
 R	1	1	極寒雙星	DoubleIcicleThrow	4280	17.7802	50.6989	29	4	1070	3.1338	341.4402	30	35.7454	32.6108	4	0	每次 1070.0｜動作 3.1秒｜施放DPS 341.4｜完整計時 4/4	面板CD 30.0秒｜實際間隔 35.7秒｜AI／再用空窗 32.6秒

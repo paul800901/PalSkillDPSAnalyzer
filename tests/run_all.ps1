@@ -17,6 +17,7 @@ $overlayLauncher = Join-Path $projectDirectory "Scripts\skill_dps_overlay_launch
 $hudV1Fixture = Join-Path $testDirectory "fixtures\hud_v1_state.txt"
 $hudV2Fixture = Join-Path $testDirectory "fixtures\hud_v2_state.txt"
 $hudV2RankChangeFixture = Join-Path $testDirectory "fixtures\hud_v2_rank_change_state.txt"
+$hudV2TabletFixture = Join-Path $testDirectory "fixtures\hud_v2_tablet_state.txt"
 $hudV2SettingsFixture = Join-Path $testDirectory "fixtures\hud_v2_settings_state.txt"
 $hudV2SettingsEmptyFixture = Join-Path $testDirectory "fixtures\hud_v2_settings_empty_state.txt"
 $localeDirectory = Join-Path $projectDirectory "Scripts\locales"
@@ -78,6 +79,9 @@ if ($hudForbiddenMatches) {
 $hudText = Get-Content -LiteralPath $hudScript -Raw -Encoding UTF8
 foreach ($requiredHudFeature in @(
     'selected_tab=',
+    'groups_title=',
+    'hidden_source_count=',
+    'hud_more_groups_hint',
     'Key.F3',
     'settings/details hotkey=',
     'watchdog_external_overlay',
@@ -124,7 +128,8 @@ foreach ($requiredOverlayFeature in @(
     '0x0020',
     '$damageLabel + " " + (Format-HudInteger $row.Damage)',
     'Format-HudDecimal $row.Dps',
-    '$subline = "{0} DPS',
+    '$subline = if ($tabletMode)',
+    '"{0}%" -f (Format-HudDecimal $row.Share)',
     '{1}%" -f (Format-HudDecimal $row.Dps), (Format-HudDecimal $row.Share)',
     '$contextLine = $duration',
     'New-HudDetailRow'
@@ -209,7 +214,7 @@ $expectedWorkshopTitle = -join @(
 )
 if ($workshopInfo.ModName -ne $expectedWorkshopTitle) { throw "unexpected Workshop ModName" }
 if ($workshopInfo.PackageName -ne "PalSkillDPSAnalyzerSP") { throw "unexpected Workshop PackageName" }
-if ($workshopInfo.Version -ne "0.5.19") { throw "unexpected Workshop version" }
+if ($workshopInfo.Version -ne "0.5.27") { throw "unexpected Workshop version" }
 if ($workshopInfo.Dependencies -notcontains "UE4SSExperimentalPW") { throw "Workshop UE4SS dependency missing" }
 if ($workshopInfo.InstallRule.Count -ne 3) {
     throw "Workshop Lua/Paks/LogicMods InstallRule count mismatch"
@@ -253,19 +258,18 @@ foreach ($localePath in $sharedLocales) {
 }
 $workshopConfig = Get-Content -LiteralPath (Join-Path $workshopScripts "config.lua") -Raw -Encoding UTF8
 foreach ($requiredSetting in @(
-    "config.LocalOnlyMessages = false",
     "config.EnableSkillDiagnostics = true",
     "config.SkillDiagnosticsOnly = true",
     "config.EnableSkillSourceChain = true",
     "config.EnableBoundedSkillInference = true",
     "config.IncludePlayerDamage = false",
-    'config.SkillDiagnosticChatMode = "off"',
     "config.SkillDiagnosticLogNativeProbeReport = false",
     "config.SkillDiagnosticNativeStatusIntervalHits = 0",
     "config.EnableSkillDPSHUD = true",
     'config.MeasurementMode = "manual"',
-    'config.TargetScope = "boss"',
-    "config.HUDSettingsVersion = 3",
+    'config.TargetScope = "field"',
+    "config.HUDSettingsVersion = 5",
+    "config.HUDMaxSourceGroups = 3",
     'config.HUDDetailMode = "compact"',
     "config.EnableExternalHUD = true",
     "config.ExternalHUDAutoLaunch = true",
@@ -281,8 +285,46 @@ foreach ($requiredSetting in @(
 )) {
     if (-not $workshopConfig.Contains($requiredSetting)) { throw "Workshop config missing: $requiredSetting" }
 }
+$sharedMainText = Get-Content -LiteralPath (Join-Path $projectDirectory "Scripts\main.lua") -Raw -Encoding UTF8
+$chatRuntimeTokens = @(
+    "SendSystemToPlayerChat",
+    "SkillDiagnosticChatMode",
+    "PSDPS_SkillDiagnosticChatMode",
+    "hud_setting_chat"
+)
+foreach ($token in $chatRuntimeTokens) {
+    if ($sharedMainText.Contains($token) -or $workshopConfig.Contains($token)) {
+        throw "Removed chat runtime token returned: $token"
+    }
+}
 $thumbnail = Get-Item -LiteralPath (Join-Path $workshopDirectory "thumbnail.png")
 if ($thumbnail.Length -gt 1048576) { throw "Workshop thumbnail exceeds 1 MiB" }
+$nativeUiAuthoring = Get-Content -LiteralPath (Join-Path $projectDirectory `
+    "ui-authoring\Source\PalSkillDPSUIEditor\PalSkillDPSGenerateUICommandlet.cpp") -Raw -Encoding UTF8
+if (-not $nativeUiAuthoring.Contains("PanelSize->SetMinDesiredWidth(SettingsPanelWidth);") -or
+    -not $nativeUiAuthoring.Contains("constexpr float SettingsPanelWidth = 920.0f;") -or
+    -not $nativeUiAuthoring.Contains("constexpr float SettingsPanelHeight = 780.0f;")) {
+    throw "native CommonUI settings panel must keep the widened 920x780 minimum size"
+}
+if (-not $nativeUiAuthoring.Contains("Title->SetAutoWrapText(false);")) {
+    throw "native CommonUI title must remain on one line"
+}
+if (-not $nativeUiAuthoring.Contains("SetHorizontalPadding(Title, 0.0f, 0.0f, 16.0f, 0.0f);")) {
+    throw "native CommonUI title is missing reset-button safety spacing"
+}
+if (-not $nativeUiAuthoring.Contains("SetHorizontalPadding(Close, 4.0f, 0.0f, 0.0f, 0.0f);")) {
+    throw "native CommonUI close button must stay vertically centered"
+}
+foreach ($token in @("SkillDiagnosticChatMode", "PSDPS_SkillDiagnosticChatMode", "hud_setting_chat")) {
+    if ($nativeUiAuthoring.Contains($token)) {
+        throw "Removed chat setting returned to native CommonUI: $token"
+    }
+}
+$nativeCollectorSource = Get-Content -LiteralPath (Join-Path $projectDirectory `
+    "native\src\BossDPSNativeCollector.cpp") -Raw -Encoding UTF8
+if ($nativeCollectorSource.Contains("probe_script_damage_handler")) {
+    throw "unsafe generic Blueprint parameter probe returned to the production callback"
+}
 $uploadScriptText = Get-Content -LiteralPath $workshopUploadScript -Raw -Encoding UTF8
 if ($uploadScriptText -match '(?i)password\s*=|\+login\s+[^$]') {
     throw "Workshop uploader must not embed a Steam password or account name"
@@ -361,6 +403,13 @@ if (-not ($v2Validation -match "rank_gradient=1")) {
 if (-not ($v2Validation -match "core_fields_only=1")) {
     throw "external HUD live rows expose fields outside skill name/damage/DPS/share, or duration left the header"
 }
+$tabletValidation = & $windowsPowerShell -NoLogo -NoProfile -NonInteractive -STA -ExecutionPolicy Bypass `
+    -File $overlayScript -StatePath $hudV2TabletFixture -ValidationMode
+if ($LASTEXITCODE -ne 0 -or
+    -not ($tabletValidation -match "view=meter rows=6") -or
+    -not ($tabletValidation -match "tablet_percent_only=1")) {
+    throw "external HUD tablet report did not keep only three percentage bars per loadout group"
+}
 $settingsValidation = & $windowsPowerShell -NoLogo -NoProfile -NonInteractive -STA -ExecutionPolicy Bypass `
     -File $overlayScript -StatePath $hudV2SettingsFixture -ValidationMode
 if ($LASTEXITCODE -ne 0 -or -not ($settingsValidation -match "view=settings rows=3.*tab_stable=1")) {
@@ -395,7 +444,7 @@ try {
     $testOutput = & npx --yes --package=fengari-node-cli fengari test_main.lua 2>&1
     $testExitCode = $LASTEXITCODE
     $testOutput | Write-Host
-    if ($testExitCode -ne 0 -or -not ($testOutput -match "v0\.5\.19 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed")) {
+    if ($testExitCode -ne 0 -or -not ($testOutput -match "v0\.5\.27 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed")) {
         throw "Lua integration test failed or did not reach its completion marker"
     }
     $localeOutput = & npx --yes --package=fengari-node-cli fengari test_localization.lua 2>&1

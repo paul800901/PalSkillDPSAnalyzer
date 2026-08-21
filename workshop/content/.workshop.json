@@ -1,5 +1,5 @@
 {
   "publishedfileid": "3784125454",
-  "changenote": "v0.5.19: added the complete Traditional Chinese description after English.｜v0.5.19：英文說明後新增完整繁體中文文本。",
-  "last_published_version": "0.5.19"
+  "changenote": "v0.5.27 – Comet Rain child-hit attribution\n\n• Live captures show Comet Rain waves creating one Commet child Waza marker per large meteor impact, consistently about one second before that impact.\n• Four previously unattributed impacts (3,544 + 3,197 + 3,287 + 3,240) exactly equal the reported 13,268 Unattributed Damage.\n• Each Commet marker now attributes exactly one 0.75–1.35 second delayed hit to the equipped CommetRain parent on the same Pal and target. Four-meteor waves keep the exact parent anchor for 4.25 seconds so the measured 4.08-second tail remains covered.\n• The rule requires a recent exact CommetRain anchor and never uses damage amount; missing, stale, consumed, unequipped, or conflicting evidence remains unresolved.\n\nv0.5.27－隕星雨子技能逐段歸屬\n\n• 實機確認隕星雨會為每段大型隕石傷害各建立一個 Commet 子技能 Waza 標記，命中穩定在標記後約一秒。\n• 原先未歸屬的四段 3,544、3,197、3,287、3,240 合計正好等於畫面上的 13,268。\n• 每個 Commet 標記現在只會把一段 0.75–1.35 秒後、同一隻帕魯對同一目標的命中歸入已裝備的 CommetRain。四顆波次的父技能錨點保留 4.25 秒，可涵蓋實測最慢 4.08 秒的尾端。\n• 必須另有近期精確的隕星雨命中作為父技能錨點；不使用傷害數字，缺失、過期、已消耗、未裝備或來源衝突時仍維持未歸屬。",
+  "last_published_version": "0.5.27"
 }

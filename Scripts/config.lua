@@ -26,13 +26,6 @@ config.RequireNativeCollector = false
 config.NativeDrainIntervalMilliseconds = 50
 config.NativeMaxBucketsPerDrain = 512
 
--- Single-player/host distribution switch. When true, chat reports are sent
--- only to the local player. The dedicated-server package keeps this false.
-config.LocalOnlyMessages = false
-
--- Prefix used for every participant-only system chat message.
-config.MessagePrefix = "[PalSkillDPS]"
-
 -- Standalone damage verification. Pal skills are the default lane; optional
 -- player/weapon tests use the same source and candidate model. The diagnostic
 -- release records evidence-backed candidates and never invents a name.
@@ -49,15 +42,18 @@ config.EnableSkillSourceChain = true
 -- never teach the exact signature table, and ambiguous overlaps stay unresolved.
 config.EnableBoundedSkillInference = true
 -- A damage lab is more useful when the operator controls the sampling window.
--- "manual" keeps one test open until F2 starts a new test. In Boss-only scope,
--- the final Boss death/capture freezes the result; non-terminal phases do not.
--- In all-target scope, target deaths never freeze the manual test.
+-- "manual" keeps one test open until F2 starts a new test. Death and capture
+-- events never freeze it, so tower adds and world-multiplier Boss groups remain
+-- in the same operator-controlled sample.
 -- "target" automatically creates a separate test for each damaged target.
 config.MeasurementMode = "manual"
--- "boss" accepts arena/tower/raid/tablet Bosses and open-world Alpha/Boss
--- targets, while excluding ordinary wild Pals from the formal test totals.
--- Use "all" only for an explicit non-Boss diagnostic run.
-config.TargetScope = "boss"
+-- The operator chooses the encounter type explicitly; the analyzer does not
+-- guess whether a Boss is a field/dungeon encounter or a summoned tablet raid.
+-- "field" records the player's active Pal against field/dungeon Bosses.
+-- "tablet" additionally accepts same-guild base workers and groups only Pals
+-- with the same species and complete three-skill loadout. "all" remains an internal compatibility lane
+-- for non-Boss regression diagnostics and is not exposed by F3.
+config.TargetScope = "field"
 -- Off by default. Enable for a separate player-character test run. When the
 -- damage causer exposes a weapon/projectile, the analyzer creates one bucket
 -- per candidate; otherwise it falls back to a generic player source bucket.
@@ -65,18 +61,12 @@ config.IncludePlayerDamage = false
 config.DumpDamageSchema = false
 config.SkillDiagnosticMaxSamplesPerCandidate = 64
 config.SkillDiagnosticMaxSchemaFields = 128
-config.SkillDiagnosticChatMaxRows = 12
--- Diagnostic results use a dedicated in-game HUD by default. Chat output is
--- retained only as an optional compatibility mode: "off", "summary", or
--- "full". The F3 panel can change this without editing the file.
-config.SkillDiagnosticChatMode = "off"
-
 -- Dedicated skill-DPS HUD. F3 opens/closes the native settings workspace;
 -- its Settings and Current Test tabs are mouse-clickable. User choices are
 -- persisted beside these scripts.
 config.EnableSkillDPSHUD = true
 config.HUDRefreshMilliseconds = 500
-config.HUDSettingsVersion = 3
+config.HUDSettingsVersion = 5
 -- Compact is the public default: one proportional bar per skill with damage,
 -- share, casts and encounter DPS. "full" reveals timing diagnostics below
 -- every row when the user deliberately switches modes in F3.
@@ -86,7 +76,10 @@ config.HUDDetailMode = "compact"
 config.HUDShowInternalSkillCode = false
 config.HUDAnchor = "left-center"
 config.HUDScale = 0.85
-config.HUDMaxSkillRows = 5
+config.HUDMaxSkillRows = 9
+-- Keep the live meter readable even when a tablet battle has many loadout
+-- groups. Every remaining group stays available in the F3 grouped report.
+config.HUDMaxSourceGroups = 3
 -- Per-row cast quality keeps only the latest N cast hit counts on the compact
 -- HUD. The complete per-cast list remains available in UE4SS.log.
 config.HUDMaxHitCastSamples = 6
@@ -117,8 +110,8 @@ config.EnableNativeCommonUISettings = true
 -- unsafe backend is called by current releases, even if an old settings file says true.
 config.HUDUseExperimentalUMG = false
 config.HUDUseScreenTextFallback = false
--- The chat shows aggregate timing for every displayed skill. UE4SS.log can
--- additionally keep one row per observed cast for later comparison.
+-- UE4SS.log can additionally keep one row per observed cast for later
+-- comparison. Player-visible results remain in the HUD and F3 details only.
 config.SkillDiagnosticLogCasts = true
 config.SkillDiagnosticMaxCastLogRows = 128
 -- Native probe reports are intentionally verbose and can produce very large
@@ -239,47 +232,10 @@ config.SkillMetadataFallbacks = {
     },
 }
 
--- Optional components. Compact, low-noise output is the public default.
--- Change a switch, then restart the server once to apply it.
-config.BroadcastStart = true
-config.EnableProgressReports = false
-config.EnableDetailedAwards = false
--- Show a final breakdown for the player character and every individual Pal.
--- This is the easiest switch for users who want per-Pal damage, share and DPS.
--- Dedicated servers keep it off by default to avoid extra chat lines.
-config.EnablePalDamageBreakdown = false
--- Legacy alias kept for existing config files. Either switch enables the same
--- breakdown; new installations should use EnablePalDamageBreakdown.
-config.EnableTeamDetails = false
-config.MarkTopAsMVP = true
-
--- Maximum number of contributors shown in the final ranking.
-config.MaxResultRows = 10
-
--- When EnableProgressReports is true, publish a live report every N seconds.
--- Current DPS is damage dealt inside the latest report window divided by
--- the actual window duration. Set to 0 to disable live reports.
-config.ProgressIntervalSeconds = 10
-config.ProgressMaxRows = 4
-
--- Maximum player-character/Pal source rows in the damage breakdown.
-config.TeamDetailMaxRows = 12
-
--- Fun battle comments: progress comments only appear when a threshold is met;
--- every final result receives one comment when enabled. Changing this setting
--- requires a server restart.
-config.EnableFunComments = false
-
--- Delay between result lines to avoid flooding the chat feed.
-config.MessageIntervalMilliseconds = 1000
-
 -- End and publish a partial session after this many seconds without damage.
 -- Set to 0 to disable inactivity cleanup.
 config.InactivityTimeoutSeconds = 60
 config.CleanupIntervalSeconds = 10
-
--- Include per-player DPS in addition to damage and percentage.
-config.ShowDPS = true
 
 -- Safety/back-pressure controls. Events above MaxPendingEvents are dropped;
 -- each game-thread drain processes at most MaxEventsPerDrain events.

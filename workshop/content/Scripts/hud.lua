@@ -162,7 +162,6 @@ function hud.new(options)
         "HUDAnchor",
         "HUDScale",
         "HUDFinalResultSeconds",
-        "SkillDiagnosticChatMode",
     }
 
     self.native_setting_keys = {
@@ -174,7 +173,6 @@ function hud.new(options)
         "HUDAnchor",
         "HUDScale",
         "HUDFinalResultSeconds",
-        "SkillDiagnosticChatMode",
     }
 
     self.persisted_keys = {
@@ -190,7 +188,6 @@ function hud.new(options)
         "HUDScale",
         "HUDKeepFinalResults",
         "HUDFinalResultSeconds",
-        "SkillDiagnosticChatMode",
     }
 
     function self:load_settings()
@@ -233,7 +230,21 @@ function hud.new(options)
             self.config.TargetScope = "all"
             self.log("HUD settings migrated to v3 damage-lab layout")
         end
-        if settings_version < 3 then
+        if settings_version < 4 then
+            -- v4 replaces automatic target-scope mixing with an explicit
+            -- encounter choice. Existing installs start conservatively in the
+            -- field/dungeon lane; tablet/base-worker recording is opt-in.
+            self.config.HUDSettingsVersion = 4
+            self.config.TargetScope = "field"
+            self.log("HUD settings migrated to v4 explicit encounter type")
+        end
+        if settings_version < 5 then
+            -- v5 rewrites the persisted table without the removed chat-output
+            -- field. No gameplay option is changed by this migration.
+            self.config.HUDSettingsVersion = 5
+            self.log("HUD settings migrated to v5 no-chat schema")
+        end
+        if settings_version < 5 then
             self:save_settings()
         end
     end
@@ -411,13 +422,16 @@ function hud.new(options)
         local expires_at = manual_final and 0 or tonumber(snapshot.expires_at)
             or (final and final_seconds > 0 and (os.time() + final_seconds) or 0)
         local maximum = math.max(1, math.floor(tonumber(self.config.HUDMaxSkillRows) or 6))
+        local maximum_sources = math.max(1,
+            math.floor(tonumber(self.config.HUDMaxSourceGroups) or 3))
         local shown = 0
         local source_count = 0
+        local total_source_count = #(snapshot.sources or {})
         local primary_source = ""
         local body = {}
 
         for source_index, source in ipairs(snapshot.sources or {}) do
-            if shown >= maximum then break end
+            if shown >= maximum or source_count >= maximum_sources then break end
             source_count = source_count + 1
             if primary_source == "" then
                 primary_source = tostring(source.name or "")
@@ -429,6 +443,8 @@ function hud.new(options)
                 protocol_number(source.damage),
                 protocol_number(source.dps),
                 tostring(math.floor(tonumber(source.hits) or 0)),
+                tostring(math.max(1, math.floor(tonumber(source.count) or 1))),
+                protocol_number(source.damage_share),
             }, "\t")
             for _, skill in ipairs(source.skills or {}) do
                 if shown >= maximum then break end
@@ -495,6 +511,9 @@ function hud.new(options)
         if shown == 0 then
             body[#body + 1] = "W\t" .. protocol_field(snapshot.notice or self:text("hud_waiting"))
         end
+        local hidden_source_count = math.max(0, total_source_count - source_count)
+        local more_details_hint = hidden_source_count > 0
+            and self:text("hud_more_groups_hint", { count = hidden_source_count }) or ""
 
         local header = {
             "PAL_SKILL_DPS_HUD_V2",
@@ -511,8 +530,12 @@ function hud.new(options)
             "damage_label=" .. protocol_field(self:text("hud_total_damage_label")),
             "primary_source=" .. protocol_field(primary_source),
             "source_count=" .. tostring(source_count),
+            "total_source_count=" .. tostring(total_source_count),
+            "hidden_source_count=" .. tostring(hidden_source_count),
+            "more_details_hint=" .. protocol_field(more_details_hint),
             "boss=" .. protocol_field(snapshot.boss),
             "measurement_mode=" .. protocol_field(snapshot.measurement_mode or "target"),
+            "test_profile=" .. protocol_field(snapshot.test_profile or "field"),
             "target_count=" .. tostring(math.floor(tonumber(snapshot.target_count) or 1)),
             "target_count_label=" .. protocol_field(self:text("hud_target_count", {
                 count = math.floor(tonumber(snapshot.target_count) or 1),
@@ -754,12 +777,6 @@ function hud.new(options)
         return self:text(value and "hud_value_on" or "hud_value_off")
     end
 
-    function self:chat_mode_text(value)
-        if value == "full" then return self:text("hud_value_full") end
-        if value == "summary" then return self:text("hud_value_summary") end
-        return self:text("hud_value_off")
-    end
-
     function self:apply_layout()
         -- The external overlay reads anchor and scale from every state update.
     end
@@ -822,7 +839,6 @@ function hud.new(options)
             HUDAnchor = "hud_setting_anchor",
             HUDScale = "hud_setting_scale",
             HUDFinalResultSeconds = "hud_setting_final_duration",
-            SkillDiagnosticChatMode = "hud_setting_chat",
             reset = "hud_setting_reset",
         }
         return self:text(labels[key] or key)
@@ -848,7 +864,8 @@ function hud.new(options)
         elseif key == "MeasurementMode" then
             return self:text(value == "target" and "hud_value_mode_target" or "hud_value_mode_manual")
         elseif key == "TargetScope" then
-            return self:text(value == "boss" and "hud_value_scope_boss" or "hud_value_scope_all")
+            return self:text(value == "tablet" and "hud_value_scope_all"
+                or "hud_value_scope_boss")
         elseif key == "EnableSkillDPSHUD" or key == "IncludePlayerDamage"
             or key == "HUDShowInternalSkillCode" then
             return self:bool_text(value == true)
@@ -869,8 +886,6 @@ function hud.new(options)
             if seconds < 0 then return self:text("hud_value_keep") end
             if seconds == 0 then return self:text("hud_value_hide") end
             return self:text("hud_value_seconds", { seconds = seconds })
-        elseif key == "SkillDiagnosticChatMode" then
-            return self:chat_mode_text(value)
         end
         return self:text("hud_value_press_enter")
     end
@@ -906,18 +921,24 @@ function hud.new(options)
             "scale=1",
             "settings=1",
             "view=settings",
-            "selected_tab=" .. tostring(math.max(0, math.min(1, tonumber(self.settings_page) or 0))),
+            "selected_tab=" .. tostring(math.max(0, math.min(2, tonumber(self.settings_page) or 0))),
+            "detail_view=" .. tostring(self.settings_page == 2 and "individual" or "groups"),
             "title=" .. protocol_field(self:text(
-                self.settings_page == 1 and "hud_results_title" or "hud_settings_title"
+                self.settings_page == 2 and "hud_results_title"
+                    or (self.settings_page == 1 and "hud_groups_title" or "hud_settings_title")
             )),
             "settings_title=" .. protocol_field(self:text("hud_settings_title")),
+            "groups_title=" .. protocol_field(self:text("hud_groups_title")),
             "results_title=" .. protocol_field(self:text("hud_results_title")),
             "damage_label=" .. protocol_field(self:text("hud_total_damage_label")),
             "note=" .. protocol_field(self:text("hud_settings_note")),
             "footer=" .. protocol_field(self:text("hud_settings_footer", { key = self.key_label })),
             "close_label=" .. protocol_field(self:text("hud_settings_close")),
             "settings_tab_label=" .. protocol_field(self:text("hud_tab_settings")),
+            "groups_tab_label=" .. protocol_field(self:text("hud_detail_tab_groups")),
             "results_tab_label=" .. protocol_field(self:text("hud_tab_results")),
+            "groups_intro=" .. protocol_field(self:text("hud_detail_intro_groups")),
+            "detail_intro=" .. protocol_field(self:text("hud_detail_intro_individual")),
             "no_results_label=" .. protocol_field(self:text("hud_no_results")),
             "result_context=" .. protocol_field(result_context),
             "result_damage=" .. protocol_number(snapshot and snapshot.total_damage or 0),
@@ -937,7 +958,9 @@ function hud.new(options)
             }, "\t")
         end
         local shown = 0
-        for source_index, source in ipairs(snapshot and snapshot.sources or {}) do
+        local settings_sources = snapshot and (self.settings_page == 2
+            and (snapshot.detail_sources or snapshot.sources) or snapshot.sources) or {}
+        for source_index, source in ipairs(settings_sources) do
             body[#body + 1] = table.concat({
                 "S",
                 tostring(source_index),
@@ -945,6 +968,8 @@ function hud.new(options)
                 protocol_number(source.damage),
                 protocol_number(source.dps),
                 tostring(math.floor(tonumber(source.hits) or 0)),
+                tostring(math.max(1, math.floor(tonumber(source.count) or 1))),
+                protocol_number(source.damage_share),
             }, "\t")
             for _, skill in ipairs(source.skills or {}) do
                 shown = shown + 1
@@ -1159,7 +1184,61 @@ function hud.new(options)
         return true
     end
 
-    function self:native_detail_text()
+    function self:native_group_detail_text()
+        local snapshot = self.latest_snapshot
+        if snapshot == nil then return self:text("hud_no_results") end
+        local lines = {
+            self:text("hud_result_context", {
+                target = snapshot.boss,
+                seconds = decimal(snapshot.duration),
+                count = math.floor(tonumber(snapshot.target_count) or 1),
+            }),
+            string.format(
+                "%s %s  ·  %s DPS",
+                self:text("hud_total_damage_label"),
+                integer(snapshot.total_damage),
+                decimal(snapshot.encounter_dps)
+            ),
+            "",
+        }
+        local group_count = 0
+        for _, source in ipairs(snapshot.sources or {}) do
+            group_count = group_count + 1
+            local source_count = math.max(1, math.floor(tonumber(source.count) or 1))
+            local count_suffix = source_count > 1 and (" ×" .. tostring(source_count)) or ""
+            local damage_share = tonumber(source.damage_share)
+            if damage_share == nil then
+                local total_damage = tonumber(snapshot.total_damage) or 0
+                damage_share = total_damage > 0
+                    and ((tonumber(source.damage) or 0) / total_damage * 100) or 0
+            end
+            lines[#lines + 1] = string.format(
+                "%d. %s%s  ·  %s %s  ·  %s%%",
+                group_count,
+                tostring(source.name or ""),
+                count_suffix,
+                self:text("hud_total_damage_label"),
+                integer(source.damage),
+                decimal(damage_share)
+            )
+            for _, skill in ipairs(source.skills or {}) do
+                local skill_name = self:skill_display_name(skill)
+                local source_damage = tonumber(source.damage) or 0
+                local share = source_damage > 0
+                    and ((tonumber(skill.damage) or 0) / source_damage * 100) or 0
+                lines[#lines + 1] = string.format(
+                    "   %s  ·  %s%%",
+                    skill_name,
+                    decimal(share)
+                )
+            end
+            lines[#lines + 1] = ""
+        end
+        if group_count == 0 then lines[#lines + 1] = self:text("hud_no_results") end
+        return table.concat(lines, "\n")
+    end
+
+    function self:native_individual_detail_text()
         local snapshot = self.latest_snapshot
         if snapshot == nil then return self:text("hud_no_results") end
         local lines = {
@@ -1177,7 +1256,14 @@ function hud.new(options)
             "",
         }
         local shown = 0
-        for _, source in ipairs(snapshot.sources or {}) do
+        for _, source in ipairs(snapshot.detail_sources or snapshot.sources or {}) do
+            lines[#lines + 1] = string.format(
+                "%s  ·  %s %s  ·  %s DPS",
+                tostring(source.name or ""),
+                self:text("hud_total_damage_label"),
+                integer(source.damage),
+                decimal(source.dps)
+            )
             for _, skill in ipairs(source.skills or {}) do
                 shown = shown + 1
                 local skill_name = self:skill_display_name(skill)
@@ -1208,13 +1294,21 @@ function hud.new(options)
         end
         local switcher = self:native_widget("PSDPS_PageSwitcher")
         if switcher ~= nil then
-            call_method(switcher, "SetActiveWidgetIndex", self.settings_page == 1 and 1 or 0)
+            call_method(switcher, "SetActiveWidgetIndex",
+                math.max(0, math.min(2, tonumber(self.settings_page) or 0)))
         end
         self:set_native_text("PSDPS_Title", self:text(
-            self.settings_page == 1 and "hud_results_title" or "hud_settings_title"
+            self.settings_page == 2 and "hud_results_title"
+                or (self.settings_page == 1 and "hud_groups_title" or "hud_settings_title")
         ))
         self:set_native_text("PSDPS_Footer", self:text("hud_settings_footer", { key = self.key_label }))
-        self:set_native_text("PSDPS_DetailRows", self:native_detail_text())
+        self:set_native_text("PSDPS_TabSettingsLabel", self:text("hud_tab_settings"))
+        self:set_native_text("PSDPS_TabGroupsLabel", self:text("hud_detail_tab_groups"))
+        self:set_native_text("PSDPS_TabDetailsLabel", self:text("hud_tab_results"))
+        self:set_native_text("PSDPS_GroupIntro", self:text("hud_detail_intro_groups"))
+        self:set_native_text("PSDPS_DetailIntro", self:text("hud_detail_intro_individual"))
+        self:set_native_text("PSDPS_GroupRows", self:native_group_detail_text())
+        self:set_native_text("PSDPS_DetailRows", self:native_individual_detail_text())
         for _, key in ipairs(self.native_setting_keys) do
             self:set_native_text("PSDPS_" .. key .. "_Value", self:setting_value_text(key))
         end
@@ -1236,7 +1330,7 @@ function hud.new(options)
         elseif key == "MeasurementMode" then
             self.config[key] = self.config[key] == "target" and "manual" or "target"
         elseif key == "TargetScope" then
-            self.config[key] = self.config[key] == "boss" and "all" or "boss"
+            self.config[key] = self.config[key] == "tablet" and "field" or "tablet"
         elseif key == "EnableSkillDPSHUD" or key == "IncludePlayerDamage"
             or key == "HUDShowInternalSkillCode"
             or key == "HUDKeepFinalResults" then
@@ -1268,16 +1362,6 @@ function hud.new(options)
             local index = 2
             for candidate_index, value in ipairs(values) do
                 if value == current then index = candidate_index end
-            end
-            index = ((index - 1 + direction) % #values) + 1
-            self.config[key] = values[index]
-        elseif key == "SkillDiagnosticChatMode" then
-            local values = { "off", "summary", "full" }
-            local index = 1
-            for candidate_index, value in ipairs(values) do
-                if value == self.config[key] then
-                    index = candidate_index
-                end
             end
             index = ((index - 1 + direction) % #values) + 1
             self.config[key] = values[index]
@@ -1564,7 +1648,9 @@ function hud.new(options)
                     self:reset_test()
                     self:render_settings()
                 elseif action == "tab" and self.settings_open then
-                    self.settings_page = string.lower(tostring(words[3] or "")) == "details" and 1 or 0
+                    local requested_page = string.lower(tostring(words[3] or ""))
+                    self.settings_page = requested_page == "details" and 2
+                        or (requested_page == "groups" and 1 or 0)
                     self:render_settings()
                 elseif action == "cycle" and self.settings_open then
                     local key = tostring(words[3] or "")
@@ -1701,7 +1787,6 @@ function hud.new(options)
         local footer = self:text("hud_footer", {
             key = self.key_label,
             player = self:bool_text(snapshot.include_player),
-            chat = self:chat_mode_text(self.config.SkillDiagnosticChatMode),
         })
         return header, summary, table.concat(lines, "\n"), footer
     end

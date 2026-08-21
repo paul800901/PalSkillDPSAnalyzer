@@ -103,6 +103,30 @@ namespace
         assert(std::abs(expired.released.front().damage - 1477.0) < 0.001);
     }
 
+    auto ambiguous_pair_keeps_unrelated_expiry_test() -> void
+    {
+        const ObjectToken attacker{1, 1};
+        const ObjectToken defender{2, 1};
+        const ObjectToken old_attacker{3, 1};
+        const ObjectToken old_defender{4, 1};
+        PendingFinalDamageMatcher matcher{8};
+        assert(matcher.record(make_event(old_attacker, old_defender, 77.0, 10)));
+        assert(matcher.record(make_event(attacker, defender, 3000.0, 100)));
+        assert(matcher.record(make_event(attacker, defender, 9000.0, 101)));
+
+        const auto match = matcher.resolve(
+            attacker, defender, make_source(120), 120, 50
+        );
+        assert(match.kind == PendingFinalDamageMatchKind::pending_ambiguous);
+        assert(match.expired_count == 1);
+        assert(match.candidate_count == 2);
+        assert(match.released.size() == 3);
+        const auto damage = match.released[0].damage + match.released[1].damage
+            + match.released[2].damage;
+        assert(std::abs(damage - 12077.0) < 0.001);
+        assert(matcher.size() == 0);
+    }
+
     auto capacity_and_damage_independence_test() -> void
     {
         const ObjectToken attacker{1, 1};
@@ -123,6 +147,7 @@ int main()
     unique_pair_test();
     ambiguous_pair_conserves_damage_test();
     identity_and_expiry_test();
+    ambiguous_pair_keeps_unrelated_expiry_test();
     capacity_and_damage_independence_test();
     std::cout << "pending final damage matcher tests passed\n";
     return 0;

@@ -25,7 +25,7 @@ command_ack=
 B	reset	測試控制	開始新測試（傷害歸零）	按 Enter	1
 P	Language	一般	顯示語言	繁體中文	0
 P	MeasurementMode	測量方式	測試分場方式	手動測試區間	0
-P	TargetScope	測量方式	可測量目標	所有野生帕魯	0
+P	TargetScope	測量方式	測試類型	野外／副本 Boss	0
 P	EnableSkillDPSHUD	戰鬥儀表	顯示技能 DPS 面板	開	0
 P	IncludePlayerDamage	測量方式	納入人物／武器傷害	關	0
 P	HUDDetailMode	戰鬥儀表	資料密度	精簡	0

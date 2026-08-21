@@ -19,8 +19,6 @@ v0.5.11 暫時停用不可靠的外部 F1 互動設定；請直接修改本檔�
 | `DumpDamageSchema` | `false` | 選用：啟動後反射傷害事件欄位一次；目前 UE4SS 巢狀反射可能失敗 |
 | `SkillDiagnosticMaxSamplesPerCandidate` | `64` | 每個候選最多保留幾筆逐擊樣本；診斷版保留足夠多段技能命中供核對 |
 | `SkillDiagnosticMaxSchemaFields` | `128` | 反射欄位數上限 |
-| `SkillDiagnosticChatMode` | `"off"` | `off` 不使用聊天框；`summary` 只顯示完成摘要；`full` 顯示完整舊式報表 |
-| `SkillDiagnosticChatMaxRows` | `12` | `full` 模式的技能／武器明細上限 |
 | `SkillMarkerTTLSeconds` | `30` | 延遲投射物可沿用 Waza 技能代號的時間 |
 | `SkillMarkerMaxEntries` | `2048` | Waza 關聯快取的有界上限 |
 | `EquipWazaRefreshSeconds` | `5` | 三格裝備技能清單的 TTL；每次動作開始也會失效重讀，換技後分類會在下次命中時更新 |
@@ -31,7 +29,7 @@ v0.5.11 暫時停用不可靠的外部 F1 互動設定；請直接修改本檔�
 | `PreferNativeCollector` | `true` | 優先使用具備逐命中與精確來源鏈能力的原生事件 API v2；未完成／不相容時自動退回 Lua |
 | `AllowLegacyNativeAggregate` | `false` | 是否允許只保留總傷、會丟失技能來源的舊原生聚合器；技能分析不建議開啟 |
 | `MeasurementMode` | `"manual"` | `manual` 由使用者控制測試區間；`target` 每個目標自動分場 |
-| `TargetScope` | `"boss"` | `boss` 接受競技場／塔／地城／石板 Boss 與有 Boss／Alpha 標記的大世界頭目；`all` 僅用於額外的非 Boss 診斷 |
+| `TargetScope` | `"field"` | `field` 為野外／副本 Boss，排除基地派駐帕魯；`tablet` 為石板 Boss，額外接受同公會且有基地 ID 的基地帕魯。由使用者在 F3 明確選擇，不自動混判 |
 
 帕魯測試請保持 `IncludePlayerDamage = false`。測試人物武器時改為 `true`，並建議每場只使用一種武器。
 
@@ -41,12 +39,13 @@ v0.5.11 暫時停用不可靠的外部 F1 互動設定；請直接修改本檔�
 |---|---:|---|
 | `EnableSkillDPSHUD` | `true` | 顯示獨立技能 DPS 面板 |
 | `HUDRefreshMilliseconds` | `500` | 即時面板更新間隔 |
-| `HUDSettingsVersion` | `3` | 使用者 HUD 設定格式；舊版第一次載入會遷移成安全區傷害實驗室配置 |
+| `HUDSettingsVersion` | `5` | 使用者 HUD 設定格式；舊版第一次載入會保守遷移到野外／副本 Boss 類型，並清除已移除的聊天設定欄位 |
 | `HUDDetailMode` | `"compact"` | `compact` 顯示比例長條；`full` 在每招下方展開所有計時 |
 | `HUDShowInternalSkillCode` | `false` | 是否在官方本地化名稱後附加內部英文 Waza／動作代碼 |
 | `HUDAnchor` | `"left-center"` | `left-center`、`right-center`、`top-left` 或 `top-right` |
 | `HUDScale` | `0.85` | F1 可選 0.75、0.85、1.0、1.15 |
-| `HUDMaxSkillRows` | `5` | 即時儀表最多顯示幾個技能；F1「本次測試」不受此限制 |
+| `HUDMaxSkillRows` | `9` | 即時儀表最多顯示幾個技能；石板模式每個「種類＋配招」組最多三列，F3 詳情不受此限制 |
+| `HUDMaxSourceGroups` | `3` | 主 HUD 只顯示傷害最高的三個來源／配招組；其餘完整保留在 F3 第二頁「分組百分比」，逐隻資料保留在第三頁「本次測試詳情」 |
 | `HUDFinalResultSeconds` | `15` | `target` 模式結算後保留秒數；0 立即隱藏，-1 永久保留 |
 | `HUDKeepFinalResults` | `true` | 舊版相容設定；v3 以 `HUDFinalResultSeconds` 為準 |
 | `EnableExternalHUD` | `true` | 啟用不碰 Unreal UI 的透明 Windows HUD |
@@ -61,8 +60,8 @@ v0.5.11 暫時停用不可靠的外部 F1 互動設定；請直接修改本檔�
 
 ## 結算口徑
 
-- 測試區間：`manual` 從歸零後第一筆符合 `TargetScope` 的有效傷害開始，預設可跨多隻 Boss 持續累計；`target` 依單一目標的擊殺、捕捉或逾時結算。
-- 來源：以實際攻擊者帕魯個體分組；坐騎、隊伍／跟隨帕魯及基地帕魯不因屬於同一玩家而合併。啟用人物後，人物角色另算一個來源。
+- 測試區間：`manual` 從歸零後第一筆符合 `TargetScope` 的有效傷害開始，死亡／捕捉不會自動快照，多隻真正 Boss 可持續累計，直到 F2 才清空。困難塔以 `GYM` 角色身分鎖定實際塔主；召喚小怪即使也帶 Boss／TowerBoss 資料旗標仍排除。`target` 依單一目標的擊殺、捕捉或逾時結算。
+- 來源真值：永遠保留每隻實際帕魯個體。石板主 HUD 只在顯示層把同種類、同三技能配招合併成 `×N`；不同配招分成 A／B 組，讀不到配招則逐隻分開。主 HUD 只取傷害最高三組；F3 第二頁「分組百分比」列出全部組別，第三頁「本次測試詳情」顯示每隻帕魯的實際傷害、DPS、施放與 Hit。
 - 候選：優先使用 `EPalWazaID`；缺少 Waza 時使用去除實例編號的當前動作、投射物、武器來源或未知桶。
 - 泛用持續傷害：只有 `BasePower + AttackElementType` 在整場唯一對應到一個已知技能時才合併；有歧義時保持未解析。
 - 整場 DPS：候選累計傷害除以目前測試區間總秒數。
@@ -72,17 +71,14 @@ v0.5.11 暫時停用不可靠的外部 F1 互動設定；請直接修改本檔�
 
 ## 相容設定
 
+遊戲聊天室輸出與其設定已完整移除；所有玩家可見結果只存在主 HUD 與 F3 三個分頁。舊版 `user_settings.lua` 若仍留有 `SkillDiagnosticChatMode`，新版會忽略它，下一次儲存設定時不再寫回。
+
 專案保留上游 Boss 遭遇偵測需要的安全與快取設定。診斷版固定建議：
 
 ```lua
 config.PreferNativeCollector = true
 config.AllowLegacyNativeAggregate = false
-config.EnableProgressReports = false
-config.EnableDetailedAwards = false
-config.EnablePalDamageBreakdown = false
-config.EnableFunComments = false
 ```
 
 只有原生事件 API 回報精確 cast／effect 來源鏈已就緒時才會啟用；舊聚合器不會被
-技能分析器誤選。原生來源鏈未完成或 ABI 不符時，會保留總傷並以未歸屬呈現，
-不使用時間、倍率或屬性冒充精確技能。
+技能分析器誤選。原生來源鏈未完成或 ABI 不符時，會保留總傷並以未歸屬呈現。唯一例外是已實機確認的極寒雙星／鑽石星辰長飛行尾段：同目標已連結 Hit 可在 2 秒內承接，或由最近唯一且無鄰近衝突的已完成配裝動作補接，並標成推定；不使用傷害大小、倍率或屬性冒充精確技能。

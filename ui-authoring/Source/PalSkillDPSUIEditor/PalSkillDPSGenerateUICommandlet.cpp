@@ -61,7 +61,12 @@ UTextBlock* MakeText(UWidgetTree* Tree, FName Name, const FString& Value, int32 
     return Text;
 }
 
-UButton* MakeButton(UWidgetTree* Tree, FName Name, const FString& Label, float MinWidth = 74.0f)
+UButton* MakeButton(
+    UWidgetTree* Tree,
+    FName Name,
+    const FString& Label,
+    float MinWidth = 74.0f,
+    FName LabelName = NAME_None)
 {
     UButton* Button = Tree->ConstructWidget<UButton>(UButton::StaticClass(), Name);
     Button->SetIsEnabled(true);
@@ -69,7 +74,8 @@ UButton* MakeButton(UWidgetTree* Tree, FName Name, const FString& Label, float M
     USizeBox* Size = Tree->ConstructWidget<USizeBox>();
     Size->SetMinDesiredWidth(MinWidth);
     Size->SetMinDesiredHeight(38.0f);
-    UTextBlock* Text = MakeText(Tree, NAME_None, Label, 16, PrimaryText);
+    UTextBlock* Text = MakeText(Tree, LabelName, Label, 16, PrimaryText);
+    Text->bIsVariable = !LabelName.IsNone();
     Text->SetJustification(ETextJustify::Center);
     Size->AddChild(Text);
     Button->AddChild(Size);
@@ -262,16 +268,20 @@ int32 UPalSkillDPSGenerateUICommandlet::Main(const FString& Params)
         Slot->SetOffsets(FMargin(0.0f));
     }
 
+    constexpr float SettingsPanelWidth = 920.0f;
+    constexpr float SettingsPanelHeight = 780.0f;
     USizeBox* PanelSize = Tree->ConstructWidget<USizeBox>();
-    PanelSize->SetWidthOverride(760.0f);
-    PanelSize->SetHeightOverride(720.0f);
+    PanelSize->SetMinDesiredWidth(SettingsPanelWidth);
+    PanelSize->SetMinDesiredHeight(SettingsPanelHeight);
+    PanelSize->SetWidthOverride(SettingsPanelWidth);
+    PanelSize->SetHeightOverride(SettingsPanelHeight);
     Root->AddChild(PanelSize);
     if (UCanvasPanelSlot* Slot = Cast<UCanvasPanelSlot>(PanelSize->Slot))
     {
         Slot->SetAnchors(FAnchors(0.5f, 0.5f));
         Slot->SetAlignment(FVector2D(0.5f, 0.5f));
         Slot->SetPosition(FVector2D::ZeroVector);
-        Slot->SetSize(FVector2D(760.0f, 720.0f));
+        Slot->SetSize(FVector2D(SettingsPanelWidth, SettingsPanelHeight));
     }
 
     UBorder* Panel = Tree->ConstructWidget<UBorder>();
@@ -288,12 +298,14 @@ int32 UPalSkillDPSGenerateUICommandlet::Main(const FString& Params)
 
     UTextBlock* Title = MakeText(Tree, TEXT("PSDPS_Title"), TEXT("帕魯技能 DPS"), 26, PrimaryText);
     Title->bIsVariable = true;
+    Title->SetAutoWrapText(false);
     Header->AddChild(Title);
     if (UHorizontalBoxSlot* Slot = Cast<UHorizontalBoxSlot>(Title->Slot))
     {
         Slot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
         Slot->SetVerticalAlignment(VAlign_Center);
     }
+    SetHorizontalPadding(Title, 0.0f, 0.0f, 16.0f, 0.0f);
 
     UButton* Reset = MakeButton(Tree, TEXT("PSDPS_Reset"), TEXT("重設測試"), 118.0f);
     Reset->bIsVariable = true;
@@ -303,15 +315,35 @@ int32 UPalSkillDPSGenerateUICommandlet::Main(const FString& Params)
     UButton* Close = MakeButton(Tree, TEXT("PSDPS_Close"), TEXT("關閉"), 86.0f);
     Close->bIsVariable = true;
     Header->AddChild(Close);
+    SetHorizontalPadding(Close, 4.0f, 0.0f, 0.0f, 0.0f);
 
     UHorizontalBox* Tabs = Tree->ConstructWidget<UHorizontalBox>();
     Main->AddChild(Tabs);
     SetVerticalPadding(Tabs, 0.0f, 0.0f, 0.0f, 10.0f);
-    UButton* TabSettings = MakeButton(Tree, TEXT("PSDPS_TabSettings"), TEXT("設定"), 160.0f);
+    UButton* TabSettings = MakeButton(
+        Tree,
+        TEXT("PSDPS_TabSettings"),
+        TEXT("設定"),
+        150.0f,
+        TEXT("PSDPS_TabSettingsLabel"));
     TabSettings->bIsVariable = true;
     Tabs->AddChild(TabSettings);
     SetHorizontalPadding(TabSettings, 0.0f, 0.0f, 6.0f, 0.0f);
-    UButton* TabDetails = MakeButton(Tree, TEXT("PSDPS_TabDetails"), TEXT("本次測試詳情"), 190.0f);
+    UButton* TabGroups = MakeButton(
+        Tree,
+        TEXT("PSDPS_TabGroups"),
+        TEXT("分組百分比"),
+        180.0f,
+        TEXT("PSDPS_TabGroupsLabel"));
+    TabGroups->bIsVariable = true;
+    Tabs->AddChild(TabGroups);
+    SetHorizontalPadding(TabGroups, 0.0f, 0.0f, 6.0f, 0.0f);
+    UButton* TabDetails = MakeButton(
+        Tree,
+        TEXT("PSDPS_TabDetails"),
+        TEXT("本次測試詳情"),
+        210.0f,
+        TEXT("PSDPS_TabDetailsLabel"));
     TabDetails->bIsVariable = true;
     Tabs->AddChild(TabDetails);
 
@@ -332,22 +364,52 @@ int32 UPalSkillDPSGenerateUICommandlet::Main(const FString& Params)
     AddSettingRow(Tree, SettingsPage, TEXT("Language"), TEXT("顯示語言"), TEXT("跟隨遊戲"));
     AddSectionTitle(Tree, SettingsPage, TEXT("測量"));
     AddSettingRow(Tree, SettingsPage, TEXT("MeasurementMode"), TEXT("測試分場方式"), TEXT("手動測試區間"));
-    AddSettingRow(Tree, SettingsPage, TEXT("TargetScope"), TEXT("可測量目標"), TEXT("Boss"));
+    AddSettingRow(Tree, SettingsPage, TEXT("TargetScope"), TEXT("測試類型"), TEXT("野外／副本 Boss"));
     AddSettingRow(Tree, SettingsPage, TEXT("IncludePlayerDamage"), TEXT("納入人物／武器傷害"), TEXT("關"));
     AddSectionTitle(Tree, SettingsPage, TEXT("顯示"));
     AddSettingRow(Tree, SettingsPage, TEXT("EnableSkillDPSHUD"), TEXT("顯示技能 DPS 面板"), TEXT("開"));
     AddSettingRow(Tree, SettingsPage, TEXT("HUDAnchor"), TEXT("面板位置"), TEXT("左側安全區"));
     AddSettingRow(Tree, SettingsPage, TEXT("HUDScale"), TEXT("面板縮放"), TEXT("85%"));
     AddSettingRow(Tree, SettingsPage, TEXT("HUDFinalResultSeconds"), TEXT("結算顯示時間"), TEXT("保留"));
-    AddSectionTitle(Tree, SettingsPage, TEXT("輸出"));
-    AddSettingRow(Tree, SettingsPage, TEXT("SkillDiagnosticChatMode"), TEXT("診斷訊息"), TEXT("摘要"));
+    UVerticalBox* GroupsPage = Tree->ConstructWidget<UVerticalBox>();
+    Switcher->AddChild(GroupsPage);
+    UTextBlock* GroupIntro = MakeText(
+        Tree,
+        TEXT("PSDPS_GroupIntro"),
+        TEXT("完整列出主 HUD 的配招分組、總傷占比與技能組內占比。"),
+        15,
+        SecondaryText);
+    GroupIntro->bIsVariable = true;
+    GroupIntro->SetAutoWrapText(true);
+    GroupsPage->AddChild(GroupIntro);
+    SetVerticalPadding(GroupIntro, 2.0f, 4.0f, 2.0f, 14.0f);
+
+    UBorder* GroupBorder = Tree->ConstructWidget<UBorder>();
+    GroupBorder->SetBrushColor(SectionBackground);
+    GroupBorder->SetPadding(FMargin(14.0f));
+    GroupsPage->AddChild(GroupBorder);
+    if (UVerticalBoxSlot* Slot = Cast<UVerticalBoxSlot>(GroupBorder->Slot))
+    {
+        Slot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+    }
+    UScrollBox* GroupScroll = Tree->ConstructWidget<UScrollBox>();
+    GroupBorder->AddChild(GroupScroll);
+    UTextBlock* GroupRows = MakeText(
+        Tree,
+        TEXT("PSDPS_GroupRows"),
+        TEXT("尚未記錄傷害。關閉 F3 後，讓任一隻帕魯命中 Boss 即可開始。"),
+        16,
+        PrimaryText);
+    GroupRows->bIsVariable = true;
+    GroupRows->SetAutoWrapText(true);
+    GroupScroll->AddChild(GroupRows);
 
     UVerticalBox* DetailsPage = Tree->ConstructWidget<UVerticalBox>();
     Switcher->AddChild(DetailsPage);
     UTextBlock* DetailIntro = MakeText(
         Tree,
         TEXT("PSDPS_DetailIntro"),
-        TEXT("每次施放與 Hit 詳細資料。首頁 HUD 只保留名稱、總傷、DPS、占比與測試時間。"),
+        TEXT("逐隻保留實際傷害、DPS、施放與 Hit 詳細資料。"),
         15,
         SecondaryText);
     DetailIntro->bIsVariable = true;
@@ -399,6 +461,7 @@ int32 UPalSkillDPSGenerateUICommandlet::Main(const FString& Params)
         { TEXT("PSDPS_Close"), TEXT("psdps ui close") },
         { TEXT("PSDPS_Reset"), TEXT("psdps ui reset") },
         { TEXT("PSDPS_TabSettings"), TEXT("psdps ui tab settings") },
+        { TEXT("PSDPS_TabGroups"), TEXT("psdps ui tab groups") },
         { TEXT("PSDPS_TabDetails"), TEXT("psdps ui tab details") },
         { TEXT("PSDPS_Language_Prev"), TEXT("psdps ui cycle Language -1") },
         { TEXT("PSDPS_Language_Next"), TEXT("psdps ui cycle Language 1") },
@@ -416,8 +479,6 @@ int32 UPalSkillDPSGenerateUICommandlet::Main(const FString& Params)
         { TEXT("PSDPS_HUDScale_Next"), TEXT("psdps ui cycle HUDScale 1") },
         { TEXT("PSDPS_HUDFinalResultSeconds_Prev"), TEXT("psdps ui cycle HUDFinalResultSeconds -1") },
         { TEXT("PSDPS_HUDFinalResultSeconds_Next"), TEXT("psdps ui cycle HUDFinalResultSeconds 1") },
-        { TEXT("PSDPS_SkillDiagnosticChatMode_Prev"), TEXT("psdps ui cycle SkillDiagnosticChatMode -1") },
-        { TEXT("PSDPS_SkillDiagnosticChatMode_Next"), TEXT("psdps ui cycle SkillDiagnosticChatMode 1") },
     };
 
     bool AllBound = true;

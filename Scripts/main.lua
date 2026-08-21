@@ -28,17 +28,15 @@ local hooks = {
     death = false,
     captured = false,
     captured_count = 0,
-    -- A finished manual Boss result owns the HUD until the operator explicitly
-    -- resets. Delayed multi-hit damage can arrive after the death/capture hook;
-    -- it must not auto-open a replacement session and overwrite the snapshot.
-    manual_boss_result_locked = false,
 }
 local cached_pal_utility = nil
 local cached_gameplay_statics = nil
 local cached_world_context = nil
 local non_boss_addresses = {}
+local unknown_boss_targets = {}
 local recent_waza_by_pair = {}
 local recent_waza_by_attacker = {}
+hooks.recent_exact_hits_by_pair = {}
 local cached_waza_enum = nil
 local cached_pal_ui_utility = nil
 local cached_waza_database = nil
@@ -51,6 +49,7 @@ local action_records = {}
 local action_record_order = {}
 local recent_actions_by_actor = {}
 local delayed_effect_bindings = {}
+local native_action_bindings_by_pair = {}
 local source_chain = nil
 local skill_hud = nil
 hooks.last_native_status_hit_report = 0
@@ -62,10 +61,6 @@ local pending_events = {}
 local pending_head = 1
 local pending_tail = 0
 local drain_scheduled = false
-local pending_messages = {}
-local message_head = 1
-local message_tail = 0
-local message_pump_running = false
 local metrics = {
     accepted = 0,
     dropped = 0,
@@ -73,15 +68,17 @@ local metrics = {
     invalid = 0,
     errors = 0,
     non_boss_cache_hits = 0,
+    target_classification_unknown = 0,
+    target_classification_nonboss = 0,
     composite_joins = 0,
     pal_metadata_cache_hits = 0,
     source_owner_cache_hits = 0,
+    base_pal_owner_resolutions = 0,
     contributor_cache_hits = 0,
     native_buckets = 0,
     native_hits = 0,
     native_events = 0,
     ignored_player_damage = 0,
-    ignored_post_finish_damage = 0,
     waza_markers = 0,
     waza_matches = 0,
     skill_candidates = 0,
@@ -685,23 +682,69 @@ local function trainer_state(actor, utility)
     return state_from_player_actor(trainer, utility)
 end
 
+-- A Pal assigned to a base is owned by the base/guild rather than by an active
+-- trainer, so PalUtility:GetTrainerPlayer legitimately returns nil. Accept only
+-- the local guild's currently assigned base workers: a non-zero BaseCampId
+-- proves that the actor is stationed at a base, and an exact current GroupId
+-- match prevents wild Pals or another guild's workers from becoming sources.
+hooks.resolve_local_base_pal_state = function(actor)
+    local component_ok, component = safe_property(actor, "CharacterParameterComponent")
+    if not component_ok or not is_valid(component) then
+        return nil, nil
+    end
+    local individual_ok, individual = safe_property(component, "IndividualParameter")
+    if not individual_ok or not is_valid(individual) then
+        return nil, nil
+    end
+
+    local base_ok, base_id = safe_call(individual, "GetBaseCampId")
+    local base_key = base_ok and guid_key(base_id) or nil
+    if base_key == nil then
+        return nil, nil
+    end
+    local group_ok, group_id = safe_call(individual, "GetGroupId")
+    local group_key = group_ok and guid_key(group_id) or nil
+    if group_key == nil then
+        return nil, nil
+    end
+
+    local controller = get_local_player_controller()
+    if controller == nil then
+        return nil, nil
+    end
+    local state_ok, state = safe_property(controller, "PlayerState")
+    if not state_ok or player_uid(state) == nil then
+        return nil, nil
+    end
+    local guild_ok, guild = safe_property(state, "GuildBelongTo")
+    if not guild_ok or not is_valid(guild) then
+        return nil, nil
+    end
+    local guild_id_ok, guild_id = safe_call(guild, "GetId")
+    local guild_key = guild_id_ok and guid_key(guild_id) or nil
+    if guild_key == nil or guild_key ~= group_key then
+        return nil, nil
+    end
+    return state, base_key
+end
+
 local function cached_source_owner(cache, identity)
     if cache == nil or identity == nil or identity == "" then
-        return nil, nil, nil
+        return nil, nil, nil, nil
     end
     local entry = cache[identity]
     if entry == nil then
-        return nil, nil, nil
+        return nil, nil, nil, nil
     end
     if not is_valid(entry.state) or not is_valid(entry.source_actor) then
         cache[identity] = nil
-        return nil, nil, nil
+        return nil, nil, nil, nil
     end
     metrics.source_owner_cache_hits = metrics.source_owner_cache_hits + 1
-    return entry.state, entry.source_kind, entry.source_actor
+    return entry.state, entry.source_kind, entry.source_actor, entry.source_origin
 end
 
-local function remember_source_owner(cache, identity, state, source_kind, source_actor)
+local function remember_source_owner(cache, identity, state, source_kind, source_actor, source_origin)
     if cache == nil or identity == nil or identity == "" or state == nil or source_actor == nil then
         return
     end
@@ -717,6 +760,7 @@ local function remember_source_owner(cache, identity, state, source_kind, source
     entry.state = state
     entry.source_kind = source_kind
     entry.source_actor = source_actor
+    entry.source_origin = source_origin
     cache[identity] = entry
 
     local max_entries = math.max(64, math.floor(to_number(config.MaxSourceOwnerCacheEntries)))
@@ -732,19 +776,19 @@ end
 
 local function resolve_source_actor(candidate, utility, depth, seen, cache)
     if depth > 3 or not is_valid(candidate) then
-        return nil, nil, nil
+        return nil, nil, nil, nil
     end
     local identity = actor_address(candidate) or actor_full_name(candidate)
     if identity ~= "" and seen[identity] then
-        return nil, nil, nil
+        return nil, nil, nil, nil
     end
     if identity ~= "" then
         seen[identity] = true
     end
 
-    local cached_state, cached_kind, cached_actor = cached_source_owner(cache, identity)
+    local cached_state, cached_kind, cached_actor, cached_origin = cached_source_owner(cache, identity)
     if cached_state ~= nil then
-        return cached_state, cached_kind, cached_actor
+        return cached_state, cached_kind, cached_actor, cached_origin
     end
 
     -- A real Pal character exposes CharacterParameterComponent. Checking this
@@ -754,15 +798,25 @@ local function resolve_source_actor(candidate, utility, depth, seen, cache)
     if component_ok and is_valid(component) then
         local state = trainer_state(candidate, utility)
         if state ~= nil then
-            remember_source_owner(cache, identity, state, "pal", candidate)
-            return state, "pal", candidate
+            remember_source_owner(cache, identity, state, "pal", candidate, "trainer")
+            return state, "pal", candidate, "trainer"
+        end
+        local base_state, base_key = hooks.resolve_local_base_pal_state(candidate)
+        if base_state ~= nil then
+            metrics.base_pal_owner_resolutions = metrics.base_pal_owner_resolutions + 1
+            log(string.format(
+                "base Pal owner resolved source=%s base=%s",
+                actor_short_name(candidate), tostring(base_key)
+            ))
+            remember_source_owner(cache, identity, base_state, "pal", candidate, "base")
+            return base_state, "pal", candidate, "base"
         end
     end
 
     local state = state_from_player_actor(candidate, utility)
     if state ~= nil then
-        remember_source_owner(cache, identity, state, "player", candidate)
-        return state, "player", candidate
+        remember_source_owner(cache, identity, state, "player", candidate, "player")
+        return state, "player", candidate, "player"
     end
 
     -- Skill projectiles and unique ride weapons commonly keep the true source
@@ -770,21 +824,22 @@ local function resolve_source_actor(candidate, utility, depth, seen, cache)
     for _, property_name in ipairs({ "Owner", "Instigator", "InstigatorController", "OverrideNetworkOwner" }) do
         local nested_ok, nested = safe_property(candidate, property_name)
         if nested_ok and is_valid(nested) then
-            local nested_state, nested_kind, nested_source =
+            local nested_state, nested_kind, nested_source, nested_origin =
                 resolve_source_actor(nested, utility, depth + 1, seen, cache)
             if nested_state ~= nil then
-                remember_source_owner(cache, identity, nested_state, nested_kind, nested_source)
-                return nested_state, nested_kind, nested_source
+                remember_source_owner(
+                    cache, identity, nested_state, nested_kind, nested_source, nested_origin)
+                return nested_state, nested_kind, nested_source, nested_origin
             end
         end
     end
 
     local fallback_state = trainer_state(candidate, utility)
     if fallback_state ~= nil then
-        remember_source_owner(cache, identity, fallback_state, "pal", candidate)
-        return fallback_state, "pal", candidate
+        remember_source_owner(cache, identity, fallback_state, "pal", candidate, "trainer")
+        return fallback_state, "pal", candidate, "trainer"
     end
-    return nil, nil, nil
+    return nil, nil, nil, nil
 end
 
 local function resolve_damage_owner(event, utility, cache)
@@ -800,14 +855,22 @@ local function resolve_damage_owner(event, utility, cache)
     local seen = {}
     for _, candidate in ipairs(candidates) do
         if candidate ~= nil then
-            local state, source_kind, source_actor =
+            local state, source_kind, source_actor, source_origin =
                 resolve_source_actor(candidate, utility, 0, seen, cache)
             if state ~= nil then
-                return state, source_kind, source_actor
+                return state, source_kind, source_actor, source_origin
             end
         end
     end
-    return nil, nil, nil
+    return nil, nil, nil, nil
+end
+
+hooks.is_tablet_profile = function(value)
+    return tostring(value or config.TargetScope or "field") == "tablet"
+end
+
+hooks.is_boss_profile = function(value)
+    return tostring(value or config.TargetScope or "field") ~= "all"
 end
 
 local function actor_name_matches_boss_pattern(actor)
@@ -934,24 +997,32 @@ end
 
 local function get_boss_info(actor, utility)
     if not is_valid(actor) or actor_is_player_owned(actor, utility) then
-        return nil
+        return nil, "nonboss"
     end
 
     -- These are reflected bool properties on UPalStaticCharacterParameterComponent.
     -- Reading them avoids the crashing IsBossPal_Database/IsTowerBossPal UFunctions.
     local component_ok, component = safe_property(actor, "StaticCharacterParameterComponent")
     local is_boss = false
+    local tower_encounter_flag = false
+    local boss_flags_known = false
     if component_ok and is_valid(component) then
         local boss_ok, boss_value = safe_property(component, "IsBoss_Database")
         local tower_ok, tower_value = safe_property(component, "IsTowerBoss_Database")
-        is_boss = (boss_ok and bool_value(boss_value)) or (tower_ok and bool_value(tower_value))
+        tower_encounter_flag = tower_ok and bool_value(tower_value)
+        is_boss = (boss_ok and bool_value(boss_value)) or tower_encounter_flag
+        -- A missing reflected component/property is inconclusive, not proof
+        -- that the target is an ordinary Pal. Some encounter actors expose
+        -- their static Boss flags only after their runtime state settles.
+        boss_flags_known = boss_ok and boss_value ~= nil
+            and tower_ok and tower_value ~= nil
     end
 
     if not is_boss and config.UseBossNameFallback == true then
         is_boss = actor_name_matches_boss_pattern(actor)
     end
     if not is_boss then
-        return nil
+        return nil, boss_flags_known and "nonboss" or "unknown"
     end
 
     local full_name = actor_full_name(actor)
@@ -959,6 +1030,18 @@ local function get_boss_info(actor, utility)
         return nil
     end
     local short_name = actor_short_name(actor)
+    -- Some tower builds expose the main GYM character before the reflected
+    -- TowerBoss flag settles. Ordinary tower adds do not carry this identity.
+    local id_ok, id_value = safe_call(utility, "GetCharacterIDFromCharacter", actor)
+    local character_id = id_ok and text_value(id_value) or ""
+    local tower_identity = string.lower(full_name .. " " .. character_id)
+    -- IsTowerBoss_Database identifies every member of some hard-tower
+    -- encounters, including the summoned adds. Only the GYM identity belongs
+    -- to the actor that owns the encounter health bar. Using the broad flag as
+    -- the main-target lock therefore lets first-wave add damage survive for the
+    -- entire fight.
+    local is_tower_boss = string.find(tower_identity, "gym_", 1, true) ~= nil
+        or string.find(tower_identity, "_gym", 1, true) ~= nil
     local display_name = boss_display_name(actor, utility, short_name)
     local composite = composite_part_info(short_name)
     return {
@@ -966,11 +1049,14 @@ local function get_boss_info(actor, utility)
         address = actor_address(actor),
         name = tostring(display_name),
         is_boss = true,
+        is_tower_boss = is_tower_boss,
+        tower_encounter_flag = tower_encounter_flag,
+        character_id = character_id,
         composite_group = composite and composite.group or nil,
         composite_part = composite and composite.id or nil,
         composite_terminal = composite and composite.terminal or false,
         composite_anchor = composite and composite_anchor_address(actor) or nil,
-    }
+    }, "boss"
 end
 
 local function localized_character_name(character_id, utility, fallback)
@@ -1033,7 +1119,8 @@ local function pal_source_info(actor, utility)
             species = species,
         })
     end
-    return tostring(source_key or display), display, species, nickname
+    return tostring(source_key or display), display, species, nickname,
+        tostring(normalized_boss_id(character_id))
 end
 
 local function player_team_info(player_state, uid, fallback_name)
@@ -1053,42 +1140,6 @@ local function player_team_info(player_state, uid, fallback_name)
     return "solo:" .. tostring(guid_key(uid)), tr("solo_team", {
         player = tostring(fallback_name),
     })
-end
-
-local function send_participant_message(message, recipients)
-    local utility = get_pal_utility()
-    local world = find_world_context()
-    if utility == nil or world == nil then
-        log("participant message skipped: PalUtility or PalGameStateInGame unavailable")
-        return false
-    end
-
-    local chat_text = sanitize_utf8(message)
-    local receiver_uids = recipients or {}
-    if #receiver_uids == 0 then
-        return false
-    end
-
-    -- Palworld 1.0 expects TArray<FGuid>, not one FGuid per call. Passing a
-    -- single GUID is converted as an empty array, which makes the game treat
-    -- the message as global system chat. Repeating that call for N players
-    -- therefore broadcasts the same line N times. A Lua array of GUID structs
-    -- is converted by UE4SS to the required TArray in one UFunction call.
-    local ok, result = safe_call(
-        utility, "SendSystemToPlayerChat", world, chat_text, receiver_uids
-    )
-    if not ok then
-        log("participant message failed: " .. tostring(result))
-        return false
-    end
-    return true
-end
-
-local function announce(message, recipients)
-    local text = tostring(config.MessagePrefix or "[BossDPS]") .. " " .. tostring(message)
-    if send_participant_message(text, recipients) then
-        log(string.format("participant message recipients=%d: %s", #(recipients or {}), text))
-    end
 end
 
 local function format_integer(value)
@@ -1370,7 +1421,12 @@ local function refresh_equipped_waza(source, source_actor, force)
     end)
     if not iterated or count == 0 then return false end
     table.sort(code_list)
-    local equipped_fingerprint = table.concat(code_list, ",")
+    -- A tablet group is allowed to represent multiple workers only when all
+    -- three slots were read and resolved. A partial one/two-skill read is still
+    -- useful for hit categorisation, but it is not safe evidence for ×N.
+    local complete_loadout = count == 3 and #code_list == 3
+    local equipped_fingerprint = complete_loadout
+        and table.concat(code_list, ",") or nil
     if source.equipped_waza_fingerprint ~= nil
         and source.equipped_waza_fingerprint ~= equipped_fingerprint then
         -- Only an observed loadout change invalidates learned mappings. Action
@@ -1410,9 +1466,10 @@ local function refresh_equipped_waza(source, source_actor, force)
     )
     source.equipped_waza_refresh_at = now + refresh_seconds
     log(string.format(
-        "equipped-waza source=%s count=%d codes=%s",
+        "equipped-waza source=%s count=%d complete=%s codes=%s",
         source.name,
         count,
+        tostring(complete_loadout),
         table.concat(code_list, ",")
     ))
     return true
@@ -1593,6 +1650,116 @@ local function select_waza_marker(bucket, event)
     return newest, false
 end
 
+hooks.select_unique_linked_attacker_marker = function(bucket, event)
+    if bucket == nil or #bucket == 0 then return nil, false end
+    local now_clock = os.clock()
+    local signature = damage_marker_signature(event.diagnostic_fields)
+    local newest = nil
+    local unique_key = nil
+    for index = #bucket, 1, -1 do
+        local marker = bucket[index]
+        local age = now_clock - (tonumber(marker.clock) or now_clock)
+        if age > 2 then break end
+        if age >= -0.05 and marker.damage_info_key ~= nil
+            and marker.cast_id ~= nil and tostring(marker.cast_id) ~= ""
+            and (signature == nil or marker.signature == nil
+                or marker.signature == signature) then
+            local marker_key = tostring(marker.cast_id) .. "|"
+                .. tostring(math.floor(to_number(marker.id))) .. "|"
+                .. canonical_skill_name(marker.name or "")
+            if unique_key == nil then
+                unique_key = marker_key
+                newest = marker
+            elseif unique_key ~= marker_key then
+                return nil, true
+            end
+        end
+    end
+    return newest, false
+end
+
+hooks.remember_exact_pair_hit = function(event, source_kind)
+    if source_kind ~= "pal" or math.floor(to_number(event.api_version)) < 2 then
+        return
+    end
+    local fields = event.diagnostic_fields or {}
+    local code = canonical_skill_name(fields["waza.Name"] or "")
+    local waza_id = math.floor(to_number(fields["waza.ID"]))
+    local attribution_source = tostring(fields["attribution.Source"] or "")
+    -- The collector's post-effect batch candidate is bounded by one exact
+    -- attacker/defender OnAttack Waza observation. It is not an exact hit, but
+    -- it is strong enough to anchor the one trailing impact that Palworld
+    -- delivers about a second after the rest of the same ice-projectile batch.
+    local bounded_batch = attribution_source == "inferred_post_effect_pair_batch"
+    if code == "" or (waza_id <= 0 and fields["waza.ID"] == nil)
+        or attribution_source == ""
+        or (string.find(attribution_source, "^inferred_") ~= nil and not bounded_batch)
+        or attribution_source == "native_unresolved" then
+        return
+    end
+    local pair_key = waza_pair_key(event.attacker, event.defender)
+    if pair_key == nil or pair_key == "" then return end
+    local bucket = hooks.recent_exact_hits_by_pair[pair_key]
+    if bucket == nil then
+        bucket = {}
+        hooks.recent_exact_hits_by_pair[pair_key] = bucket
+    end
+    bucket[#bucket + 1] = {
+        id = waza_id,
+        name = code,
+        localized_name = fields["waza.LocalizedName"],
+        panel_cool_time = fields["waza.PanelCoolTime"],
+        cast_id = event.cast_key,
+        clock = os.clock(),
+        attribution_source = attribution_source,
+    }
+    while #bucket > 8 do table.remove(bucket, 1) end
+end
+
+hooks.select_recent_exact_pair_hit = function(event)
+    local pair_key = waza_pair_key(event.attacker, event.defender)
+    local bucket = pair_key ~= nil and hooks.recent_exact_hits_by_pair[pair_key] or nil
+    if bucket == nil or #bucket == 0 then return nil, false end
+    local now_clock = os.clock()
+    -- Live IcicleThrow/DoubleIcicleThrow final impacts arrive roughly
+    -- 1.0-1.2 seconds after their linked hit batch. The old 0.35-second
+    -- conflict window expired before those legitimate impacts were drained.
+    local window = math.max(2.0,
+        tonumber(config.SkillMarkerConflictSeconds) or 0.35)
+    local newest = nil
+    local unique_skill = nil
+    local unique_cast = nil
+    local cast_conflict = false
+    for index = #bucket, 1, -1 do
+        local marker = bucket[index]
+        local age = now_clock - (tonumber(marker.clock) or now_clock)
+        if age > window then break end
+        if age >= -0.05 then
+            local skill_key = tostring(math.floor(to_number(marker.id))) .. "|"
+                .. canonical_skill_name(marker.name or "")
+            if unique_skill == nil then
+                unique_skill = skill_key
+                unique_cast = tostring(marker.cast_id or "")
+                newest = marker
+            elseif unique_skill ~= skill_key then
+                return nil, true
+            elseif unique_cast ~= tostring(marker.cast_id or "") then
+                cast_conflict = true
+            end
+        end
+    end
+    if newest ~= nil and cast_conflict then
+        newest = {
+            id = newest.id,
+            name = newest.name,
+            localized_name = newest.localized_name,
+            panel_cool_time = newest.panel_cool_time,
+            cast_id = nil,
+        }
+    end
+    return newest, false
+end
+
 local function process_waza_marker(event)
     if not is_valid(event.attacker) then
         return
@@ -1635,6 +1802,7 @@ local function process_waza_marker(event)
     if metrics.waza_markers % 64 == 1 then
         prune_waza_markers(marker.at)
     end
+    return marker
 end
 
 local function select_damage_info_marker(event)
@@ -1788,6 +1956,227 @@ local function promote_action_record(event, record, source_label)
     )
 end
 
+local NATIVE_BOUND_ACTION_RULES = {
+    Unique_BlackCentaur_TwoSpearRushes = {
+        active_seconds = 6.0,
+        tail_seconds = 0.35,
+        hit_gap_seconds = 0.5,
+        contiguous_tail_seconds = 1.2,
+        contiguous_hit_gap_seconds = 1.0,
+    },
+    Unique_BlueThunderHorse_Tossin = {
+        active_min_seconds = 1.5,
+        active_seconds = 3.3,
+        tail_seconds = 0.0,
+        hit_gap_seconds = 0.0,
+        max_hits = 1,
+        allow_tail = false,
+    },
+}
+
+local function bound_action_is_equipped(record, source_profile)
+    if record == nil or source_profile == nil then return false end
+    local code = canonical_skill_name(record.code or "")
+    local waza_id = math.floor(to_number(record.waza_id))
+    return (waza_id > 0 and source_profile.equipped_waza_ids ~= nil
+            and source_profile.equipped_waza_ids[waza_id] == true)
+        or (code ~= "" and source_profile.equipped_waza_codes ~= nil
+            and source_profile.equipped_waza_codes[code] == true)
+end
+
+-- A few verified skills expose an exact Action/cast lifecycle while their native
+-- final damage callback carries no Waza, effect, DamageInfo or attack-filter
+-- identity. Bind only source-less Event-v2 hits from an equipped skill while its
+-- exact Action record is active. Flash Charge is restricted to the one live hit
+-- observed 2.189-2.550 seconds into each cast and never accepts an action tail.
+-- Twin Spears may keep its established binding for the usual short tail; its
+-- measured 0.847-second final gap is accepted only for the immediately
+-- consecutive native damage sequence. A completed action without an established
+-- Twin Spears binding is never guessed from time.
+hooks.infer_native_bound_action = function(
+    event, source_actor, source_kind, source_profile)
+    if source_kind ~= "pal" or not is_valid(source_actor)
+        or math.floor(to_number(event.api_version)) < 2
+        or event.evidence_kind ~= "unresolved_post_effect_timeout"
+        or source_profile == nil
+        or math.floor(to_number(source_profile.equipped_waza_count)) ~= 3 then
+        return false
+    end
+
+    local pair_key, actor_key = waza_pair_key(event.attacker, event.defender)
+    if pair_key == nil or actor_key == nil then return false end
+    local now = game_time_seconds()
+    local binding = native_action_bindings_by_pair[pair_key]
+    if binding ~= nil then
+        local record = binding.record
+        local code = canonical_skill_name(record and record.code or "")
+        local rule = NATIVE_BOUND_ACTION_RULES[code]
+        local ended_at = record and tonumber(record.ended_at) or nil
+        local started_at = record and tonumber(record.started_at) or nil
+        local active_age = started_at ~= nil and (now - started_at) or math.huge
+        local active_min = rule ~= nil
+            and (tonumber(rule.active_min_seconds) or 0) or 0
+        local tail_age = ended_at ~= nil and (now - ended_at) or nil
+        local hit_gap = now - (tonumber(binding.last_hit_at) or now)
+        local sequence = math.floor(to_number(event.sequence))
+        local last_sequence = math.floor(to_number(binding.last_sequence))
+        local contiguous_sequence = sequence > 0 and last_sequence > 0
+            and sequence == last_sequence + 1
+        local normal_gap = hit_gap >= 0 and hit_gap <= rule.hit_gap_seconds
+        local contiguous_gap = contiguous_sequence
+            and hit_gap >= 0
+            and hit_gap <= (tonumber(rule.contiguous_hit_gap_seconds)
+                or rule.hit_gap_seconds)
+        local tail_limit = contiguous_gap
+            and (tonumber(rule.contiguous_tail_seconds) or rule.tail_seconds)
+            or rule.tail_seconds
+        local max_hits = tonumber(rule.max_hits)
+        local hit_count = tonumber(binding.hit_count) or 0
+        if max_hits ~= nil and hit_count >= max_hits
+            and record ~= nil and record.actor_key == actor_key
+            and ended_at == nil and active_age >= active_min
+            and active_age <= rule.active_seconds then
+            return false
+        end
+        local binding_live = record ~= nil and record.actor_key == actor_key
+            and rule ~= nil and bound_action_is_equipped(record, source_profile)
+            and (max_hits == nil or hit_count < max_hits)
+            and (normal_gap or contiguous_gap)
+            and ((ended_at == nil and active_age >= active_min
+                    and active_age <= rule.active_seconds)
+                or (rule.allow_tail ~= false and tail_age ~= nil and tail_age >= 0
+                    and tail_age <= tail_limit))
+        if binding_live then
+            local source_label = ended_at == nil
+                and "inferred_native_bound_active_action"
+                or "inferred_native_bound_action_tail"
+            if promote_action_record(event, record, source_label) then
+                binding.last_hit_at = now
+                binding.last_sequence = sequence > 0 and sequence or nil
+                binding.hit_count = (tonumber(binding.hit_count) or 0) + 1
+                event.diagnostic_fields["native.EvidenceKind"] = event.evidence_kind
+                trace_skill_event(string.format(
+                    "native-hit-inferred-bound-action sequence=%s phase=%s waza=%s code=%s cast=%s",
+                    tostring(event.sequence or "none"),
+                    ended_at == nil and "active" or "tail",
+                    tostring(record.waza_id or "none"), tostring(code),
+                    tostring(record.cast_id or record.key or "none")
+                ))
+                return true
+            end
+        end
+        native_action_bindings_by_pair[pair_key] = nil
+    end
+
+    local selected = nil
+    for index = #action_record_order, 1, -1 do
+        local record = action_record_order[index].record
+        if record ~= nil and record.actor_key == actor_key
+            and record.ended_at == nil then
+            local code = canonical_skill_name(record.code or "")
+            local rule = NATIVE_BOUND_ACTION_RULES[code]
+            local started_at = tonumber(record.started_at)
+            local age = started_at ~= nil and (now - started_at) or math.huge
+            local active_min = rule ~= nil
+                and (tonumber(rule.active_min_seconds) or 0) or 0
+            if rule ~= nil and age >= active_min and age <= rule.active_seconds
+                and bound_action_is_equipped(record, source_profile) then
+                if selected ~= nil and selected ~= record then
+                    return false
+                end
+                selected = record
+            end
+        end
+    end
+    if selected == nil then return false end
+    local code = canonical_skill_name(selected.code or "")
+    if not promote_action_record(
+        event, selected, "inferred_native_bound_active_action") then
+        return false
+    end
+    native_action_bindings_by_pair[pair_key] = {
+        record = selected,
+        last_hit_at = now,
+        last_sequence = math.floor(to_number(event.sequence)) > 0
+            and math.floor(to_number(event.sequence)) or nil,
+        hit_count = 1,
+    }
+    event.diagnostic_fields["native.EvidenceKind"] = event.evidence_kind
+    trace_skill_event(string.format(
+        "native-hit-inferred-bound-action sequence=%s phase=active waza=%s code=%s cast=%s",
+        tostring(event.sequence or "none"), tostring(selected.waza_id or "none"),
+        tostring(code), tostring(selected.cast_id or selected.key or "none")
+    ))
+    return true
+end
+
+local NATIVE_DELAYED_ACTION_CODES = {
+    DoubleIcicleThrow = true,
+    IcicleThrow = true,
+}
+
+-- Some long-travel ice projectiles miss every exact effect/DamageInfo bridge:
+-- only their completed action and the eventual native final hit survive. Use
+-- the nearest equipped delayed-projectile action only when no different
+-- eligible skill ended inside the short action-conflict interval. A genuine
+-- overlap remains ambiguous and deliberately stays unresolved.
+hooks.infer_native_unique_delayed_action = function(
+    event, source_actor, source_kind, source_profile)
+    if source_kind ~= "pal" or not is_valid(source_actor)
+        or math.floor(to_number(event.api_version)) < 2
+        or event.evidence_kind ~= "unresolved_post_effect_timeout"
+        or source_profile == nil
+        or math.floor(to_number(source_profile.equipped_waza_count)) ~= 3 then
+        return false
+    end
+    local actor_key = diagnostic_actor_key(source_actor)
+    local recent = actor_key ~= nil and recent_actions_by_actor[actor_key] or nil
+    if recent == nil or #recent == 0 then return false end
+
+    local now = game_time_seconds()
+    local window = math.max(2, tonumber(config.SkillActionPostHitSeconds) or 10)
+    local conflict_window = math.max(0,
+        tonumber(config.SkillActionConflictSeconds) or 1.25)
+    local selected = nil
+    local selected_code = nil
+    for index = #recent, 1, -1 do
+        local candidate = recent[index]
+        local ended_at = tonumber(candidate.ended_at)
+        local age = ended_at ~= nil and (now - ended_at) or math.huge
+        if age > window then break end
+        if age >= 0 then
+            local code = canonical_skill_name(candidate.code or "")
+            local waza_id = math.floor(to_number(candidate.waza_id))
+            local equipped = (waza_id > 0 and source_profile.equipped_waza_ids ~= nil
+                    and source_profile.equipped_waza_ids[waza_id] == true)
+                or (code ~= "" and source_profile.equipped_waza_codes ~= nil
+                    and source_profile.equipped_waza_codes[code] == true)
+            if NATIVE_DELAYED_ACTION_CODES[code] == true and equipped then
+                if selected == nil then
+                    selected = candidate
+                    selected_code = code
+                elseif selected_code ~= code
+                    and math.abs((tonumber(selected.ended_at) or now) - ended_at)
+                        <= conflict_window then
+                    return false
+                end
+            end
+        end
+    end
+    if selected == nil then return false end
+    local promoted = promote_action_record(
+        event, selected, "inferred_native_unique_delayed_action")
+    if promoted then
+        event.diagnostic_fields["native.EvidenceKind"] = event.evidence_kind
+        trace_skill_event(string.format(
+            "native-hit-inferred-delayed-action sequence=%s waza=%s code=%s cast=%s",
+            tostring(event.sequence or "none"), tostring(selected.waza_id or "none"),
+            tostring(selected_code), tostring(selected.cast_id or selected.key or "none")
+        ))
+    end
+    return promoted
+end
+
 -- A completed equipped cast may still own a delayed shard, explosion or
 -- ground field after the Pal has started its filler attack. However, when the
 -- final damage signature exactly matches that filler attack, the current
@@ -1851,6 +2240,222 @@ local function apply_unique_equipped_signature(event, source_profile)
         "inferred_unique_equipped_signature",
         nil
     )
+end
+
+-- Native Event v2 normally fails closed when the final callback carries no
+-- exact Waza/effect identity. One narrow case is still strong enough to keep:
+-- the same attacker/defender pair just produced a DamageInfo-backed Waza
+-- marker that was already linked to one exact cast, and that Waza belongs to
+-- the Pal's complete three-slot loadout. The cast link remains authoritative
+-- after OnEndAction and after a newer skill begins; projectile travel and the
+-- native collector's bounded hold must not turn the old impact into either
+-- UNKNOWN or the current skill. Time only expires the pair marker here. It
+-- never chooses a cast, and an unlinked/conflicting marker still fails closed.
+local function infer_native_pair_cast_link(event, source_actor, source_kind, source_profile)
+    if source_kind ~= "pal" or not is_valid(source_actor)
+        or math.floor(to_number(event.api_version)) < 2
+        or event.evidence_kind ~= "unresolved_post_effect_timeout"
+        or source_profile == nil
+        or math.floor(to_number(source_profile.equipped_waza_count)) ~= 3 then
+        return false
+    end
+
+    local pair_key, attacker_key = waza_pair_key(event.attacker, event.defender)
+    local marker, marker_conflict = select_waza_marker(
+        pair_key ~= nil and recent_waza_by_pair[pair_key] or nil, event)
+    local source_label = "inferred_native_pair_cast_link"
+    if marker == nil and not marker_conflict then
+        marker, marker_conflict = hooks.select_unique_linked_attacker_marker(
+            attacker_key ~= nil and recent_waza_by_attacker[attacker_key] or nil,
+            event)
+        source_label = "inferred_native_attacker_unique_cast_link"
+    end
+    if marker == nil or marker_conflict or marker.damage_info_key == nil
+        or marker.cast_id == nil or tostring(marker.cast_id) == "" then
+        return false
+    end
+    local marker_age = os.clock() - (tonumber(marker.clock) or os.clock())
+    if marker_age < -0.05 or marker_age > 2 then
+        return false
+    end
+
+    local marker_code = canonical_skill_name(marker.name or "")
+    local marker_id = math.floor(to_number(marker.id))
+    local equipped = (marker_id > 0
+            and source_profile.equipped_waza_ids ~= nil
+            and source_profile.equipped_waza_ids[marker_id] == true)
+        or (marker_code ~= ""
+            and source_profile.equipped_waza_codes ~= nil
+            and source_profile.equipped_waza_codes[marker_code] == true)
+    if not equipped then
+        return false
+    end
+
+    marker.matches = (marker.matches or 0) + 1
+    local promoted = promote_inferred_waza(
+        event,
+        resolve_waza_metadata(marker_id, marker_code),
+        marker_id,
+        source_label,
+        marker.cast_id
+    )
+    if promoted then
+        event.diagnostic_fields["native.EvidenceKind"] = event.evidence_kind
+        trace_skill_event(string.format(
+            "native-hit-inferred-cast sequence=%s source=%s waza=%s code=%s cast=%s",
+            tostring(event.sequence or "none"), tostring(source_label), tostring(marker_id),
+            tostring(marker_code), tostring(marker.cast_id)
+        ))
+    end
+    return promoted
+end
+
+-- CommetRain constructs one child Commet DamageInfo per final meteor. Live
+-- captures consistently show each child marker about one second before its
+-- impact, while the equipped parent remains CommetRain. Match the oldest
+-- eligible unconsumed child marker so queued meteors are attributed in order,
+-- exactly once each. This is intentionally a named parent/child rule;
+-- no damage amount or generic recent-action timing participates.
+hooks.native_child_waza_parent_rules = {
+    Commet = {
+        child_id = 158,
+        parent_id = 177,
+        parent_code = "CommetRain",
+        min_delay_seconds = 0.75,
+        max_delay_seconds = 1.35,
+        -- Four-meteor live waves can place the final impact 4.08 seconds after
+        -- the last exact parent hit even though its own Commet marker is only
+        -- about 1.02 seconds old. Keep the parent proof through that tail.
+        parent_anchor_seconds = 4.25,
+    },
+}
+
+hooks.select_child_waza_parent_marker = function(event, rule)
+    local pair_key = waza_pair_key(event.attacker, event.defender)
+    local bucket = pair_key ~= nil and recent_waza_by_pair[pair_key] or nil
+    if bucket == nil or #bucket == 0 then return nil end
+    local now_clock = os.clock()
+    for index = 1, #bucket do
+        local marker = bucket[index]
+        local marker_code = canonical_skill_name(marker.name or "")
+        local marker_id = math.floor(to_number(marker.id))
+        local age = now_clock - (tonumber(marker.clock) or now_clock)
+        if (marker.matches or 0) == 0
+            and marker_code == "Commet"
+            and marker_id == rule.child_id
+            and age >= rule.min_delay_seconds
+            and age <= rule.max_delay_seconds then
+            return marker
+        end
+    end
+    return nil
+end
+
+hooks.select_child_waza_parent_anchor = function(event, rule)
+    local pair_key = waza_pair_key(event.attacker, event.defender)
+    local bucket = pair_key ~= nil and hooks.recent_exact_hits_by_pair[pair_key] or nil
+    if bucket == nil or #bucket == 0 then return nil end
+    local now_clock = os.clock()
+    local newest = nil
+    for index = #bucket, 1, -1 do
+        local marker = bucket[index]
+        local age = now_clock - (tonumber(marker.clock) or now_clock)
+        if age > rule.parent_anchor_seconds then break end
+        if age >= -0.05 then
+            local marker_code = canonical_skill_name(marker.name or "")
+            local marker_id = math.floor(to_number(marker.id))
+            if marker_code ~= rule.parent_code or marker_id ~= rule.parent_id then
+                return nil
+            end
+            newest = newest or marker
+        end
+    end
+    return newest
+end
+
+hooks.infer_native_child_waza_parent = function(
+    event, source_actor, source_kind, source_profile)
+    if source_kind ~= "pal" or not is_valid(source_actor)
+        or math.floor(to_number(event.api_version)) < 2
+        or event.evidence_kind ~= "unresolved_post_effect_timeout"
+        or source_profile == nil
+        or math.floor(to_number(source_profile.equipped_waza_count)) ~= 3 then
+        return false
+    end
+
+    local marker = hooks.select_child_waza_parent_marker(
+        event, hooks.native_child_waza_parent_rules.Commet)
+    if marker == nil then return false end
+    local rule = hooks.native_child_waza_parent_rules[
+        canonical_skill_name(marker.name or "")]
+    if rule == nil then return false end
+
+    local parent_equipped = source_profile.equipped_waza_ids ~= nil
+            and source_profile.equipped_waza_ids[rule.parent_id] == true
+        or source_profile.equipped_waza_codes ~= nil
+            and source_profile.equipped_waza_codes[rule.parent_code] == true
+    if not parent_equipped then return false end
+    local parent_anchor = hooks.select_child_waza_parent_anchor(event, rule)
+    if parent_anchor == nil then return false end
+
+    local promoted = promote_inferred_waza(
+        event,
+        resolve_waza_metadata(rule.parent_id, rule.parent_code),
+        rule.parent_id,
+        "inferred_child_waza_parent",
+        parent_anchor.cast_id
+    )
+    if promoted then
+        marker.matches = (marker.matches or 0) + 1
+        event.diagnostic_fields["inference.ChildWazaID"] = marker.id
+        event.diagnostic_fields["inference.ChildWazaName"] = marker.name
+        event.diagnostic_fields["native.EvidenceKind"] = event.evidence_kind
+        trace_skill_event(string.format(
+            "native-hit-inferred-child-waza sequence=%s child=%s/%s parent=%s/%s cast=%s",
+            tostring(event.sequence or "none"), tostring(marker.id),
+            tostring(marker.name), tostring(rule.parent_id),
+            tostring(rule.parent_code), tostring(parent_anchor.cast_id or "none")
+        ))
+    end
+    return promoted
+end
+
+hooks.infer_native_recent_exact_pair_hit = function(
+    event, source_actor, source_kind, source_profile)
+    if source_kind ~= "pal" or not is_valid(source_actor)
+        or math.floor(to_number(event.api_version)) < 2
+        or event.evidence_kind ~= "unresolved_post_effect_timeout"
+        or source_profile == nil
+        or math.floor(to_number(source_profile.equipped_waza_count)) ~= 3 then
+        return false
+    end
+    local marker, conflict = hooks.select_recent_exact_pair_hit(event)
+    if marker == nil or conflict then return false end
+    local marker_code = canonical_skill_name(marker.name or "")
+    local marker_id = math.floor(to_number(marker.id))
+    local equipped = (marker_id > 0
+            and source_profile.equipped_waza_ids ~= nil
+            and source_profile.equipped_waza_ids[marker_id] == true)
+        or (marker_code ~= ""
+            and source_profile.equipped_waza_codes ~= nil
+            and source_profile.equipped_waza_codes[marker_code] == true)
+    if not equipped then return false end
+    local promoted = promote_inferred_waza(
+        event,
+        resolve_waza_metadata(marker_id, marker_code),
+        marker_id,
+        "inferred_recent_exact_pair_hit",
+        marker.cast_id
+    )
+    if promoted then
+        event.diagnostic_fields["native.EvidenceKind"] = event.evidence_kind
+        trace_skill_event(string.format(
+            "native-hit-inferred-recent-exact-pair sequence=%s waza=%s code=%s cast=%s",
+            tostring(event.sequence or "none"), tostring(marker_id),
+            tostring(marker_code), tostring(marker.cast_id or "none")
+        ))
+    end
+    return promoted
 end
 
 local function attach_runtime_skill_evidence(event, source_actor, source_kind, source_profile)
@@ -1929,6 +2534,56 @@ local function attach_runtime_skill_evidence(event, source_actor, source_kind, s
                 skill_display_name(effect_evidence.code, "")
             event.diagnostic_fields["attribution.Source"] = "damage_causer_asset"
         end
+    end
+
+    -- When several final callbacks precede one exact attacker/defender
+    -- OnAttack callback, the native collector can carry that observed Waza as
+    -- a bounded candidate for the small batch. It is useful report evidence,
+    -- but deliberately remains inferred rather than exact because an older
+    -- delayed effect could theoretically overlap the same pair.
+    if math.floor(to_number(event.api_version)) >= 2
+        and event.evidence_kind == "post_effect_pair_batch_candidate"
+        and math.floor(to_number(event.waza_id)) > 0
+        and tostring(event.skill_code or "") ~= "" then
+        local promoted = promote_inferred_waza(
+            event,
+            resolve_waza_metadata(event.waza_id, event.skill_code),
+            event.waza_id,
+            "inferred_post_effect_pair_batch",
+            tostring(event.cast_id or "") ~= "" and event.cast_id or nil
+        )
+        if promoted then
+            event.diagnostic_fields["native.EvidenceKind"] = event.evidence_kind
+            trace_skill_event(string.format(
+                "native-hit-inferred-batch sequence=%s candidate=%s waza=%s cast=%s",
+                tostring(event.sequence or "none"),
+                tostring(event.skill_code or "none"),
+                tostring(event.waza_id or "none"),
+                tostring(event.cast_id or "none")
+            ))
+            return
+        end
+    end
+
+    if hooks.infer_native_child_waza_parent(
+        event, source_actor, source_kind, source_profile) then
+        return
+    end
+    if infer_native_pair_cast_link(
+        event, source_actor, source_kind, source_profile) then
+        return
+    end
+    if hooks.infer_native_recent_exact_pair_hit(
+        event, source_actor, source_kind, source_profile) then
+        return
+    end
+    if hooks.infer_native_bound_action(
+        event, source_actor, source_kind, source_profile) then
+        return
+    end
+    if hooks.infer_native_unique_delayed_action(
+        event, source_actor, source_kind, source_profile) then
+        return
     end
 
     -- Native Event v2 is the fail-closed attribution lane. If the collector
@@ -2225,13 +2880,13 @@ local function action_lifecycle_details(action)
 end
 
 local function get_target_info(actor, utility, target_scope)
-    local boss_info = get_boss_info(actor, utility)
+    local boss_info, boss_classification = get_boss_info(actor, utility)
     if boss_info ~= nil then
-        return boss_info
+        return boss_info, "boss"
     end
-    if tostring(target_scope or config.TargetScope or "boss") ~= "all"
+    if hooks.is_boss_profile(target_scope)
         or not is_valid(actor) or actor_is_player_owned(actor, utility) then
-        return nil
+        return nil, boss_classification
     end
 
     -- The global hook also sees non-character damage. Open-world mode accepts
@@ -2241,17 +2896,17 @@ local function get_target_info(actor, utility, target_scope)
     local static_ok, static_component = safe_property(actor, "StaticCharacterParameterComponent")
     if not ((character_ok and is_valid(character_component))
         or (static_ok and is_valid(static_component))) then
-        return nil
+        return nil, "nonboss"
     end
     local full_name = actor_full_name(actor)
-    if full_name == "" then return nil end
+    if full_name == "" then return nil, "unknown" end
     local short_name = actor_short_name(actor)
     return {
         key = full_name,
         address = actor_address(actor),
         name = tostring(boss_display_name(actor, utility, short_name)),
         is_boss = false,
-    }
+    }, "target"
 end
 
 local function prune_action_records()
@@ -2661,60 +3316,16 @@ local function session_recipients(session)
     return recipients
 end
 
-local run_message_pump
-
-local function schedule_message_pump(delay)
-    local ok, err = pcall(function()
-        ExecuteInGameThreadWithDelay(delay, run_message_pump)
-    end)
-    if not ok then
-        message_pump_running = false
-        metrics.errors = metrics.errors + 1
-        log("failed to schedule broadcast pump: " .. tostring(err))
-    end
-end
-
-run_message_pump = function()
-    if message_head > message_tail then
-        message_head = 1
-        message_tail = 0
-        message_pump_running = false
-        return
-    end
-
-    local message = pending_messages[message_head]
-    pending_messages[message_head] = nil
-    message_head = message_head + 1
-    local sent, send_err = pcall(announce, message.text, message.recipients)
-    if not sent then
-        metrics.errors = metrics.errors + 1
-        log("delayed broadcast error: " .. tostring(send_err))
-    end
-
-    if message_head <= message_tail then
-        local interval = math.max(0, math.floor(to_number(config.MessageIntervalMilliseconds)))
-        schedule_message_pump(interval)
-    else
-        message_head = 1
-        message_tail = 0
-        message_pump_running = false
-    end
-end
-
 local function queue_messages(messages, recipients)
-    if #(recipients or {}) == 0 then
-        return
-    end
-    for _, message in ipairs(messages) do
-        message_tail = message_tail + 1
-        pending_messages[message_tail] = {
-            text = tostring(message),
-            recipients = recipients,
-        }
-    end
-    if not message_pump_running and message_head <= message_tail then
-        message_pump_running = true
-        schedule_message_pump(0)
+    -- Compatibility sink for legacy report-building branches. Player-visible
+    -- chat output was removed; the shipped runtime has no game chat API call.
+    -- The injected sink exists only in the offline Lua regression harness so
+    -- the old aggregation formatters can remain covered without restoring a
+    -- Palworld chat path.
+    if rawget(_G, "__BOSS_DPS_TEST") == true then
+        assert(type(__BOSS_DPS_TEST_MESSAGE_SINK) == "function",
+            "offline report formatter sink is missing")
+        __BOSS_DPS_TEST_MESSAGE_SINK(messages, recipients)
     end
 end
 
@@ -3147,6 +3758,137 @@ local function candidate_timing(session, source, candidate)
     return timing
 end
 
+-- Tablet battles can involve many base workers. Keep the authoritative
+-- per-individual rows for F3, but build a compact species + exact-loadout
+-- comparison for the live HUD. The three equipped skills are shown even when
+-- one dealt zero damage; basic/unresolved damage remains in the group total and
+-- in the individual detail rows instead of being mislabelled as a skill.
+hooks.aggregate_tablet_sources = function(detail_sources, duration, total_damage)
+    local groups = {}
+    for source_index, source in ipairs(detail_sources or {}) do
+        local species_key = tostring(source.species_id or source.species or source.name or source_index)
+        local loadout_key = tostring(source.loadout_fingerprint or "")
+        if loadout_key == "" then
+            -- An unreadable loadout must never merge two possibly different
+            -- workers into a fabricated common three-skill result.
+            loadout_key = "individual:" .. tostring(source_index)
+        end
+        local group_key = source.kind == "pal"
+            and ("pal:" .. species_key .. "|loadout:" .. loadout_key)
+            or ("source:" .. tostring(source_index))
+        local group = groups[group_key]
+        if group == nil then
+            group = {
+                kind = source.kind == "pal" and "pal_group" or source.kind,
+                name = source.kind == "pal" and tostring(source.species or source.name) or source.name,
+                species = source.species,
+                species_id = source.species_id,
+                loadout_fingerprint = source.loadout_fingerprint,
+                count = 0,
+                damage = 0,
+                dps = 0,
+                damage_share = 0,
+                hits = 0,
+                skills = {},
+                skill_map = {},
+            }
+            groups[group_key] = group
+        end
+        group.count = group.count + 1
+        group.damage = group.damage + (tonumber(source.damage) or 0)
+        group.hits = group.hits + math.max(0, math.floor(tonumber(source.hits) or 0))
+        for _, skill in ipairs(source.skills or {}) do
+            if source.kind ~= "pal" or tostring(skill.category or "skill") == "skill" then
+                local skill_key = tostring(skill.internal_code or skill.name or "UNKNOWN")
+                local combined = group.skill_map[skill_key]
+                if combined == nil then
+                    combined = {
+                        name = skill.name,
+                        runtime_name = skill.runtime_name,
+                        internal_code = skill.internal_code,
+                        category = skill.category,
+                        damage = 0,
+                        encounter_dps = 0,
+                        hits = 0,
+                        casts = 0,
+                        hit_casts = 0,
+                        zero_damage_casts = 0,
+                        pending_casts = 0,
+                        lifecycle_complete = 0,
+                        display_even_zero = true,
+                    }
+                    group.skill_map[skill_key] = combined
+                end
+                combined.damage = combined.damage + (tonumber(skill.damage) or 0)
+                combined.hits = combined.hits
+                    + math.max(0, math.floor(tonumber(skill.hits) or 0))
+                combined.casts = combined.casts
+                    + math.max(0, math.floor(tonumber(skill.casts) or 0))
+                combined.hit_casts = combined.hit_casts
+                    + math.max(0, math.floor(tonumber(skill.hit_casts) or 0))
+                combined.zero_damage_casts = combined.zero_damage_casts
+                    + math.max(0, math.floor(tonumber(skill.zero_damage_casts) or 0))
+                combined.pending_casts = combined.pending_casts
+                    + math.max(0, math.floor(tonumber(skill.pending_casts) or 0))
+                combined.lifecycle_complete = combined.lifecycle_complete
+                    + math.max(0, math.floor(tonumber(skill.lifecycle_complete) or 0))
+            end
+        end
+        if source.kind == "pal" and tostring(source.loadout_fingerprint or "") ~= "" then
+            for code in string.gmatch(tostring(source.loadout_fingerprint), "[^,]+") do
+                if group.skill_map[code] == nil then
+                    group.skill_map[code] = {
+                        name = skill_display_name(code, ""),
+                        runtime_name = "",
+                        internal_code = code,
+                        category = "skill",
+                        damage = 0,
+                        encounter_dps = 0,
+                        hits = 0,
+                        casts = 0,
+                        hit_casts = 0,
+                        zero_damage_casts = 0,
+                        pending_casts = 0,
+                        lifecycle_complete = 0,
+                        display_even_zero = true,
+                    }
+                end
+            end
+        end
+    end
+
+    local result = ranked_damage_entries(groups)
+    local species_group_counts = {}
+    for _, group in ipairs(result) do
+        if group.kind == "pal_group" then
+            local species_key = tostring(group.species_id or group.species or group.name)
+            species_group_counts[species_key] = (species_group_counts[species_key] or 0) + 1
+        end
+    end
+    local species_group_indexes = {}
+    for _, group in ipairs(result) do
+        if group.kind == "pal_group" then
+            local species_key = tostring(group.species_id or group.species or group.name)
+            if (species_group_counts[species_key] or 0) > 1 then
+                local variant = (species_group_indexes[species_key] or 0) + 1
+                species_group_indexes[species_key] = variant
+                group.name = tostring(group.name) .. " " .. string.char(64 + math.min(26, variant))
+            end
+        end
+        group.dps = group.damage / duration
+        group.damage_share = total_damage > 0 and group.damage * 100 / total_damage or 0
+        local ranked_skills = ranked_damage_entries(group.skill_map)
+        for index = 1, math.min(3, #ranked_skills) do
+            local skill = ranked_skills[index]
+            skill.encounter_dps = skill.damage / duration
+            skill.damage_per_cast = skill.casts > 0 and skill.damage / skill.casts or nil
+            group.skills[#group.skills + 1] = skill
+        end
+        group.skill_map = nil
+    end
+    return result
+end
+
 local function diagnostic_snapshot(session, state, reason)
     local finished_at = session.finished_game_at
     local now = finished_at or game_time_seconds()
@@ -3161,16 +3903,26 @@ local function diagnostic_snapshot(session, state, reason)
         encounter_dps = session.total_damage / duration,
         include_player = config.IncludePlayerDamage == true,
         measurement_mode = session.manual == true and "manual" or "target",
+        test_profile = tostring(session.target_scope or "field"),
         target_count = session.target_count or 1,
         language = translator_code,
         sources = {},
+        detail_sources = {},
     }
     for _, source in ipairs(ranked_damage_entries(session.diagnostic_sources or {})) do
         local source_row = {
             kind = source.kind,
             name = source.name,
+            species = source.species,
+            species_id = source.species_id,
+            nickname = source.nickname,
+            loadout_fingerprint = source.equipped_waza_fingerprint,
+            is_base_pal = source.is_base_pal == true,
+            count = 1,
             damage = source.damage,
             dps = source.damage / duration,
+            damage_share = session.total_damage > 0
+                and source.damage * 100 / session.total_damage or 0,
             hits = source.hits or 0,
             skills = {},
         }
@@ -3217,8 +3969,12 @@ local function diagnostic_snapshot(session, state, reason)
                 lifecycle_complete = timing.action_stats and timing.action_stats.count or 0,
             }
         end
-        snapshot.sources[#snapshot.sources + 1] = source_row
+        snapshot.detail_sources[#snapshot.detail_sources + 1] = source_row
     end
+    snapshot.sources = hooks.is_tablet_profile(snapshot.test_profile)
+        and hooks.aggregate_tablet_sources(
+            snapshot.detail_sources, duration, session.total_damage)
+        or snapshot.detail_sources
     return snapshot
 end
 
@@ -3258,16 +4014,12 @@ local function log_candidate_casts(session, source, candidate, timing)
     end
 end
 
-local function finish_skill_diagnostics(session, duration, reason, recipients)
+local function finish_skill_diagnostics(session, duration, reason)
     -- Untagged hits remain unresolved through final reporting. Do not reconcile
     -- them from BasePower/element signatures learned from other hits.
     publish_skill_hud(session, "finished", reason)
     local sources = ranked_damage_entries(session.diagnostic_sources)
     local candidate_total = 0
-    local translator_code = get_translator().code
-    local chat_rows = {}
-    local chat_candidate_count = 0
-    local chat_maximum = math.max(0, math.floor(to_number(config.SkillDiagnosticChatMaxRows)))
     log(string.format(
         "diagnostic-summary-begin boss=%s reason=%s duration=%d damage=%s sources=%d include_player=%s",
         session.name,
@@ -3299,7 +4051,6 @@ local function finish_skill_diagnostics(session, duration, reason, recipients)
             local share = source.damage > 0 and candidate.damage * 100 / source.damage or 0
             local average = candidate.hits > 0 and candidate.damage / candidate.hits or 0
             local timing = candidate_timing(session, source, candidate)
-            local display_name = diagnostic_skill_display_name(candidate, translator_code)
             log(string.format(
                 "diagnostic-candidate boss=%s source_kind=%s source=%s rank=%d candidate=%s localized=%s damage=%s share=%.1f encounter_dps=%s hits=%d avg_hit=%s casts=%d hit_casts=%d avg_cast_damage=%s panel_cd=%s actual_interval=%s interval_min=%s interval_max=%s panel_delta=%s action_duration=%s action_duration_min=%s action_duration_max=%s action_dps=%s reuse_gap=%s hit_window=%s lifecycle_coverage=%d/%d causer=%s class=%s fields=%s actor=%s",
                 session.name,
@@ -3335,78 +4086,6 @@ local function finish_skill_diagnostics(session, duration, reason, recipients)
                 candidate.source_full_name
             ))
             log_candidate_casts(session, source, candidate, timing)
-            if chat_candidate_count < chat_maximum then
-                chat_candidate_count = chat_candidate_count + 1
-                if translator_code == "zh-TW" then
-                    chat_rows[#chat_rows + 1] = string.format(
-                        "%s｜技能 #%d %s｜傷害 %s｜占比 %.1f%%｜整場DPS %s｜命中 %d｜平均每擊 %s",
-                        source.name, rank, display_name,
-                        format_integer(candidate.damage), share,
-                        format_integer(candidate.damage / duration),
-                        candidate.hits, format_integer(average)
-                    )
-                    chat_rows[#chat_rows + 1] = string.format(
-                        "↳ 觀測施放 %d次（命中%d）｜每次傷害 %s｜面板CD %s秒｜實際開始間隔 %s｜較面板 %s秒",
-                        timing.cast_count, timing.hit_cast_count,
-                        decimal(timing.average_cast_damage), decimal(timing.panel_cool_time),
-                        stats_text(timing.interval_stats, translator_code),
-                        timing.panel_delta ~= nil and string.format("%+.1f", timing.panel_delta) or "—"
-                    )
-                    chat_rows[#chat_rows + 1] = string.format(
-                        "↳ 完整動作 %s｜單次施放DPS %s｜再用空窗 %s｜首末命中窗 %s｜完整計時 %d/%d",
-                        stats_text(timing.action_stats, translator_code), decimal(timing.action_dps),
-                        stats_text(timing.reuse_gap_stats, translator_code),
-                        stats_text(timing.hit_window_stats, translator_code),
-                        timing.action_stats and timing.action_stats.count or 0,
-                        timing.cast_count
-                    )
-                elseif translator_code == "zh-CN" then
-                    chat_rows[#chat_rows + 1] = string.format(
-                        "%s｜技能 #%d %s｜伤害 %s｜占比 %.1f%%｜整场DPS %s｜命中 %d｜平均每击 %s",
-                        source.name, rank, display_name,
-                        format_integer(candidate.damage), share,
-                        format_integer(candidate.damage / duration),
-                        candidate.hits, format_integer(average)
-                    )
-                    chat_rows[#chat_rows + 1] = string.format(
-                        "↳ 观测施放 %d次（命中%d）｜每次伤害 %s｜面板CD %s秒｜实际开始间隔 %s｜较面板 %s秒",
-                        timing.cast_count, timing.hit_cast_count,
-                        decimal(timing.average_cast_damage), decimal(timing.panel_cool_time),
-                        stats_text(timing.interval_stats, translator_code),
-                        timing.panel_delta ~= nil and string.format("%+.1f", timing.panel_delta) or "—"
-                    )
-                    chat_rows[#chat_rows + 1] = string.format(
-                        "↳ 完整动作 %s｜单次施放DPS %s｜再用空窗 %s｜首末命中窗 %s｜完整计时 %d/%d",
-                        stats_text(timing.action_stats, translator_code), decimal(timing.action_dps),
-                        stats_text(timing.reuse_gap_stats, translator_code),
-                        stats_text(timing.hit_window_stats, translator_code),
-                        timing.action_stats and timing.action_stats.count or 0,
-                        timing.cast_count
-                    )
-                else
-                    chat_rows[#chat_rows + 1] = string.format(
-                        "%s | skill #%d %s | damage %s | share %.1f%% | encounter DPS %s | hits %d | avg %s",
-                        source.name, rank, display_name,
-                        format_integer(candidate.damage), share,
-                        format_integer(candidate.damage / duration),
-                        candidate.hits, format_integer(average)
-                    )
-                    chat_rows[#chat_rows + 1] = string.format(
-                        "↳ observed casts %d (hit %d) | damage/cast %s | panel CD %ss | actual start interval %s | delta %ss",
-                        timing.cast_count, timing.hit_cast_count,
-                        decimal(timing.average_cast_damage), decimal(timing.panel_cool_time),
-                        stats_text(timing.interval_stats, translator_code), decimal(timing.panel_delta)
-                    )
-                    chat_rows[#chat_rows + 1] = string.format(
-                        "↳ full action %s | cast DPS %s | reuse gap %s | hit window %s | timing coverage %d/%d",
-                        stats_text(timing.action_stats, translator_code), decimal(timing.action_dps),
-                        stats_text(timing.reuse_gap_stats, translator_code),
-                        stats_text(timing.hit_window_stats, translator_code),
-                        timing.action_stats and timing.action_stats.count or 0,
-                        timing.cast_count
-                    )
-                end
-            end
         end
     end
     log(string.format(
@@ -3416,42 +4095,6 @@ local function finish_skill_diagnostics(session, duration, reason, recipients)
         tostring(config.DumpDamageSchema == true)
     ))
 
-    local message
-    if translator_code == "zh-TW" then
-        message = string.format(
-            "傷害驗證完成：%s｜納入傷害 %s｜來源 %d個｜技能／武器候選 %d個｜請保留 UE4SS.log",
-            session.name,
-            format_integer(session.total_damage),
-            #sources,
-            candidate_total
-        )
-    elseif translator_code == "zh-CN" then
-        message = string.format(
-            "伤害验证完成：%s｜纳入伤害 %s｜来源 %d个｜技能/武器候选 %d个｜请保留 UE4SS.log",
-            session.name,
-            format_integer(session.total_damage),
-            #sources,
-            candidate_total
-        )
-    else
-        message = string.format(
-            "Damage diagnostics complete: %s | damage %s | sources %d | candidates %d | keep UE4SS.log",
-            session.name,
-            format_integer(session.total_damage),
-            #sources,
-            candidate_total
-        )
-    end
-    local chat_mode = tostring(config.SkillDiagnosticChatMode or "off")
-    if chat_mode == "summary" then
-        queue_messages({ message }, recipients)
-    elseif chat_mode == "full" then
-        local messages = { message }
-        for _, row in ipairs(chat_rows) do
-            messages[#messages + 1] = row
-        end
-        queue_messages(messages, recipients)
-    end
 end
 
 local function bind_session_actor(session, boss_info)
@@ -3459,6 +4102,9 @@ local function bind_session_actor(session, boss_info)
     session.actor_keys = session.actor_keys or {}
     session.actor_parts_by_address = session.actor_parts_by_address or {}
     session.actor_parts_by_key = session.actor_parts_by_key or {}
+    session.actor_target_profiles_by_address =
+        session.actor_target_profiles_by_address or {}
+    session.actor_target_profiles_by_key = session.actor_target_profiles_by_key or {}
     session.composite_parts_seen = session.composite_parts_seen or {}
     session.native_target_keys = session.native_target_keys or {}
 
@@ -3481,11 +4127,23 @@ local function bind_session_actor(session, boss_info)
         session.actor_addresses[boss_info.address] = true
         session_addresses[boss_info.address] = session
         session.actor_parts_by_address[boss_info.address] = part
+        session.actor_target_profiles_by_address[boss_info.address] = {
+            is_tower_boss = boss_info.is_tower_boss == true,
+            tower_encounter_flag = boss_info.tower_encounter_flag == true,
+            character_id = boss_info.character_id,
+            key = boss_info.key,
+        }
     end
     if boss_info.key ~= nil and boss_info.key ~= "" then
         session.actor_keys[boss_info.key] = true
         session_actor_keys[boss_info.key] = session
         session.actor_parts_by_key[boss_info.key] = part
+        session.actor_target_profiles_by_key[boss_info.key] = {
+            is_tower_boss = boss_info.is_tower_boss == true,
+            tower_encounter_flag = boss_info.tower_encounter_flag == true,
+            character_id = boss_info.character_id,
+            address = boss_info.address,
+        }
     end
 end
 
@@ -3495,11 +4153,23 @@ local function unbind_session_actor(session, address, key)
         if session.actor_addresses ~= nil then
             session.actor_addresses[address] = nil
         end
+        if session.actor_parts_by_address ~= nil then
+            session.actor_parts_by_address[address] = nil
+        end
+        if session.actor_target_profiles_by_address ~= nil then
+            session.actor_target_profiles_by_address[address] = nil
+        end
     end
     if key ~= nil and key ~= "" then
         session_actor_keys[key] = nil
         if session.actor_keys ~= nil then
             session.actor_keys[key] = nil
+        end
+        if session.actor_parts_by_key ~= nil then
+            session.actor_parts_by_key[key] = nil
+        end
+        if session.actor_target_profiles_by_key ~= nil then
+            session.actor_target_profiles_by_key[key] = nil
         end
     end
 end
@@ -3541,11 +4211,6 @@ local function finish_session(session, reason)
     end
     session.finished = true
     session.finished_game_at = game_time_seconds()
-    if session.manual == true
-        and tostring(session.target_scope or "boss") == "boss"
-        and (reason == "defeated" or reason == "captured") then
-        hooks.manual_boss_result_locked = true
-    end
     sessions[session.key] = nil
     for address in pairs(session.actor_addresses or {}) do
         session_addresses[address] = nil
@@ -3564,7 +4229,7 @@ local function finish_session(session, reason)
     local recipients = session_recipients(session)
     hooks.log_native_diagnostic_status("session-" .. tostring(reason))
     if config.SkillDiagnosticsOnly == true then
-        finish_skill_diagnostics(session, duration, reason, recipients)
+        finish_skill_diagnostics(session, duration, reason)
         return
     end
     local messages = {}
@@ -3699,7 +4364,7 @@ local function start_session(boss_info)
         name = boss_info.name,
         manual = boss_info.manual == true,
         manual_armed = boss_info.manual == true,
-        target_scope = tostring(config.TargetScope or "boss"),
+        target_scope = tostring(config.TargetScope or "field"),
         target_count = 0,
         composite_group = boss_info.composite_group,
         composite_anchor = boss_info.composite_anchor,
@@ -3708,6 +4373,10 @@ local function start_session(boss_info)
         actor_keys = {},
         actor_parts_by_address = {},
         actor_parts_by_key = {},
+        actor_target_profiles_by_address = {},
+        actor_target_profiles_by_key = {},
+        native_target_keys = {},
+        native_target_profiles = {},
         started_at = now,
         started_game_at = game_time_seconds(),
         last_damage_at = now,
@@ -3739,7 +4408,6 @@ local function ensure_manual_session()
     local key = "__PAL_SKILL_DPS_MANUAL_TEST__"
     local session = sessions[key]
     if session ~= nil and session.finished ~= true then return session end
-    if hooks.manual_boss_result_locked then return nil end
     return start_session({
         key = key,
         name = tr("hud_manual_test"),
@@ -3755,7 +4423,8 @@ local function record_damage(
     source_actor,
     utility,
     hit_count,
-    event
+    event,
+    source_origin
 )
     hit_count = math.max(1, math.floor(to_number(hit_count)))
     if session.manual == true and session.manual_armed == true then
@@ -3821,11 +4490,13 @@ local function record_damage(
         local source_key = session.pal_actor_sources[actor_source_key]
         local pal = source_key ~= nil and session.pal_sources[source_key] or nil
         local display_name
+        local species, nickname, species_id
         if pal ~= nil then
             display_name = pal.name
             metrics.pal_metadata_cache_hits = metrics.pal_metadata_cache_hits + 1
         else
-            source_key, display_name = pal_source_info(source_actor, utility)
+            source_key, display_name, species, nickname, species_id =
+                pal_source_info(source_actor, utility)
             if actor_source_key ~= nil and actor_source_key ~= "" then
                 session.pal_actor_sources[actor_source_key] = source_key
             end
@@ -3835,6 +4506,10 @@ local function record_damage(
             pal = {
                 kind = "pal",
                 name = display_name,
+                species = species,
+                species_id = species_id,
+                nickname = nickname,
+                is_base_pal = source_origin == "base",
                 owner_name = entry.name,
                 owner_uid_key = key,
                 team_key = entry.team_key,
@@ -3846,6 +4521,7 @@ local function record_damage(
             session.pal_sources[source_key] = pal
         end
         pal.name = display_name
+        pal.is_base_pal = pal.is_base_pal == true or source_origin == "base"
         pal.owner_name = entry.name
         pal.team_key = entry.team_key
         pal.damage = pal.damage + damage
@@ -3857,6 +4533,7 @@ local function record_damage(
         session.diagnostic_sources["pal:" .. tostring(source_key)] = pal
         refresh_equipped_waza(pal, source_actor)
         attach_runtime_skill_evidence(event, source_actor, source_kind, pal)
+        hooks.remember_exact_pair_hit(event, source_kind)
         record_skill_candidate(session, pal, event, source_actor, damage, hit_count)
         session.last_hitter_label = tr("pal_killer", {
             player = entry.name,
@@ -3890,35 +4567,6 @@ local function record_damage(
         attach_runtime_skill_evidence(event, source_actor, source_kind, player_source)
         record_skill_candidate(session, player_source, event, source_actor, damage, hit_count)
         session.last_hitter_label = entry.name
-    end
-
-    if session.start_announced ~= true then
-        session.start_announced = true
-        local diagnostics_chat_enabled = config.SkillDiagnosticsOnly ~= true
-            or tostring(config.SkillDiagnosticChatMode or "off") ~= "off"
-        if config.BroadcastStart ~= false and diagnostics_chat_enabled then
-            local start_message = tr("start", { boss = session.name })
-            if config.SkillDiagnosticsOnly == true then
-                local code = get_translator().code
-                if code == "zh-TW" then
-                    start_message = (config.IncludePlayerDamage == true
-                        and "開始記錄技能／武器候選："
-                        or "開始記錄帕魯技能候選：") .. session.name
-                elseif code == "zh-CN" then
-                    start_message = (config.IncludePlayerDamage == true
-                        and "开始记录技能/武器候选："
-                        or "开始记录帕鲁技能候选：") .. session.name
-                else
-                    start_message = (config.IncludePlayerDamage == true
-                        and "Skill/weapon diagnostics started: "
-                        or "Pal skill diagnostics started: ") .. session.name
-                end
-            end
-            queue_messages(
-                { start_message },
-                session_recipients(session)
-            )
-        end
     end
 
     if config.TraceDamage == true then
@@ -4019,16 +4667,42 @@ local function publish_progress()
     end
 end
 
+local function release_non_boss_target(address)
+    if address == nil then
+        return
+    end
+    local entry = non_boss_addresses[address]
+    if type(entry) == "table" and entry.target_key ~= nil then
+        classify_native_target(entry.target_key, "unknown")
+    end
+    non_boss_addresses[address] = nil
+end
+
+local function release_all_non_boss_targets()
+    local addresses = {}
+    for address in pairs(non_boss_addresses) do
+        addresses[#addresses + 1] = address
+    end
+    for _, address in ipairs(addresses) do
+        release_non_boss_target(address)
+    end
+end
+
 local function non_boss_cache_hit(address)
     if address == nil then
         return false
     end
-    local expires_at = non_boss_addresses[address]
-    if expires_at == nil then
+    local entry = non_boss_addresses[address]
+    if entry == nil then
         return false
     end
+    local expires_at = type(entry) == "table" and entry.expires_at or entry
     if expires_at < os.time() then
-        non_boss_addresses[address] = nil
+        -- The native collector keeps classifications until Lua explicitly
+        -- releases them. Expiring only this Lua table used to leave the native
+        -- target permanently suppressed, so a transient early false-negative
+        -- could hide an entire Boss fight.
+        release_non_boss_target(address)
         return false
     end
     metrics.non_boss_cache_hits = metrics.non_boss_cache_hits + 1
@@ -4040,8 +4714,93 @@ local function remember_non_boss(address, native_target_key)
         return
     end
     local ttl = math.max(5, math.floor(to_number(config.NonBossCacheSeconds)))
-    non_boss_addresses[address] = os.time() + ttl
+    non_boss_addresses[address] = {
+        expires_at = os.time() + ttl,
+        target_key = native_target_key,
+    }
+    unknown_boss_targets[address] = nil
+    metrics.target_classification_nonboss = metrics.target_classification_nonboss + 1
     classify_native_target(native_target_key, "nonboss")
+end
+
+-- A hard tower can mark its summoned adds as ordinary Bosses even though only
+-- the GYM/TowerBoss character owns the encounter health bar. If an add is hit
+-- first, keep that result only tentatively: once the tower main is observed,
+-- discard the pre-main total and lock this F2 window to tower-main actors.
+-- Ordinary world-multiplier Bosses never set this lock and continue to share
+-- one manual test exactly as before.
+hooks.lock_manual_tower_target = function(session)
+    if session == nil or session.manual ~= true or session.tower_boss_locked == true then
+        return
+    end
+    local discarded_damage = math.max(0, to_number(session.total_damage))
+    session.tower_boss_locked = true
+
+    local excluded = {}
+    for address in pairs(session.actor_addresses or {}) do
+        local profile = session.actor_target_profiles_by_address
+            and session.actor_target_profiles_by_address[address] or nil
+        if profile == nil or profile.is_tower_boss ~= true then
+            excluded[#excluded + 1] = {
+                address = address,
+                key = profile and profile.key or nil,
+            }
+        end
+    end
+    for _, target in ipairs(excluded) do
+        unbind_session_actor(session, target.address, target.key)
+        remember_non_boss(target.address, nil)
+    end
+
+    local excluded_native = {}
+    for target_key in pairs(session.native_target_keys or {}) do
+        local profile = session.native_target_profiles
+            and session.native_target_profiles[target_key] or nil
+        if profile == nil or profile.kind ~= "tower" then
+            excluded_native[#excluded_native + 1] = {
+                key = target_key,
+                address = profile and profile.address or nil,
+            }
+        end
+    end
+    for _, target in ipairs(excluded_native) do
+        remember_non_boss(target.address, target.key)
+        if target.address == nil then
+            classify_native_target(target.key, "nonboss")
+        end
+        session.native_target_keys[target.key] = nil
+        session.native_target_profiles[target.key] = nil
+    end
+
+    if discarded_damage > 0 then
+        session.manual_armed = true
+        session.started_at = os.time()
+        session.started_game_at = game_time_seconds()
+        session.last_damage_at = session.started_at
+        session.last_progress_at = session.started_at
+        session.total_damage = 0
+        session.progress_damage = 0
+        session.previous_progress_dps = 0
+        session.progress_index = 0
+        session.target_count = 0
+        session.contributors = {}
+        session.teams = {}
+        session.pal_sources = {}
+        session.pal_actor_sources = {}
+        session.player_sources = {}
+        session.diagnostic_sources = {}
+        session.player_state_entries = {}
+        session.skill_candidate_count = 0
+        session.last_hitter_label = nil
+        session.start_announced = false
+        if skill_hud ~= nil then
+            skill_hud:clear()
+        end
+    end
+    log(string.format(
+        "tower main locked; excluded pre-tower add damage=%s",
+        format_integer(discarded_damage)
+    ))
 end
 
 local function process_damage_event(event)
@@ -4050,20 +4809,11 @@ local function process_damage_event(event)
         return
     end
 
-    -- A finalized manual Boss result owns both the data model and main HUD.
-    -- Check this before reading live settings so switching F3 to automatic/all
-    -- cannot route a tail hit into a new session and replace the snapshot.
-    if hooks.manual_boss_result_locked then
-        metrics.ignored_post_finish_damage = metrics.ignored_post_finish_damage
-            + math.max(1, math.floor(to_number(event.hits)))
-        return
-    end
-
     local address = actor_address(event.defender)
     local active_manual = sessions["__PAL_SKILL_DPS_MANUAL_TEST__"]
     local effective_target_scope = active_manual ~= nil
-        and tostring(active_manual.target_scope or "boss")
-        or tostring(config.TargetScope or "boss")
+        and tostring(active_manual.target_scope or "field")
+        or tostring(config.TargetScope or "field")
     local scope_all = effective_target_scope == "all"
     if not scope_all and non_boss_cache_hit(address) then
         return
@@ -4085,9 +4835,20 @@ local function process_damage_event(event)
         return
     end
 
+    if session ~= nil and session.manual == true and session.tower_boss_locked == true then
+        local profile = (address ~= nil and session.actor_target_profiles_by_address
+                and session.actor_target_profiles_by_address[address])
+            or (session.actor_target_profiles_by_key
+                and session.actor_target_profiles_by_key[key])
+        if profile == nil or profile.is_tower_boss ~= true then
+            remember_non_boss(address, event.target_key)
+            return
+        end
+    end
+
     -- Resolve the owner before opening an all-world/manual test. This prevents
     -- wild-vs-wild combat elsewhere in the world from creating phantom rows.
-    local state, source_kind, source_actor = resolve_damage_owner(
+    local state, source_kind, source_actor, source_origin = resolve_damage_owner(
         event,
         utility,
         session and session.source_owner_cache or global_source_owner_cache
@@ -4102,20 +4863,71 @@ local function process_damage_event(event)
         )
         return
     end
+    -- The encounter type is selected explicitly in F3. Trainerless base
+    -- workers belong only to the tablet lane; field/dungeon tests cannot
+    -- silently absorb nearby base combat merely because the target is a Boss.
+    if source_origin == "base" and not hooks.is_tablet_profile(effective_target_scope) then
+        return
+    end
 
     local target_info = nil
     if session == nil then
-        target_info = get_target_info(event.defender, utility, effective_target_scope)
+        local target_classification
+        target_info, target_classification = get_target_info(
+            event.defender, utility, effective_target_scope)
         if target_info == nil then
-            if not scope_all then remember_non_boss(address, event.target_key) end
+            local manually_armed_boss_profile = not scope_all
+                and hooks.is_boss_profile(effective_target_scope)
+                and (active_manual ~= nil
+                    or tostring(config.MeasurementMode or "target") == "manual")
+            if not manually_armed_boss_profile
+                and target_classification == "nonboss" then
+                remember_non_boss(address, event.target_key)
+            elseif not scope_all then
+                -- During an explicitly armed Boss test, even readable false
+                -- flags can be the encounter actor's pre-initialized defaults.
+                -- Keep both false and unreadable flags retryable; otherwise one
+                -- early callback can poison the native target for the fight.
+                metrics.target_classification_unknown =
+                    metrics.target_classification_unknown + 1
+                local pending_key = address or key
+                local attempts = (unknown_boss_targets[pending_key] or 0) + 1
+                unknown_boss_targets[pending_key] = attempts
+                -- Keep enough evidence for a live diagnosis without flooding
+                -- the UE4SS log during a sustained multi-hit attack.
+                if attempts == 1 or attempts == 10 or attempts == 100 then
+                    log(string.format(
+                        "Boss target classification pending target=%s attempts=%d native=%s",
+                        actor_short_name(event.defender),
+                        attempts,
+                        tostring(event.target_key or "none")
+                    ))
+                end
+            end
             return
+        end
+        unknown_boss_targets[address or key] = nil
+
+        if target_info.tower_encounter_flag == true or target_info.is_tower_boss == true then
+            log(string.format(
+                "tower target classified target=%s character_id=%s encounter_flag=%s main=%s native=%s",
+                actor_short_name(event.defender),
+                tostring(target_info.character_id or "none"),
+                tostring(target_info.tower_encounter_flag == true),
+                tostring(target_info.is_tower_boss == true),
+                tostring(event.target_key or "none")
+            ))
         end
 
         if active_manual ~= nil or tostring(config.MeasurementMode or "target") == "manual" then
             session = active_manual or ensure_manual_session()
             if session == nil then
-                metrics.ignored_post_finish_damage = metrics.ignored_post_finish_damage
-                    + math.max(1, math.floor(to_number(event.hits)))
+                return
+            end
+            if target_info.is_tower_boss == true then
+                hooks.lock_manual_tower_target(session)
+            elseif session.tower_boss_locked == true then
+                remember_non_boss(address, event.target_key)
                 return
             end
             local already_bound = (target_info.address ~= nil
@@ -4144,7 +4956,18 @@ local function process_damage_event(event)
     end
     if event.target_key ~= nil then
         session.native_target_keys = session.native_target_keys or {}
+        session.native_target_profiles = session.native_target_profiles or {}
         session.native_target_keys[event.target_key] = true
+        local bound_profile = (address ~= nil and session.actor_target_profiles_by_address
+                and session.actor_target_profiles_by_address[address])
+            or (session.actor_target_profiles_by_key
+                and session.actor_target_profiles_by_key[key])
+        session.native_target_profiles[event.target_key] = {
+            kind = ((target_info ~= nil and target_info.is_tower_boss == true)
+                    or (bound_profile ~= nil and bound_profile.is_tower_boss == true))
+                and "tower" or "boss",
+            address = address,
+        }
         classify_native_target(event.target_key, "boss")
     end
 
@@ -4157,7 +4980,8 @@ local function process_damage_event(event)
         source_actor or event.attacker,
         utility,
         event.hits,
-        event
+        event,
+        source_origin
     )
 end
 
@@ -4318,7 +5142,7 @@ local function process_finish_event(event)
             -- captured character at different argument positions.
             local address = actor_address(actor)
             if address ~= nil then
-                non_boss_addresses[address] = nil
+                release_non_boss_target(address)
             end
             local key = is_valid(actor) and actor_full_name(actor) or nil
             session = address ~= nil and session_addresses[address] or nil
@@ -4334,32 +5158,11 @@ local function process_finish_event(event)
     end
     if session ~= nil then
         if session.manual == true then
-            local part = (matched_address ~= nil and session.actor_parts_by_address[matched_address])
-                or (matched_key ~= nil and session.actor_parts_by_key[matched_key])
-            local nonterminal_part = event.reason == "defeated"
-                and part ~= nil and part.terminal ~= true
-            local boss_scope = tostring(session.target_scope or "boss") == "boss"
-            if boss_scope and not nonterminal_part
-                and (event.reason == "defeated" or event.reason == "captured") then
-                log(string.format(
-                    "manual boss test finalized reason=%s target=%s",
-                    tostring(event.reason), tostring(matched_key or matched_address)
-                ))
-                finish_session(session, event.reason)
-                return
-            end
             unbind_session_actor(session, matched_address, matched_key)
-            if nonterminal_part then
-                log(string.format(
-                    "manual boss phase ended target=%s; recording remains active",
-                    tostring(matched_key or matched_address)
-                ))
-            else
-                log(string.format(
-                    "manual non-boss target ended reason=%s target=%s; recording remains active",
-                    tostring(event.reason), tostring(matched_key or matched_address)
-                ))
-            end
+            log(string.format(
+                "manual target ended reason=%s target=%s; recording remains active until reset",
+                tostring(event.reason), tostring(matched_key or matched_address)
+            ))
             return
         elseif event.reason == "defeated" and session.composite_group ~= nil then
             local part = (matched_address ~= nil and session.actor_parts_by_address[matched_address])
@@ -4706,15 +5509,22 @@ local function capture_captured(...)
 end
 
 local function cleanup_sessions()
+    local now = os.time()
+    local expired_non_boss = {}
+    for address, expires_at in pairs(non_boss_addresses) do
+        local expires = type(expires_at) == "table"
+            and expires_at.expires_at or expires_at
+        if expires < now then
+            expired_non_boss[#expired_non_boss + 1] = address
+        end
+    end
+    for _, address in ipairs(expired_non_boss) do
+        release_non_boss_target(address)
+    end
+
     local timeout = math.max(0, math.floor(to_number(config.InactivityTimeoutSeconds)))
     if timeout <= 0 then
         return
-    end
-    local now = os.time()
-    for address, expires_at in pairs(non_boss_addresses) do
-        if expires_at < now then
-            non_boss_addresses[address] = nil
-        end
     end
     local expired = {}
     for _, session in pairs(sessions) do
@@ -4760,8 +5570,11 @@ local function activate_final_damage_hook()
 end
 
 local function reset_skill_diagnostics()
-    hooks.manual_boss_result_locked = false
     hooks.log_native_diagnostic_status("before-reset")
+    -- F2 starts a new measurement contract. Negative target classifications
+    -- from an earlier encounter must not survive into the next test.
+    release_all_non_boss_targets()
+    unknown_boss_targets = {}
     if type(BossDPSNativeResetEvents) == "function" then
         local ok, err = pcall(BossDPSNativeResetEvents)
         if not ok then
@@ -4787,11 +5600,13 @@ local function reset_skill_diagnostics()
     end
     recent_waza_by_pair = {}
     recent_waza_by_attacker = {}
+    hooks.recent_exact_hits_by_pair = {}
     global_source_owner_cache = {}
     action_records = {}
     action_record_order = {}
     recent_actions_by_actor = {}
     delayed_effect_bindings = {}
+    native_action_bindings_by_pair = {}
     source_chain:reset()
     metrics.trace_events = 0
     if skill_hud ~= nil then
@@ -5200,20 +6015,18 @@ local function register_hooks()
 
     if hooks.damage and hooks.death then
         log(string.format(
-            "loaded v0.5.19-core-hud; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s chat_mode=%s waza_hook=%s action_hooks=%s/%s effect_hook=%s filter_hook=%s effect_attack_hooks=%d local_only=%s; captured_hooks=%d",
+            "loaded v0.5.27-commet-rain-child-hits; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s waza_hook=%s action_hooks=%s/%s effect_hook=%s filter_hook=%s effect_attack_hooks=%d; captured_hooks=%d",
             hooks.damage_mode,
             tostring(config.EnableDPSRecording ~= false),
             tostring(config.EnableSkillDiagnostics == true),
             tostring(config.SkillDiagnosticsOnly == true),
             tostring(config.IncludePlayerDamage == true),
-            tostring(config.SkillDiagnosticChatMode or "off"),
             tostring(hooks.waza == true),
             tostring(hooks.action_begin == true),
             tostring(hooks.action_end == true),
             tostring(hooks.effect_initialize == true),
             tostring(hooks.attack_filter == true),
             hooks.effect_attack_count,
-            tostring(config.LocalOnlyMessages == true),
             hooks.captured_count
         ))
     else
@@ -5263,6 +6076,7 @@ if rawget(_G, "__BOSS_DPS_TEST") == true then
         publish_progress = publish_progress,
         publish_current_skill_hud = publish_current_skill_hud,
         reset_skill_diagnostics = reset_skill_diagnostics,
+        process_waza_marker = process_waza_marker,
         cast_hit_quality = hooks.cast_quality.summarize,
         group_unlinked_hits_by_cast_window = hooks.cast_quality.group_unlinked_hits_by_cast_window,
         skill_display_name = skill_display_name,

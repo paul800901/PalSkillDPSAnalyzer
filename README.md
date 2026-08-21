@@ -1,29 +1,28 @@
-# PalSkillDPSAnalyzer v0.5.19-core-hud
+# PalSkillDPSAnalyzer v0.5.27-commet-rain-child-hits
 
-Palworld 1.0 單機用 UE4SS 傷害驗證 Mod。它不是玩家排行榜，而是專門測量帕魯對 Boss 造成的技能傷害：預設接受競技場／高塔／地城／石板等封閉戰鬥 Boss，以及大世界有 Boss／Alpha 標記的頭目；普通野怪與基地混戰不納入預設正式統計。首頁只保留技能名稱、總傷、DPS、占比與測試時間；施放與 Hit 細節放在 F3 第二頁。
+Palworld 1.0 單機用 UE4SS 傷害驗證 Mod。它不是玩家排行榜，而是專門測量帕魯對 Boss 造成的技能傷害。F3 明確分成「野外／副本 Boss」與「石板 Boss」兩種測試，不由模組自動混判；普通野怪與未選用石板模式的基地混戰不納入正式統計。
 
 人物傷害預設關閉。需要測試武器時，可在另一場戰鬥中開啟人物來源；能辨識武器／投射物就分桶，不能辨識時保留為未知人物武器，不猜名稱。
 
 ## 獨立技能 DPS 面板
 
-第一次有效命中後，畫面左側安全區會開啟縮小至 85% 的透明置頂 HUD；聊天輸出預設關閉。戰鬥儀表按累計傷害由高到低排列，只顯示技能名稱、累計傷害、DPS、占比與測試時間。按 `F3` 開啟／關閉遊戲內原生設定面板，使用滑鼠切換「設定」與「本次測試詳情」分頁；施放次數、有傷／無傷施放、總命中段數、每次施放命中段數、單次施放命中段數最低／平均／最高（含無傷施放）、本次遊戲最高單次施放段數與理論最高命中段數都留在第二頁。
+第一次有效命中後，畫面左側安全區會開啟縮小至 85% 的透明置頂 HUD；模組完全不向遊戲聊天室送出任何資料，也沒有聊天輸出設定。野外／副本模式維持技能名稱、累計傷害、DPS、占比與測試時間。石板模式則改成簡化戰報：依「種類＋三技能配招」分組，同種同配招顯示 `×N`，同種不同配招分成 A／B 組；每組只顯示三技能占比數字與長條。主 HUD 固定只保留傷害最高的三組，其餘以提示導向 `F3`。F3 有三個同層分頁：「設定」、「分組百分比」完整列出所有配招組；第三頁「本次測試詳情」保留原有每隻帕魯的實際傷害、DPS、施放與 Hit 詳情。
 
-預設是「手動 Boss 測試區間」：按 `F2` 可安全歸零並重新待命，直到第一下對可辨識 Boss 的有效命中才開始計時；Boss 階段切換不會提前結算，最終 Boss 死亡或捕捉成功的瞬間會凍結傷害、時間與 DPS 快照。主 HUD 的完整快照不會逾時消失或因 F3 設定改動而重設，會原值保留到下一次 `F2`；死亡後才抵達的技能尾段傷害也不會另開新場覆蓋結果。切換成「所有野生帕魯」時則不因目標死亡凍結，會持續累計到再次按 `F2`。競技場內 Boss 與大世界 Boss 標記目標都會接受；普通野生帕魯預設排除。
+預設是「手動測試區間＋野外／副本 Boss」：按 `F2` 可安全歸零並重新待命，直到第一下有效 Boss 傷害才開始計時；基地派駐帕魯在此模式會被排除。要測召喚石板戰，先在 F3 把「測試類型」切到「石板 Boss」，再按 `F2` 開始新測試。困難塔主只統計具有 `GYM` 角色身分、實際擁有塔主血條的主體；塔內小怪即使也帶 Boss／TowerBoss 資料旗標仍會排除。世界倍率產生的多隻真正 Boss 仍會持續累計，直到下一次 `F2` 才清空。
 
 實機已確認目前 Palworld／UE4SS 會在 Lua 動態 UMG 與 `PrintString` 路徑造成 GameThread 存取違規。顯示層因此隔離成隨附的 Windows WPF 程序：Lua 只寫入本機 UTF-8 結構化狀態檔，不再從傷害回呼呼叫 Unreal UI。面板只在 Palworld 位於前景時顯示，遊戲關閉後約 10 秒自行退出。
 
-目前 `v0.5.19` 保留嚴格的技能來源規則：只有引擎提供可可靠對接的 Waza、效果或來源鏈證據才進入具名技能桶；多筆候選、來源衝突、逾時或物件世代不符仍維持「未辨識傷害」。全程不按傷害大小、目前／最近動作、`BasePower`＋元素或三格技能猜測。灼燒與中毒維持獨立狀態傷害方向。使用 `F2` 隨時開始新測試（傷害歸零），使用 `F3` 開啟原生設定與本次測試詳情：
+目前 `v0.5.27` 保留嚴格的技能來源規則：引擎可直接對接的 Waza、效果或來源鏈列為精確歸屬；若同一隻帕魯對同一 Boss 僅有 2–4 筆最終傷害先到、隨後只有一個引擎 `OnAttack` Waza 來源，則進入該技能桶但明確標成「推定」。極寒雙星與鑽石星辰另允許同目標已連結 Hit 承接約 1.2 秒後的最後爆炸；完全缺少來源時，也只接受最近唯一、無鄰近衝突的這兩種已完成配裝動作。雙槍一閃若已在同一攻擊者／目標建立施放綁定，可承接 1 秒內且原生傷害序號緊接上一段的最後 Hit；中間插入任何其他原生傷害事件就不補接。閃雷衝鋒只在同一帕魯／目標的精確 Action 仍進行中、開始後 1.5–3.3 秒內接收第一筆無來源 Hit；每次施放最多一筆且不接受尾段。隕星雨則把每個 `Commet` 子技能標記一對一歸入已裝備的 `CommetRain` 父技能，只接受約 1 秒後的同目標命中且每個標記僅能使用一次。其他較大批次、來源衝突、逾時或物件世代不符仍維持「未辨識傷害」。石板模式中的基地派駐帕魯必須同時具有非空基地 ID，且目前群組必須等於本機玩家公會。全程不按傷害大小、倍率＋元素或三格技能反推。
 
 - 顯示語言（跟隨遊戲／17 種指定語言）
 - 技能 DPS 面板開關
 - 人物／武器傷害（預設關閉）
 - 手動測試區間／每個目標自動分場
-- Boss 與頭目（預設）／所有野生帕魯（僅額外診斷）
+- 野外／副本 Boss（預設）／石板 Boss
 - 完整／精簡資料密度（預設精簡長條）
 - 內部英文技能代碼（預設不顯示）
 - 左／右安全區、左上／右上位置與 75%／85%／100%／115% 縮放
 - 自動分場的戰後結果顯示時間
-- 聊天輸出關閉／摘要／完整
 - `F2` 開始新測試（歸零並在第一下命中開始計時）
 
 手動設定保存在 `Scripts/config.lua`。完整逐次施放證據仍會寫入 `UE4SS.log`：
@@ -34,7 +33,7 @@ Palworld 1.0 單機用 UE4SS 傷害驗證 Mod。它不是玩家排行榜，而�
 [PalSkillDPSAnalyzer] diagnostic-cast boss=... candidate=... cast=... damage=... hits=... action_duration=... cast_dps=... hit_window=... lifecycle=...
 ```
 
-帕魯攻擊使用每次施放、技能效果實例、父子效果、`AttackFilter.Waza`、Blueprint OnAttack 與最終 OnDamage 的精確來源鏈。原生 Event v2 中，沒有精確來源的命中直接顯示「未辨識傷害」；即時三格裝備、目前／最近動作、`BasePower` 與元素只保留為診斷資訊，不得決定正式技能桶。三格外的內建補招只有在引擎提供直接 Waza 證據時才標示為「普攻｜技能名稱」。解包證據與來源鏈計畫見 `docs/SKILL_EFFECT_ATTRIBUTION.md` 與 `docs/ATTRIBUTION_HOOK_PROBE_PLAN.md`。
+帕魯攻擊使用每次施放、技能效果實例、父子效果、`AttackFilter.Waza`、Blueprint OnAttack 與最終 OnDamage 的精確來源鏈。原生 Event v2 中，沒有精確來源的命中原則上顯示「未辨識傷害」；僅針對已實機確認具有長飛行／落地延遲的極寒雙星與鑽石星辰，允許同目標近期已連結 Hit 或唯一無衝突的已完成配裝動作補接，並明確標示為推定。即時三格裝備、一般目前／最近動作、`BasePower` 與元素不得單獨決定技能桶。三格外的內建補招只有在引擎提供直接 Waza 證據時才標示為「普攻｜技能名稱」。解包證據與來源鏈計畫見 `docs/SKILL_EFFECT_ATTRIBUTION.md` 與 `docs/ATTRIBUTION_HOOK_PROBE_PLAN.md`。
 
 ## 預設測試模式
 
@@ -42,9 +41,8 @@ Palworld 1.0 單機用 UE4SS 傷害驗證 Mod。它不是玩家排行榜，而�
 config.EnableSkillDiagnostics = true
 config.SkillDiagnosticsOnly = true
 config.MeasurementMode = "manual"
-config.TargetScope = "boss"
+config.TargetScope = "field"
 config.IncludePlayerDamage = false
-config.SkillDiagnosticChatMode = "off"
 config.EnableSkillDPSHUD = true
 config.EnableExternalHUD = true
 config.ExternalHUDAutoLaunch = true
@@ -68,12 +66,12 @@ Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\
 powershell -ExecutionPolicy Bypass -File .\workshop\build_workshop.ps1
 ```
 
-輸出位於 `workshop/dist/PalSkillDPSAnalyzerSP-Workshop-v0.5.19.zip`。專案保留獨立的 `Info.json`、PackageName 與 Workshop Published File ID，不會覆蓋上游 Mod；套件包含 Lua、遊戲內 CommonUI 主介面 PAK 與 LogicMods 啟動 PAK。本版已通過完整離線測試，以及 Palworld v0.5.19 的 F3 滑鼠操作與 Boss 最終快照實機驗收。
+候選套件輸出位於 `workshop/dist/PalSkillDPSAnalyzerSP-Workshop-v0.5.27.zip`。專案保留獨立的 `Info.json`、PackageName 與 Workshop Published File ID，不會覆蓋上游 Mod；套件包含 Lua、遊戲內 CommonUI 主介面 PAK 與 LogicMods 啟動 PAK。Steam Workshop 公開版目前仍是 v0.5.26；v0.5.27 先供本機實機驗證。
 
 ## 驗證流程
 
 1. 啟用本 Mod 與 UE4SS Experimental。
-2. 進入世界後按 F2 歸零，再使用帕魯攻擊一隻競技場／石板 Boss 或有 Boss 標記的大世界頭目；計時從第一下可接受 Boss 傷害開始。
+2. 野外／副本測試保留預設類型後按 F2；石板測試先在 F3 選「石板 Boss」，再按 F2，讓基地帕魯攻擊召喚 Boss。
 3. 確認左側即時儀表沒有左右跳動，且晶鑽之雨沒有再被歸到暗能彈。
 4. 測試後保留 `UE4SS.log`，供技能建立、最終傷害與動作生命週期逐筆核對。
 5. 以原生 capabilities 中的 `attack_matches`、`exact_hits`、`unresolved_hits`，以及 `diagnostic-candidate`／`diagnostic-cast` 行確認精確來源鏈與顯示結果；沒有 exact 證據的命中不得進入具名技能桶。
@@ -82,12 +80,12 @@ powershell -ExecutionPolicy Bypass -File .\workshop\build_workshop.ps1
 ## 適用邊界
 
 - 正式目標：Palworld 1.0 Windows 單人世界。
-- Boss 房間、塔主、地城／競技場 Boss、召喚／石板 Boss 與有 Boss／Alpha 標記的大世界頭目是正式目標；普通野生帕魯、基地群戰與 PvP 不是預設正式統計範圍。
+- Boss 房間、塔主、地城／競技場 Boss 與有 Boss／Alpha 標記的大世界頭目使用「野外／副本 Boss」；召喚／石板 Boss 使用「石板 Boss」。普通野生帕魯與 PvP 不納入。
 - 持續傷害、燃燒、中毒、同一泛用投射物承載多種技能等情況，可能先進入未知或合併候選。
 - 「面板 CD」來自遊戲技能資料庫；「實際開始間隔」是相鄰施放開始到開始，會包含 AI 選招、移動、距離與其他技能造成的等待，不等同純冷卻。
 - 「完整動作」只統計成功捕捉開始與結束的施放。報表的 `完整計時 n/m` 是覆蓋率；未完整捕捉時只保留首末命中窗，不把它冒充動作時間。
 - 原生 Event v2 逐擊事件在歸因前不聚合；若原生收集器不可用，Lua 相容模式仍可統計總傷，但不保證重疊持續技能的精確歸因。
-- `F3` 開啟／關閉遊戲內原生面板；用滑鼠切換設定頁與第二頁本次測試詳細資料。不註冊 `F1`，避免與其他常見 Mod 衝突。
+- `F3` 開啟／關閉遊戲內原生面板；用滑鼠直接切換「設定」、「分組百分比」與「本次測試詳情」三個同層分頁。不註冊 `F1`，避免與其他常見 Mod 衝突。
 - 外部 HUD 會以本機心跳自我檢查並在中止後重新啟動；例外記錄位於 `Scripts/skill_dps_hud_overlay.log`。
 - 外部 HUD 需要 Windows PowerShell 5.1 與 WPF（Windows 10／11 內建）；若安全軟體阻擋 PowerShell，統計核心與 `UE4SS.log` 仍可運作，但畫面面板不會出現。
 
@@ -97,7 +95,7 @@ powershell -ExecutionPolicy Bypass -File .\workshop\build_workshop.ps1
 powershell -ExecutionPolicy Bypass -File .\tests\run_all.ps1
 ```
 
-離線測試不連線、不啟動或修改 Palworld。涉及新版 Palworld／UE4SS 的改版仍需重新進行受控 Boss 實機驗證；本版已完成該項驗收。
+離線測試不連線、不啟動或修改 Palworld。涉及新版 Palworld／UE4SS 的改版仍需重新進行受控 Boss 實機驗證；v0.5.24 已完成困難塔主 GYM 篩選、延遲冰技能尾段與總傷守恆的本機實戰驗收。
 
 原生 C++ 來源收集器的工具鏈、鎖定版本、Git 邊界與 Workshop 發佈分工，見
 [`docs/NATIVE_DEVELOPMENT.md`](docs/NATIVE_DEVELOPMENT.md)。Visual Studio 與第三方

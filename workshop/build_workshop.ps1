@@ -36,7 +36,7 @@ $expectedWorkshopTitle = -join @(
 )
 if ($info.ModName -ne $expectedWorkshopTitle) { throw "Unexpected Workshop ModName" }
 if ($info.PackageName -ne "PalSkillDPSAnalyzerSP") { throw "Unexpected Workshop PackageName" }
-if ($info.Version -ne "0.5.19") { throw "Unexpected Workshop version" }
+if ($info.Version -ne "0.5.27") { throw "Unexpected Workshop version" }
 if ($info.Dependencies -notcontains "UE4SSExperimentalPW") { throw "UE4SS dependency missing" }
 $installRuleTypes = @($info.InstallRule | ForEach-Object { $_.Type })
 if ($info.InstallRule.Count -ne 3 -or $installRuleTypes -notcontains "Lua" -or $installRuleTypes -notcontains "Paks" -or $installRuleTypes -notcontains "LogicMods") {
@@ -46,19 +46,18 @@ if ($info.InstallRule.Count -ne 3 -or $installRuleTypes -notcontains "Lua" -or $
 $configPath = Join-Path $contentScripts "config.lua"
 $configText = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8
 foreach ($requiredSetting in @(
-    "config.LocalOnlyMessages = false",
     "config.EnableSkillDiagnostics = true",
     "config.SkillDiagnosticsOnly = true",
     "config.EnableSkillSourceChain = true",
     "config.EnableBoundedSkillInference = true",
     "config.IncludePlayerDamage = false",
-    'config.SkillDiagnosticChatMode = "off"',
     "config.SkillDiagnosticLogNativeProbeReport = false",
     "config.SkillDiagnosticNativeStatusIntervalHits = 0",
     "config.EnableSkillDPSHUD = true",
     'config.MeasurementMode = "manual"',
-    'config.TargetScope = "boss"',
-    "config.HUDSettingsVersion = 3",
+    'config.TargetScope = "field"',
+    "config.HUDSettingsVersion = 5",
+    "config.HUDMaxSourceGroups = 3",
     'config.HUDDetailMode = "compact"',
     "config.EnableExternalHUD = true",
     "config.EnableExternalHUDSettings = false",
@@ -73,6 +72,31 @@ foreach ($requiredSetting in @(
     "config.AllowLegacyNativeAggregate = false"
 )) {
     if (-not $configText.Contains($requiredSetting)) { throw "Workshop config missing: $requiredSetting" }
+}
+
+$mainText = Get-Content -LiteralPath (Join-Path $contentScripts "main.lua") -Raw -Encoding UTF8
+$hudText = Get-Content -LiteralPath (Join-Path $contentScripts "hud.lua") -Raw -Encoding UTF8
+$hudStringsText = Get-Content -LiteralPath (Join-Path $contentScripts "hud_strings.lua") -Raw -Encoding UTF8
+$nativeUiAuthoringPath = Join-Path $projectDirectory `
+    "ui-authoring\Source\PalSkillDPSUIEditor\PalSkillDPSGenerateUICommandlet.cpp"
+$nativeUiAuthoringText = Get-Content -LiteralPath $nativeUiAuthoringPath -Raw -Encoding UTF8
+foreach ($token in @(
+    "SendSystemToPlayerChat",
+    "SkillDiagnosticChatMode",
+    "PSDPS_SkillDiagnosticChatMode",
+    "hud_setting_chat"
+)) {
+    if ($mainText.Contains($token) -or $configText.Contains($token) -or
+        $hudText.Contains($token) -or $hudStringsText.Contains($token) -or
+        $nativeUiAuthoringText.Contains($token)) {
+        throw "Removed chat feature returned to Workshop content: $token"
+    }
+}
+
+$nativeCollectorSource = Get-Content -LiteralPath `
+    (Join-Path $projectDirectory "native\src\BossDPSNativeCollector.cpp") -Raw -Encoding UTF8
+if ($nativeCollectorSource.Contains("probe_script_damage_handler")) {
+    throw "unsafe generic Blueprint parameter probe returned to the production callback"
 }
 
 $nativeUiPak = Join-Path $contentDirectory "Paks\PalSkillDPSAnalyzerSP_P.pak"
@@ -121,7 +145,7 @@ foreach ($localePath in Get-ChildItem -LiteralPath $contentLocales -Filter "*.lu
 }
 
 New-Item -ItemType Directory -Path $distDirectory -Force | Out-Null
-$zipPath = Join-Path $distDirectory "PalSkillDPSAnalyzerSP-Workshop-v0.5.19.zip"
+$zipPath = Join-Path $distDirectory "PalSkillDPSAnalyzerSP-Workshop-v0.5.27.zip"
 Compress-Archive -Path (Join-Path $contentDirectory "*") -DestinationPath $zipPath -CompressionLevel Optimal -Force
 
 Write-Host "Workshop package ready: $zipPath"

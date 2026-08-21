@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <iterator>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -95,7 +96,15 @@ namespace pal_dps
             }
 
             result.kind = PendingFinalDamageMatchKind::pending_ambiguous;
-            result.released = std::move(candidates);
+            // Keep records that expired while resolving this pair. Replacing
+            // the vector here silently discarded unrelated expired damage
+            // whenever the current pair also contained more than one final
+            // event.
+            result.released.insert(
+                result.released.end(),
+                std::make_move_iterator(candidates.begin()),
+                std::make_move_iterator(candidates.end())
+            );
             return result;
         }
 

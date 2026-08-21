@@ -65,6 +65,9 @@ local zero_guid = { A = 0, B = 0, C = 0, D = 0 }
 local uid_one = { A = 1, B = 2, C = 3, D = 4 }
 local uid_two = { A = 5, B = 6, C = 7, D = 8 }
 local uid_spectator = { A = 9, B = 10, C = 11, D = 12 }
+guild_one_id = { A = 101, B = 102, C = 103, D = 104 }
+guild_two_id = { A = 105, B = 106, C = 107, D = 108 }
+base_camp_one_id = { A = 201, B = 202, C = 203, D = 204 }
 
 local function test_guid_key(uid)
     return table.concat({ uid.A, uid.B, uid.C, uid.D }, ":")
@@ -74,8 +77,14 @@ delivered_by_uid[test_guid_key(uid_one)] = delivered
 delivered_by_uid[test_guid_key(uid_two)] = {}
 delivered_by_uid[test_guid_key(uid_spectator)] = {}
 
-local guild_one = object({ GuildName = "红队" }, { GetAddress = function() return 9001 end })
-local guild_two = object({ GuildName = "蓝队" }, { GetAddress = function() return 9002 end })
+local guild_one = object({ GuildName = "红队" }, {
+    GetAddress = function() return 9001 end,
+    GetId = function() return guild_one_id end,
+})
+local guild_two = object({ GuildName = "蓝队" }, {
+    GetAddress = function() return 9002 end,
+    GetId = function() return guild_two_id end,
+})
 local player_one_state = object({
     PlayerUId = uid_one,
     PlayerNamePrivate = "Alice",
@@ -238,7 +247,13 @@ native_ui.switcher = object({}, {
 native_ui.named_widgets.PSDPS_PageSwitcher = native_ui.switcher
 native_ui.text_widget("PSDPS_Title")
 native_ui.text_widget("PSDPS_Footer")
+native_ui.text_widget("PSDPS_GroupRows")
+native_ui.text_widget("PSDPS_GroupIntro")
 native_ui.text_widget("PSDPS_DetailRows")
+native_ui.text_widget("PSDPS_DetailIntro")
+native_ui.text_widget("PSDPS_TabSettingsLabel")
+native_ui.text_widget("PSDPS_TabGroupsLabel")
+native_ui.text_widget("PSDPS_TabDetailsLabel")
 for _, key in ipairs({
     "Language",
     "MeasurementMode",
@@ -248,7 +263,6 @@ for _, key in ipairs({
     "HUDAnchor",
     "HUDScale",
     "HUDFinalResultSeconds",
-    "SkillDiagnosticChatMode",
 }) do
     native_ui.text_widget("PSDPS_" .. key .. "_Value")
 end
@@ -404,6 +418,21 @@ local utility = object({}, {
     end,
 })
 
+-- Legacy report formatter coverage stays inside the offline harness. The
+-- shipped runtime has no SendSystemToPlayerChat lookup or call.
+_G.__BOSS_DPS_TEST_MESSAGE_SINK = function(messages, recipients)
+    if #(recipients or {}) == 0 then return end
+    for index, message in ipairs(messages or {}) do
+        ExecuteInGameThreadWithDelay(index - 1, function()
+            utility:SendSystemToPlayerChat(
+                world,
+                "[PalSkillDPS] " .. tostring(message),
+                recipients
+            )
+        end)
+    end
+end
+
 local internationalization_library = object({}, {
     GetCurrentLanguage = function()
         return "zh-Hans-CN"
@@ -421,6 +450,10 @@ local waza_names = {
     [602] = "EPalWazaID::DiamondFall",
     [116] = "EPalWazaID::IcicleThrow",
     [186] = "EPalWazaID::DoubleIcicleThrow",
+    [205] = "EPalWazaID::Unique_BlackCentaur_TwoSpearRushes",
+    [300] = "EPalWazaID::Unique_BlueThunderHorse_Tossin",
+    [158] = "EPalWazaID::Commet",
+    [177] = "EPalWazaID::CommetRain",
     [42] = "EPalWazaID::FireBall",
     [46] = "EPalWazaID::FlareTornado",
     [54] = "EPalWazaID::FlameFunnel",
@@ -670,26 +703,23 @@ end
 
 _G.__BOSS_DPS_TEST = true
 dofile("../Scripts/main.lua")
+assert(type(_G.__BOSS_DPS_TEST_MESSAGE_SINK) == "function",
+    "offline legacy report sink was lost while loading the runtime")
 
 local runtime_config = BossDPSBroadcastTestApi.config
 assert(runtime_config.EnableDPSRecording == true, "DPS recording should default to enabled")
-assert(runtime_config.EnableFunComments == false, "fun comments should default to disabled")
-assert(runtime_config.BroadcastStart == true, "start reports should default to enabled")
-assert(runtime_config.EnableProgressReports == false, "progress reports should default to disabled")
-assert(runtime_config.EnableDetailedAwards == false, "detailed awards should default to disabled")
-assert(runtime_config.EnablePalDamageBreakdown == false, "Pal breakdown should default to disabled on servers")
-assert(runtime_config.EnableTeamDetails == false, "team details should default to disabled")
-assert(runtime_config.LocalOnlyMessages == false, "server package should not default to local-only messages")
 assert(runtime_config.EnableSkillDiagnostics == true, "skill diagnostics should default to enabled")
 assert(runtime_config.SkillDiagnosticsOnly == true, "diagnostic-only output should default to enabled")
 assert(runtime_config.IncludePlayerDamage == false, "player damage should default to disabled")
-assert(runtime_config.SkillDiagnosticChatMode == "off", "diagnostic chat should default to disabled")
 assert(runtime_config.EnableSkillDPSHUD == true, "skill DPS HUD should default to enabled")
-assert(runtime_config.HUDSettingsVersion == 3, "HUD settings schema should be v3")
+assert(runtime_config.HUDSettingsVersion == 5, "HUD settings schema should be v5")
 assert(runtime_config.MeasurementMode == "manual", "damage lab should default to a manual test window")
-assert(runtime_config.TargetScope == "boss", "damage lab should default to arena and open-world Boss targets")
+assert(runtime_config.TargetScope == "field",
+    "damage lab should default to the explicit field/dungeon Boss profile")
 assert(runtime_config.EnableExternalHUD == true, "external HUD should default to enabled")
 assert(runtime_config.ExternalHUDAutoLaunch == true, "external HUD should auto-launch by default")
+assert(runtime_config.HUDMaxSourceGroups == 3,
+    "live HUD should keep only the three highest-damage source groups")
 assert(runtime_config.HUDDetailMode == "compact", "HUD should default to compact combat bars")
 assert(runtime_config.HUDShowInternalSkillCode == false,
     "internal skill code should default to hidden")
@@ -1003,25 +1033,41 @@ do
     assert(native_settings_text.PSDPS_Title ~= nil
         and native_settings_text.PSDPS_Title ~= "",
         "native settings title was not populated")
-    assert(string.find(native_settings_text.PSDPS_DetailRows or "",
+    assert(console_command_callbacks.psdps("psdps", { "ui", "tab", "groups" }) == true,
+        "native grouped-percentage tab button command was not accepted")
+    run_game_tasks()
+    assert(BossDPSBroadcastTestApi.skill_hud.settings_open == true
+        and BossDPSBroadcastTestApi.skill_hud.settings_page == 1
+        and native_settings_page == 1
+        and string.find(native_settings_text.PSDPS_Title or "", "分組百分比", 1, true) ~= nil,
+        "native grouped-percentage tab did not switch the existing widget")
+    assert(string.find(native_settings_text.PSDPS_GroupRows or "",
         "累計傷害 2,000", 1, true) ~= nil
-        and string.find(native_settings_text.PSDPS_DetailRows or "", "個目標", 1, true) == nil
-        and string.find(native_settings_text.PSDPS_DetailRows or "",
+        and string.find(native_settings_text.PSDPS_GroupRows or "", "個目標", 1, true) == nil
+        and string.find(native_settings_text.PSDPS_GroupRows or "",
+            "1. 測試帕魯", 1, true) ~= nil
+        and string.find(native_settings_text.PSDPS_GroupRows or "",
+            "切割龍息  ·  100.0%", 1, true) ~= nil
+        and string.find(native_settings_text.PSDPS_GroupRows or "",
+            "總命中段數", 1, true) == nil,
+        "native grouped-percentage page did not retain the grouped report")
+
+    phase = "game"
+    assert(console_command_callbacks.psdps("psdps", { "ui", "tab", "details" }) == true,
+        "native details-tab button command was not accepted")
+    run_game_tasks()
+    assert(BossDPSBroadcastTestApi.skill_hud.settings_open == true
+        and BossDPSBroadcastTestApi.skill_hud.settings_page == 2
+        and native_settings_page == 2
+        and string.find(native_settings_text.PSDPS_Title or "", "本次測試詳情", 1, true) ~= nil,
+        "native details-tab button did not switch the existing widget")
+    assert(string.find(native_settings_text.PSDPS_DetailRows or "",
             "總命中段數 4｜每次施放命中段數：2, 2", 1, true) ~= nil
         and string.find(native_settings_text.PSDPS_DetailRows or "",
             "每次施放命中段數（含無傷施放）：最低 2.0｜平均 2.0｜最高 2.0", 1, true) ~= nil
         and string.find(native_settings_text.PSDPS_DetailRows or "",
             "本次遊戲最高單次施放 2.0 段｜理論最高命中段數 尚無資料", 1, true) ~= nil,
-        "native detail page did not receive the detailed hit statistics")
-
-    assert(console_command_callbacks.psdps("psdps", { "ui", "tab", "details" }) == true,
-        "native details-tab button command was not accepted")
-    run_game_tasks()
-    assert(BossDPSBroadcastTestApi.skill_hud.settings_open == true
-        and BossDPSBroadcastTestApi.skill_hud.settings_page == 1
-        and native_settings_page == 1
-        and string.find(native_settings_text.PSDPS_Title or "", "本次測試詳情", 1, true) ~= nil,
-        "native details-tab button did not switch the existing widget")
+        "native third page did not retain the original per-Pal hit statistics")
 
     native_ui.frozen_creation_count = native_settings_creation_count
     native_ui.frozen_add_count = native_ui.event_count("add")
@@ -1190,10 +1236,16 @@ runtime_config.IncludePlayerDamage = true
 runtime_config.EnableFunComments = true
 runtime_config.BroadcastStart = true
 runtime_config.EnableProgressReports = true
+runtime_config.ProgressIntervalSeconds = 10
+runtime_config.ProgressMaxRows = 4
 runtime_config.EnableDetailedAwards = true
 runtime_config.EnableTeamDetails = true
+runtime_config.MaxResultRows = 10
+runtime_config.TeamDetailMaxRows = 12
+runtime_config.ShowDPS = true
+runtime_config.MarkTopAsMVP = true
 runtime_config.MeasurementMode = "target"
-runtime_config.TargetScope = "boss"
+runtime_config.TargetScope = "field"
 phase = "game"
 BossDPSBroadcastTestApi.reset_skill_diagnostics()
 phase = "idle"
@@ -1264,11 +1316,10 @@ assert(callbacks["/Script/Pal.PalActionBase:OnBeginAction"] ~= nil
     "action lifecycle hooks were not registered")
 assert(death_hook ~= nil, "death hook was not registered")
 assert(captured_hook ~= nil, "capture hook was not registered")
-assert(#loop_tasks == 3, "cleanup, progress, and HUD loops were not configured")
+assert(#loop_tasks == 2, "cleanup and HUD loops were not configured")
 local loop_delays = {
     [loop_tasks[1].delay] = true,
     [loop_tasks[2].delay] = true,
-    [loop_tasks[3].delay] = true,
 }
 assert(loop_delays[10000] and loop_delays[500], "unexpected loop delays")
 
@@ -1310,7 +1361,6 @@ assert(#delivered == 0, "participant messages must use the delayed message pump"
 run_delayed_tasks()
 
 local joined = table.concat(delivered, "\n")
-assert(string.find(joined, "开始统计", 1, true) ~= nil, "start announcement missing")
 assert(string.find(joined, "团队伤害 1,000", 1, true) ~= nil, "team total missing")
 assert(string.find(joined, "Alice｜伤害 600｜60.0%", 1, true) ~= nil, "Alice result missing")
 assert(string.find(joined, "Bob｜伤害 400｜40.0%", 1, true) ~= nil, "Pal owner attribution missing")
@@ -1514,19 +1564,8 @@ local bob_before_diagnostic_finish = #bob_inbox
 death(diagnostic_boss)
 run_game_tasks()
 run_delayed_tasks()
-local diagnostic_messages = {}
-for index = bob_before_diagnostic_finish + 1, #bob_inbox do
-    diagnostic_messages[#diagnostic_messages + 1] = bob_inbox[index]
-end
-local diagnostic_joined = table.concat(diagnostic_messages, "\n")
-assert(string.find(diagnostic_joined, "伤害验证完成", 1, true) ~= nil,
-    "diagnostic completion message missing")
-assert(string.find(diagnostic_joined,
-        "UNRESOLVED_PAL_ATTACK_BP_80_ELEMENT_8｜伤害 600｜占比 60.0%｜整场DPS 19",
-        1, true) ~= nil,
-    "fail-closed unresolved chat result missing")
-assert(string.find(diagnostic_joined, "MVP", 1, true) == nil,
-    "diagnostic-only mode emitted a player ranking")
+assert(#bob_inbox == bob_before_diagnostic_finish,
+    "diagnostic-only mode must not emit in-game chat")
 
 -- Real Palworld action Blueprints append a new UObject instance number to
 -- every cast. Repeated casts must share one stable skill bucket. A generic
@@ -1655,24 +1694,8 @@ end
 death(action_boss)
 run_game_tasks()
 run_delayed_tasks()
-local action_messages = {}
-for index = action_before + 1, #bob_inbox do
-    action_messages[#action_messages + 1] = bob_inbox[index]
-end
-local action_joined = table.concat(action_messages, "\n")
-assert(string.find(action_joined,
-        "切割龙息（BeamSlicer）｜伤害 500", 1, true) ~= nil,
-    "bounded active-action result is missing from the report")
-assert(string.find(action_joined,
-        "UNRESOLVED_PAL_ATTACK_BP_350_ELEMENT_9｜伤害 25", 1, true) ~= nil,
-    "stale action timing did not remain unresolved")
-assert(string.find(action_joined,
-        "UNRESOLVED_PAL_ATTACK_BP_200_ELEMENT_2｜伤害 150", 1, true) ~= nil,
-    "same-signature weak action damage did not remain unresolved")
-assert(string.find(action_joined, "UNRESOLVED_PAL_ATTACK_BP_200_ELEMENT_9｜伤害 25", 1, true) ~= nil,
-    "ambiguous generic damage was assigned without proof")
-assert(string.find(action_joined, "技能/武器候选 4个", 1, true) ~= nil,
-    "bounded candidate count is incorrect")
+assert(#bob_inbox == action_before,
+    "action diagnostics must remain HUD/F3-only")
 
 -- Many Pal skills deal their first damage only after the action has ended.
 -- Action timing alone is diagnostic context and must fail closed; only the
@@ -2446,8 +2469,8 @@ for index = delivered_before_composite + 1, #delivered do
     composite_messages[#composite_messages + 1] = delivered[index]
 end
 local composite_joined = table.concat(composite_messages, "\n")
-assert(count_plain(composite_joined, "开始统计：月亮领主 已进入战斗") == 1,
-    "composite encounter announced more than once")
+assert(count_plain(composite_joined, "开始统计：月亮领主 已进入战斗") == 0,
+    "removed start-chat announcement returned")
 assert(string.find(composite_joined, "团队伤害 1,000", 1, true) ~= nil,
     "composite part damage was not aggregated")
 assert(count_plain(composite_joined, "击败了 月亮领主") == 1,
@@ -2592,57 +2615,240 @@ run_delayed_tasks()
 joined = table.concat(delivered, "\n")
 assert(string.find(joined, "击败了 RaidBoss_Stress｜用时 1秒｜团队DPS 1｜团队伤害 1", 1, true) ~= nil, "death was lost behind burst traffic")
 
--- Manual damage-lab mode spans several open-world targets and keeps every
--- individual owned Pal in a separate source group until the operator resets.
-function run_manual_damage_lab_test()
+-- A Boss actor can expose its reflected database flags one or more callbacks
+-- after damage starts. An inconclusive first read must remain retryable; the
+-- old negative cache treated the missing fields as an ordinary Pal and could
+-- suppress the same target until its runtime object/phase changed.
+do
 runtime_config.MeasurementMode = "manual"
-runtime_config.TargetScope = "all"
+runtime_config.TargetScope = "field"
 runtime_config.IncludePlayerDamage = false
 runtime_config.SkillDiagnosticsOnly = true
 phase = "game"
 BossDPSBroadcastTestApi.reset_skill_diagnostics()
 phase = "idle"
-local base_pal_parameter = object({}, {
+local transient_flags = {
+    IsBoss_Database = false,
+    IsTowerBoss_Database = false,
+}
+local transient_boss = actor("BP_GrassPanda_Electric_C_402", {
+    StaticCharacterParameterComponent = object(transient_flags),
+})
+local unknown_classifications_before =
+    BossDPSBroadcastTestApi.metrics.target_classification_unknown
+damage(player_two_pal, transient_boss, 100)
+run_game_tasks()
+local transient_session =
+    BossDPSBroadcastTestApi.sessions["__PAL_SKILL_DPS_MANUAL_TEST__"]
+assert(transient_session ~= nil and transient_session.total_damage == 0
+        and transient_session.manual_armed == true
+        and BossDPSBroadcastTestApi.metrics.target_classification_unknown
+            == unknown_classifications_before + 1,
+    "pre-initialized false Boss flags were accepted before the encounter settled")
+transient_flags.IsTowerBoss_Database = true
+damage(player_two_pal, transient_boss, 200)
+run_game_tasks()
+assert(transient_session.total_damage == 200
+        and transient_session.manual_armed == false
+        and transient_session.target_count == 1,
+    "an early false Boss read poisoned later target locking")
+phase = "game"
+BossDPSBroadcastTestApi.reset_skill_diagnostics()
+phase = "idle"
+runtime_config.MeasurementMode = "target"
+runtime_config.IncludePlayerDamage = true
+runtime_config.SkillDiagnosticsOnly = false
+end
+
+-- Tablet mode accepts same-guild base workers. The main HUD groups only Pals
+-- with both the same species and the same three-skill loadout; F3 keeps every
+-- worker as an individual damage/DPS source.
+function run_manual_damage_lab_test()
+runtime_config.MeasurementMode = "manual"
+runtime_config.TargetScope = "field"
+runtime_config.IncludePlayerDamage = false
+runtime_config.SkillDiagnosticsOnly = true
+phase = "game"
+BossDPSBroadcastTestApi.reset_skill_diagnostics()
+phase = "idle"
+local base_pal_parameter = object({
+    SaveParameter = { EquipWaza = { 501, 502, 601 } },
+}, {
     GetAddress = function() return 9199 end,
     GetCharacterID = function() return "PinkCat" end,
-    GetNickname = function(_, out_name) out_name.outName = "基地帕魯" end,
+    GetNickname = function(_, out_name) out_name.outName = "基地帕魯甲" end,
+    GetBaseCampId = function() return base_camp_one_id end,
+    GetGroupId = function() return guild_one_id end,
 })
 local base_pal = actor("BP_PinkCat_Base_C_44", {
     CharacterParameterComponent = object({ IndividualParameter = base_pal_parameter }),
 })
-trainer_by_actor[base_pal] = player_one
-local open_world_target = actor("BP_Sheep_OpenWorld_C_45", {
-    StaticCharacterParameterComponent = object({
-        IsBoss_Database = false,
-        IsTowerBoss_Database = false,
-    }),
+assert(trainer_by_actor[base_pal] == nil,
+    "base Pal regression must not provide an ordinary trainer")
+local base_pal_two_parameter = object({
+    SaveParameter = { EquipWaza = { 501, 502, 601 } },
+}, {
+    GetAddress = function() return 9200 end,
+    GetCharacterID = function() return "PinkCat" end,
+    GetNickname = function(_, out_name) out_name.outName = "基地帕魯乙" end,
+    GetBaseCampId = function() return base_camp_one_id end,
+    GetGroupId = function() return guild_one_id end,
 })
-local alpha_target = boss_actor("BP_Suzaku_BOSS_OpenWorld_C_46")
-waza(player_two_pal, open_world_target, 501)
-damage(player_two_pal, open_world_target, 300)
-waza(base_pal, alpha_target, 502)
-damage(base_pal, alpha_target, 500)
-death(open_world_target)
-death(alpha_target)
+local base_pal_two = actor("BP_PinkCat_Base_C_45", {
+    CharacterParameterComponent = object({ IndividualParameter = base_pal_two_parameter }),
+})
+local alternate_base_parameter = object({
+    SaveParameter = { EquipWaza = { 501, 602, 701 } },
+}, {
+    GetAddress = function() return 9201 end,
+    GetCharacterID = function() return "PinkCat" end,
+    GetNickname = function(_, out_name) out_name.outName = "異配帕魯" end,
+    GetBaseCampId = function() return base_camp_one_id end,
+    GetGroupId = function() return guild_one_id end,
+})
+local alternate_base_pal = actor("BP_PinkCat_Base_C_46", {
+    CharacterParameterComponent = object({ IndividualParameter = alternate_base_parameter }),
+})
+local alpha_target = boss_actor("BP_RaidBoss_Tablet_C_49")
+local field_info = { BasePower = 50, AttackElementType = 8 }
+waza(base_pal, alpha_target, 502, field_info)
+damage(base_pal, alpha_target, 50, { DamageInfo = field_info })
+run_game_tasks()
+local field_session = BossDPSBroadcastTestApi.sessions["__PAL_SKILL_DPS_MANUAL_TEST__"]
+assert(field_session ~= nil and field_session.total_damage == 0,
+    "field/dungeon profile accepted a trainerless base worker")
+runtime_config.TargetScope = "tablet"
+phase = "game"
+BossDPSBroadcastTestApi.reset_skill_diagnostics()
+phase = "idle"
+local active_info = { BasePower = 301, AttackElementType = 8 }
+local base_one_info = { BasePower = 502, AttackElementType = 8 }
+local base_two_info = { BasePower = 601, AttackElementType = 8 }
+local alternate_info = { BasePower = 701, AttackElementType = 6 }
+waza(player_two_pal, alpha_target, 501, active_info)
+damage(player_two_pal, alpha_target, 300, { DamageInfo = active_info })
+waza(base_pal, alpha_target, 502, base_one_info)
+damage(base_pal, alpha_target, 500, { DamageInfo = base_one_info })
+waza(base_pal_two, alpha_target, 601, base_two_info)
+damage(base_pal_two, alpha_target, 200, { DamageInfo = base_two_info })
+waza(alternate_base_pal, alpha_target, 701, alternate_info)
+damage(alternate_base_pal, alpha_target, 100, { DamageInfo = alternate_info })
+local foreign_base_parameter = object({}, {
+    GetAddress = function() return 9299 end,
+    GetCharacterID = function() return "PinkCat" end,
+    GetBaseCampId = function() return base_camp_one_id end,
+    GetGroupId = function() return guild_two_id end,
+})
+local foreign_base_pal = actor("BP_PinkCat_ForeignBase_C_47", {
+    CharacterParameterComponent = object({ IndividualParameter = foreign_base_parameter }),
+})
+local wild_parameter = object({}, {
+    GetAddress = function() return 9399 end,
+    GetCharacterID = function() return "PinkCat" end,
+    GetBaseCampId = function() return zero_guid end,
+    GetGroupId = function() return guild_one_id end,
+})
+local wild_pal = actor("BP_PinkCat_Wild_C_48", {
+    CharacterParameterComponent = object({ IndividualParameter = wild_parameter }),
+})
+waza(foreign_base_pal, alpha_target, 501)
+damage(foreign_base_pal, alpha_target, 900)
+waza(wild_pal, alpha_target, 501)
+damage(wild_pal, alpha_target, 700)
 run_game_tasks()
 local manual_session = BossDPSBroadcastTestApi.sessions["__PAL_SKILL_DPS_MANUAL_TEST__"]
 assert(manual_session ~= nil and manual_session.finished ~= true,
-    "manual test ended when one of its targets died")
-assert(manual_session.total_damage == 800 and manual_session.target_count == 2,
-    "manual test did not aggregate ordinary and Alpha targets")
+    "tablet test did not remain active before the Boss terminal event")
+assert(manual_session.total_damage == 1100 and manual_session.target_count == 1,
+    "tablet test did not aggregate local sources or accepted wild/foreign base Pals")
+assert(BossDPSBroadcastTestApi.metrics.base_pal_owner_resolutions >= 1,
+    "trainerless local-guild base Pal did not use the base ownership path")
 local manual_pal_count = 0
 for _ in pairs(manual_session.pal_sources) do manual_pal_count = manual_pal_count + 1 end
-assert(manual_pal_count == 2, "two individual Pals were merged into one source")
+assert(manual_pal_count == 4, "tablet test merged individual Pal accounting sources")
 phase = "game"
 BossDPSBroadcastTestApi.publish_current_skill_hud()
 phase = "idle"
-assert(string.find(BossDPSBroadcastTestApi.skill_hud.last_external_state.text,
-    "基地帕魯", 1, true) ~= nil and string.find(BossDPSBroadcastTestApi.skill_hud.last_external_state.text,
-    "棉花糖", 1, true) ~= nil, "manual meter did not expose both Pal groups")
+local tablet_snapshot = BossDPSBroadcastTestApi.skill_hud.latest_snapshot
+assert(tablet_snapshot ~= nil and tablet_snapshot.test_profile == "tablet"
+    and #tablet_snapshot.sources == 2 and #tablet_snapshot.detail_sources == 4,
+    "tablet snapshot did not separate compact loadout groups from individual details")
+assert(tablet_snapshot.sources[1].count == 3
+    and tablet_snapshot.sources[1].damage == 1000
+    and #tablet_snapshot.sources[1].skills == 3
+    and tablet_snapshot.sources[2].count == 1
+    and tablet_snapshot.sources[2].damage == 100
+    and #tablet_snapshot.sources[2].skills == 3,
+    "same-loadout workers were not grouped or different loadouts were mixed")
+assert(string.find(tablet_snapshot.sources[1].name, " A", 1, true) ~= nil
+    and string.find(tablet_snapshot.sources[2].name, " B", 1, true) ~= nil,
+    "same-species loadout variants were not labelled separately")
+local uncertain_groups = BossDPSBroadcastTestApi.hooks.aggregate_tablet_sources({
+    {
+        kind = "pal", name = "讀取不完整甲", species = "棉花糖",
+        species_id = "PinkCat", damage = 20, hits = 1, skills = {},
+    },
+    {
+        kind = "pal", name = "讀取不完整乙", species = "棉花糖",
+        species_id = "PinkCat", damage = 10, hits = 1, skills = {},
+    },
+}, 1, 30)
+assert(#uncertain_groups == 2
+    and uncertain_groups[1].count == 1 and uncertain_groups[2].count == 1,
+    "Pals without a complete three-skill fingerprint were unsafely merged")
+local tablet_meter = BossDPSBroadcastTestApi.skill_hud.last_external_state.text
+assert(string.find(tablet_meter, "test_profile=tablet", 1, true) ~= nil
+    and string.find(tablet_meter, "\t3\t", 1, true) ~= nil,
+    "tablet meter did not publish the group count/profile needed by the percentage HUD")
+local capped_meter = BossDPSBroadcastTestApi.skill_hud:build_external_meter_document({
+    state = "active", boss = "分組上限測試", duration = 10,
+    total_damage = 1000, encounter_dps = 100, test_profile = "tablet",
+    sources = {
+        { name = "第一組", damage = 400, dps = 40, damage_share = 40, count = 2,
+            skills = { { name = "技能甲", internal_code = "A", damage = 400 } } },
+        { name = "第二組", damage = 300, dps = 30, damage_share = 30, count = 1,
+            skills = { { name = "技能乙", internal_code = "B", damage = 300 } } },
+        { name = "第三組", damage = 200, dps = 20, damage_share = 20, count = 1,
+            skills = { { name = "技能丙", internal_code = "C", damage = 200 } } },
+        { name = "第四組", damage = 100, dps = 10, damage_share = 10, count = 1,
+            skills = { { name = "技能丁", internal_code = "D", damage = 100 } } },
+    },
+}, 999)
+assert(string.find(capped_meter, "\nsource_count=3\n", 1, true) ~= nil
+    and string.find(capped_meter, "\nhidden_source_count=1\n", 1, true) ~= nil
+    and string.find(capped_meter, "\nmore_details_hint=", 1, true) ~= nil
+    and string.match(capped_meter, "more_details_hint=[^\n]*1") ~= nil
+    and string.find(capped_meter, "第四組", 1, true) == nil,
+    "live HUD did not cap the damage-ranked source groups at three with an F3 hint")
 phase = "game"
 assert(BossDPSBroadcastTestApi.skill_hud:toggle_settings() == true
     and BossDPSBroadcastTestApi.skill_hud.settings_open == true,
     "manual mode did not expose the F3 settings workspace")
+assert(console_command_callbacks.psdps(
+    "psdps", { "ui", "tab", "groups" }) == true,
+    "tablet grouped-percentage tab button command was not accepted")
+run_game_tasks()
+assert(BossDPSBroadcastTestApi.skill_hud.settings_page == 1
+    and native_settings_page == 1
+    and string.find(native_settings_text.PSDPS_GroupRows or "", " A ×3", 1, true) ~= nil
+    and string.find(native_settings_text.PSDPS_GroupRows or "", " B", 1, true) ~= nil
+    and string.find(native_settings_text.PSDPS_GroupRows or "", "%", 1, true) ~= nil
+    and string.find(native_settings_text.PSDPS_GroupRows or "", "基地帕魯甲", 1, true) == nil,
+    "F3 grouped report did not mirror the complete main-HUD percentage model")
+phase = "game"
+assert(console_command_callbacks.psdps(
+    "psdps", { "ui", "tab", "details" }) == true,
+    "tablet per-Pal detail tab button command was not accepted")
+run_game_tasks()
+assert(BossDPSBroadcastTestApi.skill_hud.settings_page == 2
+    and native_settings_page == 2
+    and string.find(native_settings_text.PSDPS_DetailRows or "", "基地帕魯甲", 1, true) ~= nil
+    and string.find(native_settings_text.PSDPS_DetailRows or "", "基地帕魯乙", 1, true) ~= nil
+    and string.find(native_settings_text.PSDPS_DetailRows or "", "異配帕魯", 1, true) ~= nil
+    and string.find(native_settings_text.PSDPS_DetailRows or "", "500", 1, true) ~= nil
+    and string.find(native_settings_text.PSDPS_DetailRows or "", "DPS", 1, true) ~= nil,
+    "F3 did not retain per-worker damage and DPS details")
+phase = "game"
 BossDPSBroadcastTestApi.skill_hud:close_settings()
 BossDPSBroadcastTestApi.reset_skill_diagnostics()
 phase = "idle"
@@ -2650,18 +2856,20 @@ manual_session = BossDPSBroadcastTestApi.sessions["__PAL_SKILL_DPS_MANUAL_TEST__
 assert(manual_session ~= nil and manual_session.total_damage == 0 and manual_session.manual_armed == true,
     "Start new test did not reset and re-arm the manual window")
 runtime_config.MeasurementMode = "target"
-runtime_config.TargetScope = "boss"
+runtime_config.TargetScope = "field"
 runtime_config.IncludePlayerDamage = true
 runtime_config.SkillDiagnosticsOnly = false
 end
 run_manual_damage_lab_test()
 run_manual_damage_lab_test = nil
 
--- Boss-only manual tests freeze at the final Boss death/capture. A known
--- non-terminal composite part is a phase transition and must keep recording.
-function run_manual_boss_snapshot_test()
+-- Manual tests are operator-controlled windows. Death/capture only removes the
+-- ended target binding; composite phases and multiple world-spawn Bosses must
+-- leave the same test active until F2 resets it. Hard-tower adds are different:
+-- only the GYM/TowerBoss actor owns the encounter health bar and may contribute.
+function run_manual_boss_continuous_test()
 runtime_config.MeasurementMode = "manual"
-runtime_config.TargetScope = "boss"
+runtime_config.TargetScope = "field"
 runtime_config.IncludePlayerDamage = false
 runtime_config.SkillDiagnosticsOnly = true
 phase = "game"
@@ -2688,67 +2896,99 @@ run_game_tasks()
 fake_game_time = 3012
 death(phase_body)
 run_game_tasks()
-local frozen = BossDPSBroadcastTestApi.skill_hud.latest_snapshot
-assert(BossDPSBroadcastTestApi.sessions["__PAL_SKILL_DPS_MANUAL_TEST__"] == nil
-    and frozen ~= nil and frozen.state == "finished" and frozen.reason == "defeated"
-    and math.abs(frozen.duration - 12) < 0.001
-    and math.abs(frozen.encounter_dps - 25) < 0.001,
-    "final Boss death did not freeze the manual snapshot at the death time")
-assert(string.find(BossDPSBroadcastTestApi.skill_hud.last_external_state.text,
-        "\nexpires_at=0\n", 1, true) ~= nil,
-    "manual Boss snapshot was given an automatic HUD expiry")
-local ignored_after_finish = BossDPSBroadcastTestApi.metrics.ignored_post_finish_damage
--- Real multi-hit effects can deliver their last segments after the death hook.
--- They must be discarded until F2, not treated as the first hits of a new test.
+assert(BossDPSBroadcastTestApi.sessions["__PAL_SKILL_DPS_MANUAL_TEST__"] == boss_session
+    and boss_session.finished ~= true
+    and boss_session.total_damage == 300,
+    "Boss death froze an operator-controlled manual test")
+-- Real multi-hit effects can deliver their last segments after a death hook.
+-- They remain in the same manual test without a settlement snapshot.
 waza(player_two_pal, phase_body, 501)
 damage(player_two_pal, phase_body, 40)
 damage(player_two_pal, phase_body, 60)
 run_game_tasks()
-assert(BossDPSBroadcastTestApi.sessions["__PAL_SKILL_DPS_MANUAL_TEST__"] == nil
-    and BossDPSBroadcastTestApi.skill_hud.latest_snapshot == frozen
-    and frozen.total_damage == 300
-    and BossDPSBroadcastTestApi.metrics.ignored_post_finish_damage
-        == ignored_after_finish + 2,
-    "post-death hit segments replaced the frozen Boss result")
+assert(boss_session.total_damage == 400 and boss_session.finished ~= true,
+    "post-death multi-hit segments were not retained in the manual test")
+
+local world_boss_a = boss_actor("BP_RaidBoss_WorldMultiplier_A_C_905")
+local world_boss_b = boss_actor("BP_RaidBoss_WorldMultiplier_B_C_906")
+waza(player_two_pal, world_boss_a, 501)
+damage(player_two_pal, world_boss_a, 50)
+waza(player_two_pal, world_boss_b, 501)
+damage(player_two_pal, world_boss_b, 70)
+run_game_tasks()
+death(world_boss_a)
+run_game_tasks()
+assert(boss_session.total_damage == 520 and boss_session.finished ~= true,
+    "the first Boss death ended a multi-Boss manual test")
+waza(player_two_pal, world_boss_b, 501)
+damage(player_two_pal, world_boss_b, 30)
+run_game_tasks()
+death(world_boss_b)
+run_game_tasks()
+assert(BossDPSBroadcastTestApi.sessions["__PAL_SKILL_DPS_MANUAL_TEST__"] == boss_session
+    and boss_session.total_damage == 550 and boss_session.finished ~= true,
+    "the final bound Boss death auto-snapshotted a manual test")
+
 fake_game_time = 3060
 phase = "game"
 BossDPSBroadcastTestApi.publish_current_skill_hud()
 phase = "idle"
-assert(BossDPSBroadcastTestApi.skill_hud.latest_snapshot == frozen
-    and math.abs(frozen.duration - 12) < 0.001
-    and math.abs(frozen.encounter_dps - 25) < 0.001,
-    "F3/HUD refresh changed a frozen Boss result")
+local active_snapshot = BossDPSBroadcastTestApi.skill_hud.latest_snapshot
+assert(active_snapshot ~= nil and active_snapshot.state == "active"
+    and active_snapshot.total_damage == 550,
+    "manual HUD did not retain the active cumulative result")
 
-local saved_mode = runtime_config.MeasurementMode
-local saved_scope = runtime_config.TargetScope
-local saved_save_settings = BossDPSBroadcastTestApi.skill_hud.save_settings
-local reset_from_setting = 0
-local ignored_after_setting = BossDPSBroadcastTestApi.metrics.ignored_post_finish_damage
-local saved_reset_callback = BossDPSBroadcastTestApi.skill_hud.on_reset
-BossDPSBroadcastTestApi.skill_hud.save_settings = function() return true end
-BossDPSBroadcastTestApi.skill_hud.on_reset = function()
-    reset_from_setting = reset_from_setting + 1
-end
-BossDPSBroadcastTestApi.skill_hud:cycle_setting("MeasurementMode", 1)
-BossDPSBroadcastTestApi.skill_hud:cycle_setting("TargetScope", 1)
-assert(reset_from_setting == 0
-    and BossDPSBroadcastTestApi.skill_hud.latest_snapshot == frozen
-    and frozen.total_damage == 300,
-    "F3 measurement settings reset or replaced the frozen Boss result")
-local post_setting_target = boss_actor("BP_RaidBoss_PostSettingTail_C_905")
-waza(player_two_pal, post_setting_target, 501)
-damage(player_two_pal, post_setting_target, 70)
+phase = "game"
+BossDPSBroadcastTestApi.reset_skill_diagnostics()
+phase = "idle"
+
+-- Hard-tower adds can expose both the Boss and TowerBoss database flags. If one is hit before the
+-- tower main, its tentative damage must be discarded as soon as the GYM actor
+-- appears; later add damage must stay excluded. This must not affect the world
+-- multiplier case above, where every real Boss remains part of the test.
+local tower_add_a = actor("BP_LazyDragon_Electric_C_920", {
+    StaticCharacterParameterComponent = object({
+        IsBoss_Database = true,
+        IsTowerBoss_Database = true,
+    }),
+})
+local tower_add_b = actor("BP_GrassPanda_Electric_C_921", {
+    StaticCharacterParameterComponent = object({
+        IsBoss_Database = true,
+        IsTowerBoss_Database = true,
+    }),
+})
+local tower_main = actor("BP_ThunderDragonMan_GYM_Hard_C_922", {
+    StaticCharacterParameterComponent = object({
+        IsBoss_Database = true,
+        IsTowerBoss_Database = true,
+    }),
+})
+fake_game_time = 3070
+waza(player_two_pal, tower_add_a, 501)
+damage(player_two_pal, tower_add_a, 125)
 run_game_tasks()
-assert(BossDPSBroadcastTestApi.sessions["__PAL_SKILL_DPS_MANUAL_TEST__"] == nil
-    and BossDPSBroadcastTestApi.skill_hud.latest_snapshot == frozen
-    and frozen.total_damage == 300
-    and BossDPSBroadcastTestApi.metrics.ignored_post_finish_damage
-        == ignored_after_setting + 1,
-    "F3 automatic/all settings bypassed the frozen Boss result lock")
-runtime_config.MeasurementMode = saved_mode
-runtime_config.TargetScope = saved_scope
-BossDPSBroadcastTestApi.skill_hud.save_settings = saved_save_settings
-BossDPSBroadcastTestApi.skill_hud.on_reset = saved_reset_callback
+local tower_session = BossDPSBroadcastTestApi.sessions["__PAL_SKILL_DPS_MANUAL_TEST__"]
+assert(tower_session ~= nil and tower_session.total_damage == 125,
+    "pre-main tower add did not enter the tentative manual result")
+waza(player_two_pal, tower_main, 501)
+damage(player_two_pal, tower_main, 200)
+run_game_tasks()
+assert(tower_session.tower_boss_locked == true
+    and tower_session.total_damage == 200,
+    "tower main did not discard earlier add damage and restart the measurement")
+waza(player_two_pal, tower_add_a, 501)
+damage(player_two_pal, tower_add_a, 300)
+waza(player_two_pal, tower_add_b, 501)
+damage(player_two_pal, tower_add_b, 400)
+run_game_tasks()
+assert(tower_session.total_damage == 200,
+    "tower adds were counted after the tower main lock")
+waza(player_two_pal, tower_main, 501)
+damage(player_two_pal, tower_main, 50)
+run_game_tasks()
+assert(tower_session.total_damage == 250 and tower_session.target_count == 1,
+    "tower-main damage or target binding was lost while excluding adds")
 
 phase = "game"
 BossDPSBroadcastTestApi.reset_skill_diagnostics()
@@ -2761,21 +3001,22 @@ run_game_tasks()
 fake_game_time = 3109
 captured(captured_boss, player_two_pal)
 run_game_tasks()
-local captured_snapshot = BossDPSBroadcastTestApi.skill_hud.latest_snapshot
-assert(captured_snapshot ~= nil and captured_snapshot.state == "finished"
-    and captured_snapshot.reason == "captured" and math.abs(captured_snapshot.duration - 9) < 0.001,
-    "captured Boss did not freeze the manual Boss snapshot")
+run_delayed_tasks()
+local captured_session = BossDPSBroadcastTestApi.sessions["__PAL_SKILL_DPS_MANUAL_TEST__"]
+assert(captured_session ~= nil and captured_session.finished ~= true
+    and captured_session.total_damage == 90,
+    "captured Boss froze an operator-controlled manual test")
 
 runtime_config.MeasurementMode = "target"
-runtime_config.TargetScope = "boss"
+runtime_config.TargetScope = "field"
 runtime_config.IncludePlayerDamage = true
 runtime_config.SkillDiagnosticsOnly = false
 phase = "game"
 BossDPSBroadcastTestApi.reset_skill_diagnostics()
 phase = "idle"
 end
-run_manual_boss_snapshot_test()
-run_manual_boss_snapshot_test = nil
+run_manual_boss_continuous_test()
+run_manual_boss_continuous_test = nil
 
 -- Native event API v2: every final hit arrives separately with a stable
 -- sequence and object-token diagnostics. It must be preferred by the runtime
@@ -2912,7 +3153,12 @@ do
 local exact_native = {
     boss = boss_actor("BP_RaidBoss_NativeEffectWaza_C_502"),
     index = 0,
+    parameter = object({ SaveParameter = { EquipWaza = { 501, 602, 601 } } }),
 }
+exact_native.pal = actor("BP_PinkCat_ExactNative_C_502", {
+    CharacterParameterComponent = object({ IndividualParameter = exact_native.parameter }),
+})
+trainer_by_actor[exact_native.pal] = player_two
 BossDPSNativeDrainEventOne = function()
     exact_native.index = exact_native.index + 1
     if exact_native.index == 1 then
@@ -2924,7 +3170,7 @@ BossDPSNativeDrainEventOne = function()
             777,                                    -- damage (5)
             2,                                      -- hits (6)
             "effect_waza",                         -- evidence_kind (7)
-            player_two_pal,                         -- attacker (8)
+            exact_native.pal,                       -- attacker (8)
             exact_native.boss,                      -- defender (9)
             nil,                                    -- damage_causer (10)
             nil,                                    -- override_network_owner (11)
@@ -2948,7 +3194,7 @@ BossDPSNativeDrainEventOne = function()
         return true,
             2, "damage", 7002, 7002000, 123, 1,
             "damage_info_fingerprint_candidate",
-            player_two_pal, exact_native.boss, nil, nil, nil,
+            exact_native.pal, exact_native.boss, nil, nil, nil,
             "3:1", "502:1", "0:0", "0:0", "0:0", "",
             "", "", "402:9", "403:9", "0:0", "0xEXACT",
             602, "DiamondFall", ""
@@ -2956,7 +3202,7 @@ BossDPSNativeDrainEventOne = function()
         return true,
             2, "damage", 7003, 7003000, 222, 1,
             "effect_pair_single_link",
-            player_two_pal, exact_native.boss, nil, nil, nil,
+            exact_native.pal, exact_native.boss, nil, nil, nil,
             "3:1", "502:1", "0:0", "0:0", "0:0", "",
             "action:single", "cast:single", "404:9", "405:9", "0:0", "0xEXACT",
             602, "DiamondFall", ""
@@ -2964,7 +3210,7 @@ BossDPSNativeDrainEventOne = function()
         return true,
             2, "damage", 7004, 7004000, 333, 1,
             "effect_pair_agreed_link",
-            player_two_pal, exact_native.boss, nil, nil, nil,
+            exact_native.pal, exact_native.boss, nil, nil, nil,
             "3:1", "502:1", "0:0", "0:0", "0:0", "",
             "action:agreed", "cast:agreed", "406:9", "407:9", "0:0", "0xEXACT",
             602, "DiamondFall", ""
@@ -2972,7 +3218,7 @@ BossDPSNativeDrainEventOne = function()
         return true,
             2, "damage", 7005, 7005000, 111, 1,
             "unresolved_effect_pair_ambiguous",
-            player_two_pal, exact_native.boss, nil, nil, nil,
+            exact_native.pal, exact_native.boss, nil, nil, nil,
             "3:1", "502:1", "0:0", "0:0", "0:0", "",
             "", "", "", "", "0:0", "0xEXACT",
             602, "DiamondFall", ""
@@ -2980,10 +3226,26 @@ BossDPSNativeDrainEventOne = function()
         return true,
             2, "damage", 7006, 7006000, 444, 1,
             "post_effect_pair_single_link",
-            player_two_pal, exact_native.boss, nil, nil, nil,
+            exact_native.pal, exact_native.boss, nil, nil, nil,
             "3:1", "502:1", "0:0", "0:0", "0:0", "",
             "action:reverse", "cast:reverse", "408:9", "409:9", "0:0", "0xEXACT",
             602, "DiamondFall", ""
+    elseif exact_native.index == 7 then
+        return true,
+            2, "damage", 7007, 7007000, 222, 1,
+            "post_effect_pair_batch_candidate",
+            exact_native.pal, exact_native.boss, nil, nil, nil,
+            "3:1", "502:1", "0:0", "0:0", "0:0", "",
+            "action:batch", "cast:batch", "410:9", "411:9", "0:0", "0xEXACT",
+            602, "DiamondFall", ""
+    elseif exact_native.index == 8 then
+        return true,
+            2, "damage", 7008, 7008000, 4414, 1,
+            "unresolved_post_effect_timeout",
+            exact_native.pal, exact_native.boss, nil, nil, nil,
+            "3:1", "502:1", "0:0", "0:0", "0:0", "",
+            "", "", "", "", "0:0", "0xEXACT",
+            0, "", ""
     end
     return false
 end
@@ -2997,7 +3259,7 @@ for _, candidate in pairs(BossDPSBroadcastTestApi.sessions) do
         break
     end
 end
-assert(exact_native.session ~= nil and exact_native.session.total_damage == 2010,
+assert(exact_native.session ~= nil and exact_native.session.total_damage == 6646,
     "exact native effect/fingerprint events did not preserve final damage")
 for _, source in pairs(exact_native.session.diagnostic_sources) do
     if source.kind == "pal" then
@@ -3009,9 +3271,11 @@ assert(exact_native.source ~= nil,
     "exact native effect/Waza event did not retain the Pal source")
 exact_native.skill = exact_native.source.skill_candidates["skill:DiamondFall"]
 assert(exact_native.skill ~= nil
-        and exact_native.skill.damage == 1776
-        and exact_native.skill.hits == 5
-        and exact_native.skill.waza_id == 602,
+        and exact_native.skill.damage == 6412
+        and exact_native.skill.hits == 7
+        and exact_native.skill.waza_id == 602
+        and exact_native.skill.exact_damage == 1776
+        and exact_native.skill.inferred_damage == 4636,
     "exact native effect/pair links did not enter the DiamondFall bucket")
 exact_native.unresolved_damage = 0
 for key in pairs(exact_native.source.skill_candidates) do
@@ -3027,6 +3291,619 @@ death(exact_native.boss)
 run_game_tasks()
 run_delayed_tasks()
 end
+
+-- A native unresolved direct impact may still be assigned when the
+-- DamageInfo-backed marker for the same pair was already linked to one exact
+-- cast and the Waza is in the complete equipped loadout. The old cast must keep
+-- ownership after it ends and IcicleThrow begins; current-action timing remains
+-- fail-closed and cannot steal the delayed DoubleIcicleThrow impact.
+do
+local active_pair_parameter = object({
+    SaveParameter = { EquipWaza = { 156, 186, 116 } },
+})
+local active_pair_component = object({ IndividualParameter = active_pair_parameter })
+local active_pair_action = nil
+local active_pair_action_component = object({}, {
+    GetCurrentAction = function() return active_pair_action end,
+})
+local active_pair_pal = actor("BP_CatVampire_ActivePair_C_504", {
+    CharacterParameterComponent = active_pair_component,
+    ActionComponent = active_pair_action_component,
+})
+trainer_by_actor[active_pair_pal] = player_two
+local active_pair_boss = boss_actor("BP_RaidBoss_ActivePair_C_505")
+local active_pair_session = {
+    aoe_boss = boss_actor("BP_RaidBoss_ActivePairAOE_C_506"),
+}
+active_pair_action = actor("BP_ActionDoubleIcicleThrow_C_2147999504", {
+    GetWazaID = function() return 186 end,
+    GetActionCharacter = function() return active_pair_pal end,
+})
+fake_game_time = 3400
+action_begin(active_pair_action)
+run_game_tasks()
+waza(active_pair_pal, active_pair_boss, 186, object({
+    BasePower = 700,
+    AttackElementType = 6,
+    WazaID = 186,
+}))
+run_game_tasks()
+fake_game_time = 3400.5
+action_end(active_pair_action)
+run_game_tasks()
+active_pair_action = actor("BP_ActionIcicleThrow_C_2147999505", {
+    GetWazaID = function() return 116 end,
+    GetActionCharacter = function() return active_pair_pal end,
+})
+fake_game_time = 3400.6
+action_begin(active_pair_action)
+run_game_tasks()
+
+local active_pair_index = 0
+BossDPSNativeDrainEventOne = function()
+    active_pair_index = active_pair_index + 1
+    if active_pair_index == 1 then
+        return true, {
+            api_version = 2,
+            kind = "damage",
+            sequence = 7101,
+            captured_ns = 7101000,
+            damage = 48794,
+            hits = 1,
+            evidence_kind = "unresolved_post_effect_timeout",
+            attacker = active_pair_pal,
+            defender = active_pair_boss,
+            target_key = "0xACTIVEPAIR",
+            waza_id = 0,
+            skill_code = "",
+        }
+    elseif active_pair_index == 2 then
+        return true, {
+            api_version = 2,
+            kind = "damage",
+            sequence = 7102,
+            captured_ns = 7102000,
+            damage = 50128,
+            hits = 1,
+            evidence_kind = "unresolved_post_effect_timeout",
+            attacker = active_pair_pal,
+            defender = active_pair_session.aoe_boss,
+            target_key = "0xACTIVEPAIRAOE",
+            waza_id = 0,
+            skill_code = "",
+        }
+    end
+    return false
+end
+BossDPSBroadcastTestApi.hooks.damage_mode = "native-event"
+phase = "game"
+BossDPSBroadcastTestApi.drain_native_damage()
+phase = "bootstrap"
+
+for _, candidate in pairs(BossDPSBroadcastTestApi.sessions) do
+    if candidate.name == "RaidBoss_ActivePair" then
+        active_pair_session.primary = candidate
+    elseif candidate.name == "RaidBoss_ActivePairAOE" then
+        active_pair_session.aoe_session = candidate
+    end
+end
+local active_pair_source
+for _, source in pairs(active_pair_session.primary
+        and active_pair_session.primary.diagnostic_sources or {}) do
+    if source.kind == "pal" then active_pair_source = source end
+end
+local active_pair_skill = active_pair_source
+    and active_pair_source.skill_candidates["skill:DoubleIcicleThrow"] or nil
+assert(active_pair_skill ~= nil
+        and active_pair_skill.damage == 48794
+        and active_pair_skill.inferred_damage == 48794,
+    "ended cast did not retain its delayed DoubleIcicleThrow impact")
+assert(active_pair_source.skill_candidates["skill:IcicleThrow"] == nil
+        or active_pair_source.skill_candidates["skill:IcicleThrow"].damage == 0,
+    "the newer IcicleThrow action stole delayed DoubleIcicleThrow damage")
+active_pair_session.aoe_source = active_pair_session.aoe_session
+    and select(2, next(active_pair_session.aoe_session.diagnostic_sources)) or nil
+assert(active_pair_session.aoe_source ~= nil
+        and active_pair_session.aoe_source.skill_candidates["skill:DoubleIcicleThrow"] ~= nil
+        and active_pair_session.aoe_source.skill_candidates["skill:DoubleIcicleThrow"].damage == 50128,
+    "one linked AOE cast did not cover its unmarked secondary target")
+fake_game_time = 3401
+action_end(active_pair_action)
+run_game_tasks()
+death(active_pair_boss)
+death(active_pair_session.aoe_boss)
+run_game_tasks()
+run_delayed_tasks()
+end
+
+-- Real hard-tower captures show the final ice-projectile impact arriving about
+-- 1.1 seconds after the linked batch. Preserve that same-skill link, but fail
+-- closed when a different linked skill exists in the same window.
+do
+local trailing_pal = actor("BP_CatVampire_TrailingImpact_C_507")
+local trailing_boss = boss_actor("BP_RaidBoss_TrailingImpact_C_508")
+local trailing_profile = {
+    equipped_waza_count = 3,
+    equipped_waza_ids = { [156] = true, [186] = true, [116] = true },
+    equipped_waza_codes = {
+        DiamondFall = true,
+        DoubleIcicleThrow = true,
+        IcicleThrow = true,
+    },
+}
+local linked_batch = {
+    api_version = 2,
+    attacker = trailing_pal,
+    defender = trailing_boss,
+    cast_key = "cast:trailing-double",
+    diagnostic_fields = {
+        ["waza.ID"] = 186,
+        ["waza.Name"] = "DoubleIcicleThrow",
+        ["waza.LocalizedName"] = "極寒雙星",
+        ["attribution.Source"] = "inferred_post_effect_pair_batch",
+    },
+}
+phase = "game"
+BossDPSBroadcastTestApi.hooks.remember_exact_pair_hit(linked_batch, "pal")
+for _, bucket in pairs(BossDPSBroadcastTestApi.hooks.recent_exact_hits_by_pair) do
+    local marker = bucket[#bucket]
+    if marker ~= nil and marker.cast_id == "cast:trailing-double" then
+        marker.clock = os.clock() - 1.1
+    end
+end
+local trailing_event = {
+    api_version = 2,
+    sequence = 7201,
+    evidence_kind = "unresolved_post_effect_timeout",
+    attacker = trailing_pal,
+    defender = trailing_boss,
+    diagnostic_fields = {},
+}
+assert(BossDPSBroadcastTestApi.hooks.infer_native_recent_exact_pair_hit(
+        trailing_event, trailing_pal, "pal", trailing_profile)
+        and trailing_event.diagnostic_fields["waza.Name"] == "DoubleIcicleThrow",
+    "the 1.1-second trailing ice impact lost its linked batch skill")
+phase = "idle"
+end
+
+-- CommetRain can emit four child Commet Waza markers before four large meteor
+-- impacts. Each child marker must promote exactly one unresolved hit to the
+-- equipped parent, in queue order, across repeated waves. The fourth impact
+-- can arrive 4.08 seconds after the last exact parent hit while remaining only
+-- about one second behind its own child marker.
+do
+local meteor_pal = actor("BP_WhiteMothDragon_CommetRain_C_511")
+local meteor_boss = boss_actor("BP_RaidBoss_CommetRain_C_512")
+phase = "game"
+local meteor_profile = {
+    equipped_waza_count = 3,
+    equipped_waza_ids = { [177] = true, [202] = true, [203] = true },
+    equipped_waza_codes = {
+        CommetRain = true,
+        ThunderStorm = true,
+        ThunderSword = true,
+    },
+}
+local meteor_sequence = 7300
+for wave = 1, 3 do
+    BossDPSBroadcastTestApi.hooks.remember_exact_pair_hit({
+        api_version = 2,
+        attacker = meteor_pal,
+        defender = meteor_boss,
+        cast_key = "cast:commet-rain-" .. tostring(wave),
+        diagnostic_fields = {
+            ["waza.ID"] = 177,
+            ["waza.Name"] = "CommetRain",
+            ["waza.LocalizedName"] = "隕星雨",
+            ["attribution.Source"] = "effect_waza",
+        },
+    }, "pal")
+
+    local markers = {}
+    for index, age in ipairs({ 1.04, 0.60, 0.30, 0.10 }) do
+        markers[index] = BossDPSBroadcastTestApi.process_waza_marker({
+            attacker = meteor_pal,
+            defender = meteor_boss,
+            waza_id = 158,
+            captured_at = os.time(),
+            captured_clock = os.clock() - age,
+        })
+    end
+    assert(markers[1] ~= nil and markers[1].id == 158
+            and markers[1].name == "Commet",
+        "Commet child marker was not captured")
+    assert(BossDPSBroadcastTestApi.hooks.select_child_waza_parent_marker(
+            { attacker = meteor_pal, defender = meteor_boss },
+            BossDPSBroadcastTestApi.hooks.native_child_waza_parent_rules.Commet) ~= nil,
+        "the oldest eligible Commet child marker was not selected")
+    assert(BossDPSBroadcastTestApi.hooks.select_child_waza_parent_anchor(
+            { attacker = meteor_pal, defender = meteor_boss },
+            BossDPSBroadcastTestApi.hooks.native_child_waza_parent_rules.Commet) ~= nil,
+        "the recent exact CommetRain parent anchor was not selected")
+
+    local parent_anchor = BossDPSBroadcastTestApi.hooks.select_child_waza_parent_anchor(
+        { attacker = meteor_pal, defender = meteor_boss },
+        BossDPSBroadcastTestApi.hooks.native_child_waza_parent_rules.Commet)
+    for impact = 1, 4 do
+        if impact > 1 then
+            markers[impact].clock = os.clock() - 1.02
+        end
+        parent_anchor.clock = os.clock() - (2.5 + ((impact - 1) * 0.5))
+        meteor_sequence = meteor_sequence + 1
+        local event = {
+            api_version = 2,
+            sequence = meteor_sequence,
+            evidence_kind = "unresolved_post_effect_timeout",
+            attacker = meteor_pal,
+            defender = meteor_boss,
+            diagnostic_fields = {},
+        }
+        assert(BossDPSBroadcastTestApi.hooks.infer_native_child_waza_parent(
+                event, meteor_pal, "pal", meteor_profile),
+            "CommetRain wave " .. tostring(wave) .. " impact "
+                .. tostring(impact) .. " stayed unresolved")
+        assert(event.diagnostic_fields["waza.ID"] == 177
+                and event.diagnostic_fields["waza.Name"] == "CommetRain"
+                and event.diagnostic_fields["inference.ChildWazaID"] == 158
+                and event.diagnostic_fields["inference.ChildWazaName"] == "Commet"
+                and markers[impact].matches == 1,
+            "Commet child impact was not promoted exactly once to CommetRain")
+    end
+end
+local extra_meteor = {
+    api_version = 2,
+    sequence = meteor_sequence + 1,
+    evidence_kind = "unresolved_post_effect_timeout",
+    attacker = meteor_pal,
+    defender = meteor_boss,
+    diagnostic_fields = {},
+}
+assert(not BossDPSBroadcastTestApi.hooks.infer_native_child_waza_parent(
+        extra_meteor, meteor_pal, "pal", meteor_profile),
+    "one consumed Commet marker attributed more than one meteor impact")
+phase = "idle"
+end
+
+-- If the exact hit bridge is absent altogether, one unique recently completed
+-- delayed ice action may own the native timeout. Two different eligible
+-- delayed actions remain ambiguous and must not be guessed.
+do
+local delayed_parameter = object({ SaveParameter = { EquipWaza = { 156, 186, 116 } } })
+local delayed_pal = actor("BP_CatVampire_UniqueDelayedAction_C_509", {
+    CharacterParameterComponent = object({ IndividualParameter = delayed_parameter }),
+})
+local delayed_boss = boss_actor("BP_RaidBoss_UniqueDelayedAction_C_510")
+local delayed_profile = {
+    equipped_waza_count = 3,
+    equipped_waza_ids = { [156] = true, [186] = true, [116] = true },
+    equipped_waza_codes = {
+        DiamondFall = true,
+        DoubleIcicleThrow = true,
+        IcicleThrow = true,
+    },
+}
+local delayed_action = actor("BP_ActionIcicleThrow_C_2147999510", {
+    GetWazaID = function() return 116 end,
+    GetActionCharacter = function() return delayed_pal end,
+})
+fake_game_time = 3450
+action_begin(delayed_action)
+run_game_tasks()
+fake_game_time = 3450.5
+action_end(delayed_action)
+run_game_tasks()
+fake_game_time = 3451.6
+local delayed_event = {
+    api_version = 2,
+    sequence = 7202,
+    evidence_kind = "unresolved_post_effect_timeout",
+    attacker = delayed_pal,
+    defender = delayed_boss,
+    diagnostic_fields = {},
+}
+phase = "game"
+assert(BossDPSBroadcastTestApi.hooks.infer_native_unique_delayed_action(
+        delayed_event, delayed_pal, "pal", delayed_profile)
+        and delayed_event.diagnostic_fields["waza.Name"] == "IcicleThrow",
+    "one unique completed delayed ice action did not own its final impact")
+phase = "idle"
+
+local conflicting_action = actor("BP_ActionDoubleIcicleThrow_C_2147999511", {
+    GetWazaID = function() return 186 end,
+    GetActionCharacter = function() return delayed_pal end,
+})
+fake_game_time = 3451.6
+action_begin(conflicting_action)
+run_game_tasks()
+fake_game_time = 3451.7
+action_end(conflicting_action)
+run_game_tasks()
+fake_game_time = 3451.8
+local ambiguous_event = {
+    api_version = 2,
+    sequence = 7203,
+    evidence_kind = "unresolved_post_effect_timeout",
+    attacker = delayed_pal,
+    defender = delayed_boss,
+    diagnostic_fields = {},
+}
+phase = "game"
+assert(not BossDPSBroadcastTestApi.hooks.infer_native_unique_delayed_action(
+        ambiguous_event, delayed_pal, "pal", delayed_profile)
+        and ambiguous_event.diagnostic_fields["waza.Name"] == nil,
+    "two different delayed ice actions were guessed through")
+phase = "idle"
+end
+
+-- Live regression: Twin Spears exposes its exact Action/cast, but seven native
+-- final hits carry no Waza/effect identity. Hits observed while the action is
+-- active establish one pair/cast binding; only that same binding may retain the
+-- measured short tail after OnEndAction and a newer skill begins. The seventh
+-- hit reproduces the 2026-08-20 live 20,244 tail, which arrived 0.847 seconds
+-- after the preceding segment without another native damage sequence between.
+do
+local rush_parameter = object({ SaveParameter = { EquipWaza = { 165, 187, 205 } } })
+local rush_pal = actor("BP_BlackCentaur_BoundAction_C_511", {
+    CharacterParameterComponent = object({ IndividualParameter = rush_parameter }),
+})
+local rush_boss = boss_actor("BP_RaidBoss_BoundAction_C_512")
+local rush_profile = {
+    equipped_waza_count = 3,
+    equipped_waza_ids = { [165] = true, [187] = true, [205] = true },
+    equipped_waza_codes = {
+        Apocalypse = true,
+        IceAge = true,
+        Unique_BlackCentaur_TwoSpearRushes = true,
+    },
+}
+local rush_damage = { 38168, 40992, 37749, 38446, 40450, 644, 20244 }
+local rush_total = 0
+local rush_cast_keys = {}
+local rush_sequence = 7300
+local function infer_rush_hit(amount)
+    rush_sequence = rush_sequence + 1
+    local event = {
+        api_version = 2,
+        sequence = rush_sequence,
+        evidence_kind = "unresolved_post_effect_timeout",
+        attacker = rush_pal,
+        defender = rush_boss,
+        diagnostic_fields = {},
+    }
+    phase = "game"
+    local inferred = BossDPSBroadcastTestApi.hooks.infer_native_bound_action(
+        event, rush_pal, "pal", rush_profile)
+    phase = "idle"
+    assert(inferred,
+        "Twin Spears native hit did not bind to its exact active cast")
+    assert(event.diagnostic_fields["waza.Name"]
+            == "Unique_BlackCentaur_TwoSpearRushes",
+        "Twin Spears native hit entered the wrong skill")
+    rush_total = rush_total + amount
+    rush_cast_keys[#rush_cast_keys + 1] = event.diagnostic_fields["inference.CastKey"]
+end
+
+local rush_action_one = actor(
+    "BP_ActionUnique_BlackCentaur_TwoSpearRushes_C_2147999512", {
+        GetWazaID = function() return 205 end,
+        GetActionCharacter = function() return rush_pal end,
+    })
+fake_game_time = 3500
+action_begin(rush_action_one)
+run_game_tasks()
+fake_game_time = 3503.45
+infer_rush_hit(rush_damage[1])
+fake_game_time = 3503.65
+infer_rush_hit(rush_damage[2])
+fake_game_time = 3503.80
+action_end(rush_action_one)
+run_game_tasks()
+local rush_next_action = actor("BP_ActionIceAge_C_2147999513", {
+    GetWazaID = function() return 187 end,
+    GetActionCharacter = function() return rush_pal end,
+})
+fake_game_time = 3503.83
+action_begin(rush_next_action)
+run_game_tasks()
+fake_game_time = 3503.85
+infer_rush_hit(rush_damage[3])
+fake_game_time = 3504.00
+infer_rush_hit(rush_damage[4])
+fake_game_time = 3504.50
+action_end(rush_next_action)
+run_game_tasks()
+fake_game_time = 3504.847
+infer_rush_hit(rush_damage[7])
+
+local rush_action_two = actor(
+    "BP_ActionUnique_BlackCentaur_TwoSpearRushes_C_2147999514", {
+        GetWazaID = function() return 205 end,
+        GetActionCharacter = function() return rush_pal end,
+    })
+fake_game_time = 3535
+action_begin(rush_action_two)
+run_game_tasks()
+fake_game_time = 3538.20
+infer_rush_hit(rush_damage[5])
+fake_game_time = 3538.37
+infer_rush_hit(rush_damage[6])
+fake_game_time = 3538.50
+action_end(rush_action_two)
+run_game_tasks()
+
+assert(rush_total == 216693, "Twin Spears seven-hit live regression total changed")
+assert(rush_cast_keys[1] == rush_cast_keys[2]
+        and rush_cast_keys[2] == rush_cast_keys[3]
+        and rush_cast_keys[3] == rush_cast_keys[4]
+        and rush_cast_keys[4] == rush_cast_keys[5],
+    "Twin Spears first cast lost its short-tail binding")
+assert(rush_cast_keys[6] == rush_cast_keys[7]
+        and rush_cast_keys[6] ~= rush_cast_keys[1],
+    "Twin Spears second cast reused the wrong binding")
+
+fake_game_time = 3539.75
+local stale_rush_event = {
+    api_version = 2,
+    sequence = 7308,
+    evidence_kind = "unresolved_post_effect_timeout",
+    attacker = rush_pal,
+    defender = rush_boss,
+    diagnostic_fields = {},
+}
+phase = "game"
+local stale_rush_inferred = BossDPSBroadcastTestApi.hooks.infer_native_bound_action(
+    stale_rush_event, rush_pal, "pal", rush_profile)
+phase = "idle"
+assert(not stale_rush_inferred
+        and stale_rush_event.diagnostic_fields["waza.Name"] == nil,
+    "expired Twin Spears binding guessed a later unrelated hit")
+
+;(function()
+local rush_action_guard = actor(
+    "BP_ActionUnique_BlackCentaur_TwoSpearRushes_C_2147999515", {
+        GetWazaID = function() return 205 end,
+        GetActionCharacter = function() return rush_pal end,
+    })
+fake_game_time = 3570
+action_begin(rush_action_guard)
+run_game_tasks()
+local guard_seed_event = {
+    api_version = 2,
+    sequence = 7401,
+    evidence_kind = "unresolved_post_effect_timeout",
+    attacker = rush_pal,
+    defender = rush_boss,
+    diagnostic_fields = {},
+}
+phase = "game"
+assert(BossDPSBroadcastTestApi.hooks.infer_native_bound_action(
+        guard_seed_event, rush_pal, "pal", rush_profile),
+    "Twin Spears guard binding was not established")
+phase = "idle"
+fake_game_time = 3570.2
+action_end(rush_action_guard)
+run_game_tasks()
+fake_game_time = 3571.1
+local interleaved_rush_event = {
+    api_version = 2,
+    sequence = 7403,
+    evidence_kind = "unresolved_post_effect_timeout",
+    attacker = rush_pal,
+    defender = rush_boss,
+    diagnostic_fields = {},
+}
+phase = "game"
+local interleaved_rush_inferred =
+    BossDPSBroadcastTestApi.hooks.infer_native_bound_action(
+        interleaved_rush_event, rush_pal, "pal", rush_profile)
+phase = "idle"
+assert(not interleaved_rush_inferred
+        and interleaved_rush_event.diagnostic_fields["waza.Name"] == nil,
+    "Twin Spears extended tail guessed through another native damage sequence")
+end)()
+end
+
+-- Live regression: Flash Charge produces one source-less native hit while its
+-- exact equipped Action is still active. Three consecutive live casts dealt
+-- 5,928, 5,429 and 5,270 damage at 2.189-2.550 seconds after OnBeginAction.
+-- Attribute only that single in-action hit; do not accept an early callback, a
+-- second unresolved hit in the same cast, or any callback after OnEndAction.
+;(function()
+local tossin_parameter = object({ SaveParameter = { EquipWaza = { 181, 257, 300 } } })
+local tossin_pal = actor("BP_BlueThunderHorse_BoundAction_C_513", {
+    CharacterParameterComponent = object({ IndividualParameter = tossin_parameter }),
+})
+local tossin_boss = boss_actor("BP_RaidBoss_BlueThunderHorse_C_514")
+local tossin_profile = {
+    equipped_waza_count = 3,
+    equipped_waza_ids = { [181] = true, [257] = true, [300] = true },
+    equipped_waza_codes = {
+        Railbolt = true,
+        Unique_BlueThunderHorse_FlashDash = true,
+        Unique_BlueThunderHorse_Tossin = true,
+    },
+}
+local tossin_damage = { 5928, 5429, 5270 }
+local tossin_hit_age = { 2.189, 2.550, 2.202 }
+local tossin_total = 0
+local tossin_sequence = 7500
+
+local function tossin_event()
+    tossin_sequence = tossin_sequence + 1
+    return {
+        api_version = 2,
+        sequence = tossin_sequence,
+        evidence_kind = "unresolved_post_effect_timeout",
+        attacker = tossin_pal,
+        defender = tossin_boss,
+        diagnostic_fields = {},
+    }
+end
+
+for index, amount in ipairs(tossin_damage) do
+    local started_at = 3600 + ((index - 1) * 30)
+    local action = actor(
+        "BP_ActionUnique_BlueThunderHorse_Tossin_C_214799952" .. tostring(index), {
+            GetWazaID = function() return 300 end,
+            GetActionCharacter = function() return tossin_pal end,
+        })
+    fake_game_time = started_at
+    action_begin(action)
+    run_game_tasks()
+
+    if index == 1 then
+        fake_game_time = started_at + 1.4
+        local early_event = tossin_event()
+        phase = "game"
+        local early_inferred = BossDPSBroadcastTestApi.hooks.infer_native_bound_action(
+            early_event, tossin_pal, "pal", tossin_profile)
+        phase = "idle"
+        assert(not early_inferred and early_event.diagnostic_fields["waza.Name"] == nil,
+            "Flash Charge guessed an unresolved hit before its verified impact window")
+    end
+
+    fake_game_time = started_at + tossin_hit_age[index]
+    local event = tossin_event()
+    phase = "game"
+    local inferred = BossDPSBroadcastTestApi.hooks.infer_native_bound_action(
+        event, tossin_pal, "pal", tossin_profile)
+    phase = "idle"
+    assert(inferred
+            and event.diagnostic_fields["waza.Name"]
+                == "Unique_BlueThunderHorse_Tossin",
+        "Flash Charge live hit did not bind to its exact active cast")
+    tossin_total = tossin_total + amount
+
+    if index == 1 then
+        fake_game_time = started_at + tossin_hit_age[index] + 0.1
+        local duplicate_event = tossin_event()
+        phase = "game"
+        local duplicate_inferred =
+            BossDPSBroadcastTestApi.hooks.infer_native_bound_action(
+                duplicate_event, tossin_pal, "pal", tossin_profile)
+        phase = "idle"
+        assert(not duplicate_inferred
+                and duplicate_event.diagnostic_fields["waza.Name"] == nil,
+            "Flash Charge accepted a second unresolved hit in one cast")
+    end
+
+    fake_game_time = started_at + 3.85
+    action_end(action)
+    run_game_tasks()
+end
+
+assert(tossin_total == 16627,
+    "Flash Charge three-cast live regression total changed")
+fake_game_time = 3663.90
+local post_action_event = tossin_event()
+phase = "game"
+local post_action_inferred = BossDPSBroadcastTestApi.hooks.infer_native_bound_action(
+    post_action_event, tossin_pal, "pal", tossin_profile)
+phase = "idle"
+assert(not post_action_inferred
+        and post_action_event.diagnostic_fields["waza.Name"] == nil,
+    "Flash Charge guessed an unresolved hit after OnEndAction")
+end)()
 
 -- Native exact overlap proof: final hits from sustained skills may arrive
 -- after newer casts have started. The collector's per-hit exact Waza/effect
@@ -3168,9 +4045,48 @@ end
 -- Native bridge simulation: one aggregated bucket represents many hits. Lua
 -- must preserve the exact damage while carrying the hit count into tie-break
 -- metadata, and it must classify the target for the C++ fast path.
+local native_classifications = {}
+BossDPSNativeClassifyTarget = function(target_key, state)
+    native_classifications[#native_classifications + 1] = target_key .. ":" .. state
+end
+
+-- A negative native classification must expire with the Lua cache and must
+-- also be released by F2. Previously only the Lua address entry expired while
+-- the C++ collector kept suppressing that target indefinitely.
+local native_nonboss_index = 0
+BossDPSNativeDrainOne = function()
+    native_nonboss_index = native_nonboss_index + 1
+    if native_nonboss_index == 1 then
+        return true, player_one, normal_target, 10, nil, nil, nil, 1, "0xSTALE"
+    end
+    return false
+end
+BossDPSBroadcastTestApi.hooks.damage_mode = "native"
+phase = "game"
+BossDPSBroadcastTestApi.drain_native_damage()
+phase = "bootstrap"
+assert(native_classifications[#native_classifications] == "0xSTALE:nonboss",
+    "confirmed ordinary target was not classified for the native fast path")
+fake_time = fake_time + runtime_config.NonBossCacheSeconds + 1
+phase = "game"
+BossDPSBroadcastTestApi.cleanup_sessions()
+phase = "bootstrap"
+assert(native_classifications[#native_classifications] == "0xSTALE:unknown",
+    "expired Lua non-Boss cache did not release the native classification")
+native_nonboss_index = 0
+phase = "game"
+BossDPSBroadcastTestApi.drain_native_damage()
+phase = "bootstrap"
+assert(native_classifications[#native_classifications] == "0xSTALE:nonboss",
+    "ordinary target was not reclassified after expiry")
+phase = "game"
+BossDPSBroadcastTestApi.reset_skill_diagnostics()
+phase = "bootstrap"
+assert(native_classifications[#native_classifications] == "0xSTALE:unknown",
+    "F2 reset retained a native non-Boss classification from the prior test")
+
 local native_boss = boss_actor("BP_RaidBoss_Native_C_501")
 local native_record_index = 0
-local native_classifications = {}
 BossDPSNativeDrainOne = function()
     native_record_index = native_record_index + 1
     if native_record_index == 1 then
@@ -3178,11 +4094,9 @@ BossDPSNativeDrainOne = function()
     end
     return false
 end
-BossDPSNativeClassifyTarget = function(target_key, state)
-    native_classifications[#native_classifications + 1] = target_key .. ":" .. state
-end
 BossDPSBroadcastTestApi.hooks.damage_mode = "native"
 local native_hits_before = BossDPSBroadcastTestApi.metrics.native_hits
+local native_boss_classification_before = #native_classifications
 phase = "game"
 BossDPSBroadcastTestApi.drain_native_damage()
 phase = "bootstrap"
@@ -3203,7 +4117,7 @@ assert(native_contributor ~= nil and native_contributor.hits == 123,
     "native aggregate did not preserve hit count")
 assert(BossDPSBroadcastTestApi.metrics.native_hits - native_hits_before == 123,
     "native hit metric is incorrect")
-assert(native_classifications[1] == "0xABC:boss",
+assert(native_classifications[native_boss_classification_before + 1] == "0xABC:boss",
     "native target was not classified as a boss")
 death(native_boss)
 run_game_tasks()
@@ -3239,9 +4153,10 @@ assert(BossDPSBroadcastTestApi.hooks.damage == false,
     "required native runtime fault left damage recording enabled")
 runtime_config.RequireNativeCollector = false
 
-assert(BossDPSBroadcastTestApi.metrics.errors == 0, "unexpected processing errors")
+assert(BossDPSBroadcastTestApi.metrics.errors == 0,
+    "unexpected processing errors: " .. tostring(BossDPSBroadcastTestApi.metrics.errors))
 assert(#delivered_by_uid[test_guid_key(uid_spectator)] == 0, "spectator received any participant-only report")
 
 assert(#BossDPSBroadcastTestApi.sessions == 0, "sessions table must be map-like")
 assert(original_os_time ~= nil)
-print("PalSkillDPSAnalyzer v0.5.19 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed")
+print("PalSkillDPSAnalyzer v0.5.27 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed")

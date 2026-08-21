@@ -55,8 +55,6 @@ namespace
     constexpr std::size_t maximum_pending_events = 16384;
     constexpr std::size_t maximum_source_records = 32768;
     constexpr std::size_t maximum_discovered_script_functions = 8192;
-    constexpr std::size_t maximum_damage_handler_probe_functions = 128;
-    constexpr std::size_t maximum_damage_handler_probe_samples = 3;
     constexpr std::size_t maximum_damage_handler_probe_reports = 24;
     constexpr std::size_t maximum_final_source_probe_samples = 24;
     constexpr std::size_t maximum_final_source_probe_fields = 48;
@@ -68,6 +66,12 @@ namespace
     constexpr std::size_t maximum_damage_utility_probe_samples = 24;
     constexpr std::uint64_t maximum_pending_attack_age_ns = 1'000'000'000ULL;
     constexpr std::uint64_t maximum_pending_final_damage_age_ns = 1'000'000'000ULL;
+    // A Pal can emit a small cluster of final damage callbacks before the
+    // corresponding OnAttack callback. Carry that one observed Waza as a
+    // bounded candidate for the cluster, but do not call it exact. Larger
+    // clusters remain unresolved because overlapping delayed effects become
+    // increasingly plausible.
+    constexpr std::size_t maximum_reverse_pair_candidate_batch = 4;
 
     enum class TargetState : std::uint8_t
     {
@@ -663,8 +667,8 @@ namespace
         BossDPSNativeCollector()
         {
             ModName = STR("BossDPSNativeCollector");
-            ModVersion = STR("3.11.0-reverse-pair-probe");
-            ModDescription = STR("Native fail-closed Pal reverse source pairing probe");
+            ModVersion = STR("3.12.0-bounded-reverse-batch");
+            ModDescription = STR("Native Pal source collector with bounded inferred reverse batches");
             ModAuthors = STR("AsahiChan-Game");
         }
 
@@ -923,6 +927,15 @@ namespace
             active_filter_attack_scopes.clear();
             active_damage_utility_scopes.clear();
             {
+                // Lua's F2 reset starts a new target-selection contract. Boss
+                // and non-Boss classifications are only valid for the prior
+                // encounter; retaining a negative entry here can suppress all
+                // damage for a reused or newly initialized encounter actor.
+                std::scoped_lock lock{m_mutex};
+                m_target_states.clear();
+                m_known_defenders.clear();
+            }
+            {
                 std::scoped_lock lock{m_fingerprint_mutex};
                 m_pending_fingerprints.reset();
             }
@@ -1010,6 +1023,7 @@ namespace
             m_pending_attack_missing_actor.store(0, std::memory_order_release);
             m_reverse_pair_recorded.store(0, std::memory_order_release);
             m_reverse_pair_promoted.store(0, std::memory_order_release);
+            m_reverse_pair_inferred.store(0, std::memory_order_release);
             m_reverse_pair_ambiguous.store(0, std::memory_order_release);
             m_reverse_pair_expired.store(0, std::memory_order_release);
             m_reverse_pair_overflow.store(0, std::memory_order_release);
@@ -1137,6 +1151,7 @@ namespace
                    << m_pending_attack_missing_actor.load()
                    << "; reverse_pair_recorded=" << m_reverse_pair_recorded.load()
                    << "; reverse_pair_promoted=" << m_reverse_pair_promoted.load()
+                   << "; reverse_pair_inferred=" << m_reverse_pair_inferred.load()
                    << "; reverse_pair_ambiguous=" << m_reverse_pair_ambiguous.load()
                    << "; reverse_pair_expired=" << m_reverse_pair_expired.load()
                    << "; reverse_pair_overflow=" << m_reverse_pair_overflow.load()
@@ -1244,9 +1259,10 @@ namespace
                    << ";pending_attack_ambiguous=" << m_pending_attack_ambiguous.load()
                    << ";pending_attack_missing=" << m_pending_attack_missing.load()
                    << ";pending_attack_expired=" << m_pending_attack_expired.load()
-                   << ";reverse_pair=experimental_unique_only"
+                   << ";reverse_pair=unique_exact_bounded_batch_inferred"
                    << ";reverse_pair_recorded=" << m_reverse_pair_recorded.load()
                    << ";reverse_pair_promoted=" << m_reverse_pair_promoted.load()
+                   << ";reverse_pair_inferred=" << m_reverse_pair_inferred.load()
                    << ";reverse_pair_ambiguous=" << m_reverse_pair_ambiguous.load()
                    << ";reverse_pair_expired=" << m_reverse_pair_expired.load()
                    << ";reverse_pair_overflow=" << m_reverse_pair_overflow.load()
@@ -2702,112 +2718,6 @@ namespace
             ++m_source_errors;
         }
 
-        auto probe_script_damage_handler(
-            UObject* context,
-            FFrame& stack,
-            UFunction* function
-        ) -> void
-        {
-            if (context == nullptr || stack.Locals() == nullptr || function == nullptr)
-            {
-                return;
-            }
-            const auto function_name = RC::to_string(function->GetName());
-            if (!looks_like_damage_handler(function_name))
-            {
-                return;
-            }
-            const auto layout = cached_attack_layout(function);
-            if (!layout.ready())
-            {
-                return;
-            }
-
-            ++m_probe_damage_callbacks;
-            std::size_t sample_number{};
-            bool first_function_sample{};
-            {
-                std::scoped_lock lock{m_probe_mutex};
-                auto known = m_probe_samples_by_function.find(function);
-                if (known == m_probe_samples_by_function.end())
-                {
-                    if (m_probe_samples_by_function.size()
-                        >= maximum_damage_handler_probe_functions)
-                    {
-                        m_probe_cache_overflow.store(true, std::memory_order_release);
-                        return;
-                    }
-                    known = m_probe_samples_by_function.emplace(function, 0).first;
-                    first_function_sample = true;
-                }
-                if (known->second >= maximum_damage_handler_probe_samples)
-                {
-                    return;
-                }
-                sample_number = ++known->second;
-            }
-            if (first_function_sample)
-            {
-                ++m_probe_damage_functions;
-            }
-
-            const auto context_is_effect = m_skill_effect_base_class != nullptr
-                && context->IsA(m_skill_effect_base_class);
-            const auto context_is_action = m_action_base_class != nullptr
-                && context->IsA(m_action_base_class);
-            if (context_is_effect)
-            {
-                ++m_probe_effect_contexts;
-            }
-            else if (context_is_action)
-            {
-                ++m_probe_action_contexts;
-            }
-            else
-            {
-                ++m_probe_other_contexts;
-            }
-
-            auto* parameters = reinterpret_cast<std::byte*>(stack.Locals());
-            auto* damage_info = layout.damage_info->ContainerPtrToValuePtr<void>(parameters);
-            auto* attacker = layout.info_attacker.read(damage_info);
-            auto* defender = layout.defender.read(parameters);
-            auto* filter = find_attack_filter(context, function);
-            const auto [waza_id, skill_code] = read_filter_waza(filter);
-            if (waza_id > 0)
-            {
-                ++m_probe_waza_samples;
-            }
-
-            std::ostringstream message;
-            message << "damage-handler-probe sample=" << sample_number
-                    << " function=" << function_name
-                    << " owner="
-                    << (function->GetOuterPrivate() != nullptr
-                        ? RC::to_string(function->GetOuterPrivate()->GetName())
-                        : std::string{"none"})
-                    << " context_class="
-                    << (context->GetClassPrivate() != nullptr
-                        ? RC::to_string(context->GetClassPrivate()->GetName())
-                        : std::string{"none"})
-                    << " context_kind="
-                    << (context_is_effect ? "effect" : (context_is_action ? "action" : "other"))
-                    << " attacker=" << token_text(object_token(attacker))
-                    << " defender=" << token_text(object_token(defender))
-                    << " filter=" << token_text(object_token(filter))
-                    << " waza=" << waza_id
-                    << " code=" << skill_code
-                    << " hit_count=" << layout.hit_count.read(parameters);
-            {
-                std::scoped_lock lock{m_probe_mutex};
-                if (m_probe_reports.size() < maximum_damage_handler_probe_reports)
-                {
-                    m_probe_reports.push_back(message.str());
-                }
-            }
-            log(RC::to_wstring(message.str()));
-        }
-
         auto capture_script_source_pre(UObject* context, FFrame& stack) -> void
         {
             auto* function = stack.Node();
@@ -2835,7 +2745,9 @@ namespace
                 capture_filter_attack_callback_pre(context, stack, function);
                 return;
             }
-            probe_script_damage_handler(context, stack, function);
+            // Arbitrary Blueprint damage-handler probing is intentionally not
+            // present here. Exact attribution is limited to verified Pal
+            // effect contexts and known callback layouts.
             if (equals_ignore_case(function_name, "OnBeginAction")
                 && context != nullptr && m_action_base_class != nullptr
                 && context->IsA(m_action_base_class))
@@ -3065,13 +2977,54 @@ namespace
                 if (reverse_match.kind
                     == pal_dps::PendingFinalDamageMatchKind::pending_ambiguous)
                 {
-                    m_reverse_pair_ambiguous.fetch_add(
-                        reverse_match.candidate_count, std::memory_order_relaxed
+                    if (reverse_match.candidate_count
+                        <= maximum_reverse_pair_candidate_batch)
+                    {
+                        m_reverse_pair_inferred.fetch_add(
+                            reverse_match.candidate_count, std::memory_order_relaxed
+                        );
+                        for (std::size_t index = reverse_match.expired_count;
+                             index < reverse_match.released.size(); ++index)
+                        {
+                            apply_pending_attack_source(
+                                reverse_match.released[index], pending_source,
+                                "post_effect_pair_batch_candidate"
+                            );
+                            decrement_unresolved_if_positive();
+                        }
+                    }
+                    else
+                    {
+                        m_reverse_pair_ambiguous.fetch_add(
+                            reverse_match.candidate_count, std::memory_order_relaxed
+                        );
+                    }
+                }
+                if (reverse_match.kind
+                        == pal_dps::PendingFinalDamageMatchKind::pending_ambiguous
+                    && reverse_match.candidate_count
+                        <= maximum_reverse_pair_candidate_batch)
+                {
+                    for (std::size_t index = 0;
+                         index < reverse_match.released.size(); ++index)
+                    {
+                        if (index < reverse_match.expired_count)
+                        {
+                            reverse_match.released[index].evidence_kind.assign(
+                                "unresolved_post_effect_timeout"
+                            );
+                        }
+                        static_cast<void>(m_event_queue.enqueue(
+                            std::move(reverse_match.released[index])
+                        ));
+                    }
+                }
+                else
+                {
+                    enqueue_released_pending_final_damage(
+                        std::move(reverse_match.released), reverse_match.expired_count
                     );
                 }
-                enqueue_released_pending_final_damage(
-                    std::move(reverse_match.released), reverse_match.expired_count
-                );
 
                 auto source_consumed = reverse_match.pair_expired_count > 0
                     || reverse_match.kind
@@ -3942,6 +3895,7 @@ namespace
         std::atomic<std::uint64_t> m_pending_attack_missing_actor{};
         std::atomic<std::uint64_t> m_reverse_pair_recorded{};
         std::atomic<std::uint64_t> m_reverse_pair_promoted{};
+        std::atomic<std::uint64_t> m_reverse_pair_inferred{};
         std::atomic<std::uint64_t> m_reverse_pair_ambiguous{};
         std::atomic<std::uint64_t> m_reverse_pair_expired{};
         std::atomic<std::uint64_t> m_reverse_pair_overflow{};

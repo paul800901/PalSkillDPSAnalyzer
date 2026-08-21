@@ -10,13 +10,16 @@ param(
     [string]$IconFontSource = "",
     [Parameter(Mandatory = $true)]
     [string]$UE4SSDll,
-    [string]$BuildDirectory = "$PSScriptRoot\build-native"
+    [string]$BuildDirectory = ""
 )
 
 $ErrorActionPreference = "Stop"
 
 if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
     $ProjectRoot = Split-Path -Parent $PSScriptRoot
+}
+if ([string]::IsNullOrWhiteSpace($BuildDirectory)) {
+    $BuildDirectory = Join-Path $PSScriptRoot "build-native"
 }
 $projectRootResolved = [System.IO.Path]::GetFullPath($ProjectRoot)
 $lock = Get-Content -LiteralPath (Join-Path $projectRootResolved "tools\native-toolchain.lock.json") -Raw | ConvertFrom-Json
