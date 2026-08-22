@@ -452,6 +452,7 @@ local waza_names = {
     [186] = "EPalWazaID::DoubleIcicleThrow",
     [205] = "EPalWazaID::Unique_BlackCentaur_TwoSpearRushes",
     [300] = "EPalWazaID::Unique_BlueThunderHorse_Tossin",
+    [307] = "EPalWazaID::Unique_MummyPal_MummyAttack",
     [158] = "EPalWazaID::Commet",
     [177] = "EPalWazaID::CommetRain",
     [42] = "EPalWazaID::FireBall",
@@ -3905,6 +3906,184 @@ assert(not post_action_inferred
     "Flash Charge guessed an unresolved hit after OnEndAction")
 end)()
 
+-- Live regression: Mummy Rush is one 500-power cast split across four final
+-- hits. Two observed full casts produced four consecutive source-less native
+-- hits, with the last swings landing no more than 0.323 seconds after
+-- OnEndAction. A third cast missed its opening swings and produced only two
+-- callbacks, 0.014 and 0.341 seconds after OnEndAction. Bind those verified
+-- patterns to the exact cast and reject early, interleaved, fifth, and stale
+-- callbacks.
+;(function()
+local mummy_parameter = object({ SaveParameter = { EquipWaza = { 165, 174, 307 } } })
+local mummy_pal = actor("BP_MummyPal_BoundAction_C_515", {
+    CharacterParameterComponent = object({ IndividualParameter = mummy_parameter }),
+})
+local mummy_boss = boss_actor("BP_RaidBoss_MummyPal_C_516")
+local mummy_profile = {
+    equipped_waza_count = 3,
+    equipped_waza_ids = { [165] = true, [174] = true, [307] = true },
+    equipped_waza_codes = {
+        Apocalypse = true,
+        SandTwister = true,
+        Unique_MummyPal_MummyAttack = true,
+    },
+}
+local mummy_sequence = 7600
+local function mummy_event(sequence_step)
+    mummy_sequence = mummy_sequence + (sequence_step or 1)
+    return {
+        api_version = 2,
+        sequence = mummy_sequence,
+        evidence_kind = "unresolved_post_effect_timeout",
+        attacker = mummy_pal,
+        defender = mummy_boss,
+        diagnostic_fields = {},
+    }
+end
+local function infer_mummy_hit(sequence_step)
+    local event = mummy_event(sequence_step)
+    phase = "game"
+    local inferred = BossDPSBroadcastTestApi.hooks.infer_native_bound_action(
+        event, mummy_pal, "pal", mummy_profile)
+    phase = "idle"
+    return inferred, event
+end
+
+local live_casts = {
+    {
+        started_at = 3700,
+        ended_at = 3704.201,
+        hit_ages = { 2.148, 3.186, 4.242, 4.508 },
+        damage = { 1439, 1628, 1430, 1518 },
+    },
+    {
+        started_at = 3730,
+        ended_at = 3734.195,
+        hit_ages = { 2.160, 3.128, 4.195, 4.518 },
+        damage = { 1746, 1537, 1577, 1465 },
+    },
+}
+local live_totals = {}
+for cast_index, capture in ipairs(live_casts) do
+    local action = actor(
+        "BP_ActionUnique_MummyPal_MummyAttack_C_214799953" .. tostring(cast_index), {
+            GetWazaID = function() return 307 end,
+            GetActionCharacter = function() return mummy_pal end,
+        })
+    fake_game_time = capture.started_at
+    action_begin(action)
+    run_game_tasks()
+
+    if cast_index == 1 then
+        fake_game_time = capture.started_at + 1.95
+        local early_inferred, early_event = infer_mummy_hit()
+        assert(not early_inferred
+                and early_event.diagnostic_fields["waza.Name"] == nil,
+            "Mummy Rush guessed a hit before its verified impact window")
+    end
+
+    local total = 0
+    local cast_key = nil
+    for hit_index, age in ipairs(capture.hit_ages) do
+        if hit_index == 3 then
+            fake_game_time = capture.ended_at
+            action_end(action)
+            run_game_tasks()
+        end
+        fake_game_time = capture.started_at + age
+        local inferred, event = infer_mummy_hit()
+        assert(inferred
+                and event.diagnostic_fields["waza.Name"]
+                    == "Unique_MummyPal_MummyAttack",
+            "Mummy Rush live hit did not bind to its exact cast")
+        cast_key = cast_key or event.diagnostic_fields["inference.CastKey"]
+        assert(event.diagnostic_fields["inference.CastKey"] == cast_key,
+            "Mummy Rush four-hit cast split across cast keys")
+        total = total + capture.damage[hit_index]
+    end
+    live_totals[cast_index] = total
+
+    -- Leave the completed four-hit binding intact after cast one. The first
+    -- hit of cast two must replace that stale binding immediately rather than
+    -- being sacrificed while the old binding is cleared.
+    if cast_index == 2 then
+        fake_game_time = capture.started_at + 4.53
+        local fifth_inferred, fifth_event = infer_mummy_hit()
+        assert(not fifth_inferred
+                and fifth_event.diagnostic_fields["waza.Name"] == nil,
+            "Mummy Rush accepted a fifth unresolved hit")
+    end
+end
+assert(live_totals[1] == 6015 and live_totals[2] == 6325,
+    "Mummy Rush four-hit live regression totals changed")
+
+local guard_action = actor(
+    "BP_ActionUnique_MummyPal_MummyAttack_C_2147999533", {
+        GetWazaID = function() return 307 end,
+        GetActionCharacter = function() return mummy_pal end,
+    })
+fake_game_time = 3760
+action_begin(guard_action)
+run_game_tasks()
+fake_game_time = 3762.15
+local guard_seeded = infer_mummy_hit()
+assert(guard_seeded, "Mummy Rush guard binding was not established")
+-- A middle swing may miss. The later landed swing still belongs to the same
+-- four-swing Action even when the previous landed hit was over 1.15 seconds
+-- ago and unrelated global native events advanced the sequence.
+fake_game_time = 3764.19
+local interleaved_inferred, interleaved_event = infer_mummy_hit(2)
+assert(interleaved_inferred
+        and interleaved_event.diagnostic_fields["waza.Name"]
+            == "Unique_MummyPal_MummyAttack",
+    "Mummy Rush rejected a later swing after a missed middle swing")
+fake_game_time = 3764.195
+local duplicate_inferred, duplicate_event = infer_mummy_hit(0)
+assert(not duplicate_inferred
+        and duplicate_event.diagnostic_fields["waza.Name"] == nil,
+    "Mummy Rush accepted a duplicate native damage sequence")
+fake_game_time = 3764.2
+action_end(guard_action)
+run_game_tasks()
+fake_game_time = 3764.56
+local stale_inferred, stale_event = infer_mummy_hit()
+assert(not stale_inferred and stale_event.diagnostic_fields["waza.Name"] == nil,
+    "Mummy Rush accepted a callback beyond its verified action tail")
+
+local tail_only_action = actor(
+    "BP_ActionUnique_MummyPal_MummyAttack_C_2147999534", {
+        GetWazaID = function() return 307 end,
+        GetActionCharacter = function() return mummy_pal end,
+    })
+fake_game_time = 3790
+action_begin(tail_only_action)
+run_game_tasks()
+fake_game_time = 3794.178
+action_end(tail_only_action)
+run_game_tasks()
+local tail_only_cast_key = nil
+local tail_only_hits = {
+    { at = 3794.192, damage = 1885 },
+    { at = 3794.519, damage = 1994 },
+}
+local tail_only_total = 0
+for _, hit in ipairs(tail_only_hits) do
+    fake_game_time = hit.at
+    local inferred, event = infer_mummy_hit()
+    assert(inferred
+            and event.diagnostic_fields["waza.Name"]
+                == "Unique_MummyPal_MummyAttack",
+        "Mummy Rush failed to bind a verified tail-only hit")
+    tail_only_cast_key = tail_only_cast_key
+        or event.diagnostic_fields["inference.CastKey"]
+    assert(event.diagnostic_fields["inference.CastKey"] == tail_only_cast_key,
+        "Mummy Rush tail-only hits split across cast keys")
+    tail_only_total = tail_only_total + hit.damage
+end
+assert(tail_only_total == 3879,
+    "Mummy Rush tail-only live regression total changed")
+end)()
+
 -- Native exact overlap proof: final hits from sustained skills may arrive
 -- after newer casts have started. The collector's per-hit exact Waza/effect
 -- source must survive the positional Lua bridge without being rewritten by
@@ -4159,4 +4338,4 @@ assert(#delivered_by_uid[test_guid_key(uid_spectator)] == 0, "spectator received
 
 assert(#BossDPSBroadcastTestApi.sessions == 0, "sessions table must be map-like")
 assert(original_os_time ~= nil)
-print("PalSkillDPSAnalyzer v0.5.27 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed")
+print("PalSkillDPSAnalyzer v0.5.28 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed")

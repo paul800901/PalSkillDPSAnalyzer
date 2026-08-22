@@ -1972,6 +1972,21 @@ local NATIVE_BOUND_ACTION_RULES = {
         max_hits = 1,
         allow_tail = false,
     },
+    Unique_MummyPal_MummyAttack = {
+        -- Two live casts produced four source-less native hits at
+        -- 2.148/3.186/4.242/4.508 and 2.160/3.128/4.195/4.518 seconds.
+        -- The last two land at most 0.323 seconds after OnEndAction.
+        active_min_seconds = 2.0,
+        active_seconds = 4.3,
+        tail_seconds = 0.35,
+        max_hits = 4,
+        -- Native Event sequence is global, so an exact Apocalypse/Sand Twister
+        -- hit can advance it between two Mummy Rush swings. Require forward
+        -- progress, but not adjacent global sequence numbers.
+        require_monotonic_sequence = true,
+        strict_binding = true,
+        allow_tail_seed = true,
+    },
 }
 
 local function bound_action_is_equipped(record, source_profile)
@@ -2006,6 +2021,7 @@ hooks.infer_native_bound_action = function(
     local pair_key, actor_key = waza_pair_key(event.attacker, event.defender)
     if pair_key == nil or actor_key == nil then return false end
     local now = game_time_seconds()
+    local rejected_record = nil
     local binding = native_action_bindings_by_pair[pair_key]
     if binding ~= nil then
         local record = binding.record
@@ -2022,16 +2038,26 @@ hooks.infer_native_bound_action = function(
         local last_sequence = math.floor(to_number(binding.last_sequence))
         local contiguous_sequence = sequence > 0 and last_sequence > 0
             and sequence == last_sequence + 1
-        local normal_gap = hit_gap >= 0 and hit_gap <= rule.hit_gap_seconds
+        local monotonic_sequence = sequence > 0 and last_sequence > 0
+            and sequence > last_sequence
+        local normal_hit_gap = tonumber(rule.hit_gap_seconds)
+        local normal_gap = hit_gap >= 0
+            and (normal_hit_gap == nil or hit_gap <= normal_hit_gap)
+        local contiguous_hit_gap = tonumber(rule.contiguous_hit_gap_seconds)
+            or normal_hit_gap
         local contiguous_gap = contiguous_sequence
             and hit_gap >= 0
-            and hit_gap <= (tonumber(rule.contiguous_hit_gap_seconds)
-                or rule.hit_gap_seconds)
+            and (contiguous_hit_gap == nil or hit_gap <= contiguous_hit_gap)
         local tail_limit = contiguous_gap
             and (tonumber(rule.contiguous_tail_seconds) or rule.tail_seconds)
             or rule.tail_seconds
         local max_hits = tonumber(rule.max_hits)
         local hit_count = tonumber(binding.hit_count) or 0
+        local sequence_ok = rule.require_contiguous_sequence ~= true
+            or contiguous_sequence
+        if rule.require_monotonic_sequence == true then
+            sequence_ok = monotonic_sequence
+        end
         if max_hits ~= nil and hit_count >= max_hits
             and record ~= nil and record.actor_key == actor_key
             and ended_at == nil and active_age >= active_min
@@ -2041,6 +2067,7 @@ hooks.infer_native_bound_action = function(
         local binding_live = record ~= nil and record.actor_key == actor_key
             and rule ~= nil and bound_action_is_equipped(record, source_profile)
             and (max_hits == nil or hit_count < max_hits)
+            and sequence_ok
             and (normal_gap or contiguous_gap)
             and ((ended_at == nil and active_age >= active_min
                     and active_age <= rule.active_seconds)
@@ -2065,7 +2092,16 @@ hooks.infer_native_bound_action = function(
                 return true
             end
         end
+        rejected_record = record
         native_action_bindings_by_pair[pair_key] = nil
+        -- A verified strict multi-hit rule may not silently restart the same
+        -- active cast after a timing failure, duplicate/backward sequence, or
+        -- exhausted hit budget. It may still replace a completed old binding
+        -- with a newer exact Action record.
+        if rule ~= nil and rule.strict_binding == true
+            and record ~= nil and record.ended_at == nil then
+            return false
+        end
     end
 
     local selected = nil
@@ -2088,10 +2124,42 @@ hooks.infer_native_bound_action = function(
             end
         end
     end
+    -- Mummy Rush can connect only its third/fourth swing when the opening
+    -- swings miss the target. Two live callbacks then arrived 0.014 and 0.341
+    -- seconds after the exact Action ended. Permit that named rule to seed a
+    -- binding from the unique just-ended equipped Action; generic completed
+    -- actions remain ineligible here.
+    if selected == nil then
+        for index = #action_record_order, 1, -1 do
+            local record = action_record_order[index].record
+            if record ~= nil and record ~= rejected_record
+                and record.actor_key == actor_key
+                and record.ended_at ~= nil then
+                local code = canonical_skill_name(record.code or "")
+                local rule = NATIVE_BOUND_ACTION_RULES[code]
+                local ended_at = tonumber(record.ended_at)
+                local tail_age = ended_at ~= nil and (now - ended_at) or math.huge
+                if rule ~= nil and rule.allow_tail_seed == true
+                    and tail_age >= 0 and tail_age <= rule.tail_seconds
+                    and bound_action_is_equipped(record, source_profile) then
+                    if selected ~= nil and selected ~= record then
+                        return false
+                    end
+                    selected = record
+                elseif tail_age > 0.35 then
+                    break
+                end
+            end
+        end
+    end
     if selected == nil then return false end
     local code = canonical_skill_name(selected.code or "")
+    local selected_ended = selected.ended_at ~= nil
+    local source_label = selected_ended
+        and "inferred_native_bound_action_tail"
+        or "inferred_native_bound_active_action"
     if not promote_action_record(
-        event, selected, "inferred_native_bound_active_action") then
+        event, selected, source_label) then
         return false
     end
     native_action_bindings_by_pair[pair_key] = {
@@ -2103,9 +2171,11 @@ hooks.infer_native_bound_action = function(
     }
     event.diagnostic_fields["native.EvidenceKind"] = event.evidence_kind
     trace_skill_event(string.format(
-        "native-hit-inferred-bound-action sequence=%s phase=active waza=%s code=%s cast=%s",
-        tostring(event.sequence or "none"), tostring(selected.waza_id or "none"),
-        tostring(code), tostring(selected.cast_id or selected.key or "none")
+        "native-hit-inferred-bound-action sequence=%s phase=%s waza=%s code=%s cast=%s",
+        tostring(event.sequence or "none"),
+        selected_ended and "tail" or "active",
+        tostring(selected.waza_id or "none"), tostring(code),
+        tostring(selected.cast_id or selected.key or "none")
     ))
     return true
 end
@@ -6015,7 +6085,7 @@ local function register_hooks()
 
     if hooks.damage and hooks.death then
         log(string.format(
-            "loaded v0.5.27-commet-rain-child-hits; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s waza_hook=%s action_hooks=%s/%s effect_hook=%s filter_hook=%s effect_attack_hooks=%d; captured_hooks=%d",
+            "loaded v0.5.28-mummy-rush-four-hit; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s waza_hook=%s action_hooks=%s/%s effect_hook=%s filter_hook=%s effect_attack_hooks=%d; captured_hooks=%d",
             hooks.damage_mode,
             tostring(config.EnableDPSRecording ~= false),
             tostring(config.EnableSkillDiagnostics == true),

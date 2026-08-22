@@ -88,7 +88,7 @@ if (-not $match.Success -or $match.Groups[1].Value -eq "0") {
 
 $metadata.publishedfileid = $match.Groups[1].Value
 $metadata.changenote = $changeNote
-$metadata.last_published_version = "0.5.27"
+$metadata.last_published_version = "0.5.28"
 $publishedFileIdJson = ConvertTo-Json -InputObject ([string]$metadata.publishedfileid) -Compress
 $changeNoteJson = ConvertTo-Json -InputObject ([string]$metadata.changenote) -Compress
 $publishedVersionJson = ConvertTo-Json -InputObject ([string]$metadata.last_published_version) -Compress

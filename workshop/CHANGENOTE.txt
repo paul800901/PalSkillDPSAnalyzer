@@ -1,13 +1,13 @@
-v0.5.27 – Comet Rain child-hit attribution
+v0.5.28 – Mummy Rush four-hit attribution
 
-• Live captures show Comet Rain waves creating one Commet child Waza marker per large meteor impact, consistently about one second before that impact.
-• Four previously unattributed impacts (3,544 + 3,197 + 3,287 + 3,240) exactly equal the reported 13,268 Unattributed Damage.
-• Each Commet marker now attributes exactly one 0.75–1.35 second delayed hit to the equipped CommetRain parent on the same Pal and target. Four-meteor waves keep the exact parent anchor for 4.25 seconds so the measured 4.08-second tail remains covered.
-• The rule requires a recent exact CommetRain anchor and never uses damage amount; missing, stale, consumed, unequipped, or conflicting evidence remains unresolved.
+• Three full live Mummy Rush casts each produced four source-less native hits. The newest 2,126 + 2,111 + 1,813 + 2,108 capture showed that other resolved damage can advance the global native sequence between swings.
+• The skill's displayed 500 power belongs to the complete four-hit cast, not to each individual hit.
+• The exact equipped Action now binds at most four forward-sequence hits beginning at least two seconds into the cast. Global sequence gaps and missed middle swings are allowed; duplicate/backward sequences, fifth hits, and tails beyond 0.35 seconds remain unresolved.
+• No damage amount participates in attribution.
 
-v0.5.27－隕星雨子技能逐段歸屬
+v0.5.28－突襲木乃伊四段歸屬
 
-• 實機確認隕星雨會為每段大型隕石傷害各建立一個 Commet 子技能 Waza 標記，命中穩定在標記後約一秒。
-• 原先未歸屬的四段 3,544、3,197、3,287、3,240 合計正好等於畫面上的 13,268。
-• 每個 Commet 標記現在只會把一段 0.75–1.35 秒後、同一隻帕魯對同一目標的命中歸入已裝備的 CommetRain。四顆波次的父技能錨點保留 4.25 秒，可涵蓋實測最慢 4.08 秒的尾端。
-• 必須另有近期精確的隕星雨命中作為父技能錨點；不使用傷害數字，缺失、過期、已消耗、未裝備或來源衝突時仍維持未歸屬。
+• 實機三次完整突襲木乃伊都產生四筆無來源原生 Hit；最新一組 2,126＋2,111＋1,813＋2,108 證實其他已辨識傷害會在揮擊間推進全域原生序號。
+• 面板威力 500 屬於整次四段施放，不是每一段各自 500。
+• 精確配裝 Action 只會從開始至少 2 秒後承接最多四段遞增序號 Hit；允許全域序號跳號與中間揮空，重複／倒退序號、第五段或超過 0.35 秒尾段時仍維持未歸屬。
+• 歸屬規則不使用傷害數字。
