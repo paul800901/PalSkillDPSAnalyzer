@@ -36,7 +36,7 @@ $expectedWorkshopTitle = -join @(
 )
 if ($info.ModName -ne $expectedWorkshopTitle) { throw "Unexpected Workshop ModName" }
 if ($info.PackageName -ne "PalSkillDPSAnalyzerSP") { throw "Unexpected Workshop PackageName" }
-if ($info.Version -ne "0.5.28") { throw "Unexpected Workshop version" }
+if ($info.Version -ne "0.5.29") { throw "Unexpected Workshop version" }
 if ($info.Dependencies -notcontains "UE4SSExperimentalPW") { throw "UE4SS dependency missing" }
 $installRuleTypes = @($info.InstallRule | ForEach-Object { $_.Type })
 if ($info.InstallRule.Count -ne 3 -or $installRuleTypes -notcontains "Lua" -or $installRuleTypes -notcontains "Paks" -or $installRuleTypes -notcontains "LogicMods") {
@@ -145,7 +145,7 @@ foreach ($localePath in Get-ChildItem -LiteralPath $contentLocales -Filter "*.lu
 }
 
 New-Item -ItemType Directory -Path $distDirectory -Force | Out-Null
-$zipPath = Join-Path $distDirectory "PalSkillDPSAnalyzerSP-Workshop-v0.5.28.zip"
+$zipPath = Join-Path $distDirectory "PalSkillDPSAnalyzerSP-Workshop-v0.5.29.zip"
 Compress-Archive -Path (Join-Path $contentDirectory "*") -DestinationPath $zipPath -CompressionLevel Optimal -Force
 
 Write-Host "Workshop package ready: $zipPath"

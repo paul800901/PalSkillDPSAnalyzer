@@ -1,4 +1,4 @@
-# PalSkillDPSAnalyzer v0.5.28-mummy-rush-four-hit
+# PalSkillDPSAnalyzer v0.5.29-hud-lifecycle-idle
 
 Palworld 1.0 單機用 UE4SS 傷害驗證 Mod。它不是玩家排行榜，而是專門測量帕魯對 Boss 造成的技能傷害。F3 明確分成「野外／副本 Boss」與「石板 Boss」兩種測試，不由模組自動混判；普通野怪與未選用石板模式的基地混戰不納入正式統計。
 
@@ -10,9 +10,9 @@ Palworld 1.0 單機用 UE4SS 傷害驗證 Mod。它不是玩家排行榜，而�
 
 預設是「手動測試區間＋野外／副本 Boss」：按 `F2` 可安全歸零並重新待命，直到第一下有效 Boss 傷害才開始計時；基地派駐帕魯在此模式會被排除。要測召喚石板戰，先在 F3 把「測試類型」切到「石板 Boss」，再按 `F2` 開始新測試。困難塔主只統計具有 `GYM` 角色身分、實際擁有塔主血條的主體；塔內小怪即使也帶 Boss／TowerBoss 資料旗標仍會排除。世界倍率產生的多隻真正 Boss 仍會持續累計，直到下一次 `F2` 才清空。
 
-實機已確認目前 Palworld／UE4SS 會在 Lua 動態 UMG 與 `PrintString` 路徑造成 GameThread 存取違規。顯示層因此隔離成隨附的 Windows WPF 程序：Lua 只寫入本機 UTF-8 結構化狀態檔，不再從傷害回呼呼叫 Unreal UI。面板只在 Palworld 位於前景時顯示，遊戲關閉後約 10 秒自行退出。
+實機已確認目前 Palworld／UE4SS 會在 Lua 動態 UMG 與 `PrintString` 路徑造成 GameThread 存取違規。顯示層因此隔離成隨附的 Windows WPF 程序：Lua 只寫入本機 UTF-8 結構化狀態檔，不再從傷害回呼呼叫 Unreal UI。面板只在 Palworld 位於前景時顯示，綁定當次遊戲程序；原程序結束後在下一次檢查自動退出，不跟隨快速重開的新程序。未變更的狀態不重讀，隱藏時每秒檢查一次，顯示時維持 200 毫秒檢查頻率。
 
-目前 `v0.5.28` 保留嚴格的技能來源規則：引擎可直接對接的 Waza、效果或來源鏈列為精確歸屬；若同一隻帕魯對同一 Boss 僅有 2–4 筆最終傷害先到、隨後只有一個引擎 `OnAttack` Waza 來源，則進入該技能桶但明確標成「推定」。極寒雙星與鑽石星辰另允許同目標已連結 Hit 承接約 1.2 秒後的最後爆炸；完全缺少來源時，也只接受最近唯一、無鄰近衝突的這兩種已完成配裝動作。雙槍一閃若已在同一攻擊者／目標建立施放綁定，可承接 1 秒內且原生傷害序號緊接上一段的最後 Hit；中間插入任何其他原生傷害事件就不補接。閃雷衝鋒只在同一帕魯／目標的精確 Action 仍進行中、開始後 1.5–3.3 秒內接收第一筆無來源 Hit；每次施放最多一筆且不接受尾段。隕星雨則把每個 `Commet` 子技能標記一對一歸入已裝備的 `CommetRain` 父技能，只接受約 1 秒後的同目標命中且每個標記僅能使用一次。突襲木乃伊只在精確 Action 開始至少 2 秒後建立四段綁定，後續原生序號須嚴格遞增；全域序號可被其他已辨識事件推進，中間揮空也不限制相鄰命中間隔，Action 尾段最多保留 0.35 秒且每次最多四 Hit。其他較大批次、來源衝突、逾時或物件世代不符仍維持「未辨識傷害」。石板模式中的基地派駐帕魯必須同時具有非空基地 ID，且目前群組必須等於本機玩家公會。全程不按傷害大小、倍率＋元素或三格技能反推。
+目前 `v0.5.29` 保留嚴格的技能來源規則：引擎可直接對接的 Waza、效果或來源鏈列為精確歸屬；若同一隻帕魯對同一 Boss 僅有 2–4 筆最終傷害先到、隨後只有一個引擎 `OnAttack` Waza 來源，則進入該技能桶但明確標成「推定」。極寒雙星與鑽石星辰另允許同目標已連結 Hit 承接約 1.2 秒後的最後爆炸；完全缺少來源時，也只接受最近唯一、無鄰近衝突的這兩種已完成配裝動作。雙槍一閃若已在同一攻擊者／目標建立施放綁定，可承接 1 秒內且原生傷害序號緊接上一段的最後 Hit；中間插入任何其他原生傷害事件就不補接。閃雷衝鋒只在同一帕魯／目標的精確 Action 仍進行中、開始後 1.5–3.3 秒內接收第一筆無來源 Hit；每次施放最多一筆且不接受尾段。隕星雨則把每個 `Commet` 子技能標記一對一歸入已裝備的 `CommetRain` 父技能，只接受約 1 秒後的同目標命中且每個標記僅能使用一次。突襲木乃伊只在精確 Action 開始至少 2 秒後建立四段綁定，後續原生序號須嚴格遞增；全域序號可被其他已辨識事件推進，中間揮空也不限制相鄰命中間隔，Action 尾段最多保留 0.35 秒且每次最多四 Hit。其他較大批次、來源衝突、逾時或物件世代不符仍維持「未辨識傷害」。石板模式中的基地派駐帕魯必須同時具有非空基地 ID，且目前群組必須等於本機玩家公會。全程不按傷害大小、倍率＋元素或三格技能反推。
 
 - 顯示語言（跟隨遊戲／17 種指定語言）
 - 技能 DPS 面板開關
@@ -66,7 +66,7 @@ Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\
 powershell -ExecutionPolicy Bypass -File .\workshop\build_workshop.ps1
 ```
 
-候選套件輸出位於 `workshop/dist/PalSkillDPSAnalyzerSP-Workshop-v0.5.28.zip`。專案保留獨立的 `Info.json`、PackageName 與 Workshop Published File ID，不會覆蓋上游 Mod；套件包含 Lua、遊戲內 CommonUI 主介面 PAK 與 LogicMods 啟動 PAK。Steam Workshop 公開版目前是 v0.5.28。
+候選套件輸出位於 `workshop/dist/PalSkillDPSAnalyzerSP-Workshop-v0.5.29.zip`。專案保留獨立的 `Info.json`、PackageName 與 Workshop Published File ID，不會覆蓋上游 Mod；套件包含 Lua、遊戲內 CommonUI 主介面 PAK 與 LogicMods 啟動 PAK。Steam Workshop 公開版目前是 v0.5.29。
 
 ## 驗證流程
 

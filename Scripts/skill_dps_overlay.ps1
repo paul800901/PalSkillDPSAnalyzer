@@ -243,12 +243,13 @@ $border.Child = $contentHost
 $window.Content = $border
 
 $lastSequence = -1
+$lastStatePath = ""
+$lastStateWriteTicks = [long]-1
+$lastStateLength = [long]-1
 $lastAnchor = "left-center"
 $lastScale = 0.85
 $shouldBeVisible = $false
-$missingGameChecks = 0
-$timerTicks = 0
-$gameIsRunning = $true
+$gameProcess = $null
 $lastRenderedView = "none"
 $lastRenderedRows = 0
 $lastSettingsOpen = $false
@@ -264,7 +265,6 @@ $lastWorkAreaKey = ""
 $lastPositionWidth = 0.0
 $positionMoves = 0
 $lastMeterHeight = 0
-$lastTopmostRefreshAt = [long]0
 $expiresAt = 0
 $windowHandle = [IntPtr]::Zero
 $settingsKeys = @()
@@ -278,6 +278,34 @@ $pendingCommand = $null
 $commandSerial = 0
 $interactionMode = $null
 
+function Initialize-HudGameProcess {
+    # Bind once to this game instance, not to whichever Palworld happens to be
+    # running after a fast restart with the analyzer disabled.
+    foreach ($gameName in @("Palworld-Win64-Shipping", "Palworld")) {
+        foreach ($candidate in [Diagnostics.Process]::GetProcessesByName($gameName)) {
+            if ($null -eq $script:gameProcess) {
+                try {
+                    if (-not $candidate.HasExited) {
+                        # Retain the original process handle, including across PID reuse.
+                        [void]$candidate.Handle
+                        $script:gameProcess = $candidate
+                        Write-HudLog ("bound game pid=" + $candidate.Id)
+                        continue
+                    }
+                } catch {}
+            }
+            $candidate.Dispose()
+        }
+        if ($null -ne $script:gameProcess) { return $true }
+    }
+    return $false
+}
+
+function Test-HudGameRunning {
+    if ($null -eq $script:gameProcess) { return $false }
+    try { return -not $script:gameProcess.HasExited } catch { return $false }
+}
+
 function Test-PalworldForeground {
     $handle = [PalSkillDpsWindowNative]::GetForegroundWindow()
     if ($handle -eq [IntPtr]::Zero) { return $false }
@@ -286,8 +314,7 @@ function Test-PalworldForeground {
     if ($processId -eq 0) { return $false }
     try {
         if ($script:lastSettingsOpen -and [int]$processId -eq $PID) { return $true }
-        $name = [Diagnostics.Process]::GetProcessById([int]$processId).ProcessName
-        return $name -in @("Palworld-Win64-Shipping", "Palworld")
+        return $null -ne $script:gameProcess -and [int]$processId -eq $script:gameProcess.Id
     } catch {
         return $false
     }
@@ -1147,8 +1174,15 @@ function Show-HudSettings([hashtable]$values, [string]$body) {
 }
 
 function Read-HudState {
-    if (-not [IO.File]::Exists($StatePath)) { return }
     try {
+        $stateFile = [IO.FileInfo]::new($StatePath)
+        if (-not $stateFile.Exists) { return }
+        $writeTicks = $stateFile.LastWriteTimeUtc.Ticks
+        $length = $stateFile.Length
+        if ($script:lastSequence -ge 0 -and $script:lastStatePath -eq $StatePath -and
+            $script:lastStateWriteTicks -eq $writeTicks -and $script:lastStateLength -eq $length) {
+            return
+        }
         $raw = [IO.File]::ReadAllText($StatePath, [Text.UTF8Encoding]::new($false))
     } catch {
         return
@@ -1157,6 +1191,9 @@ function Read-HudState {
     if ($parts.Count -ne 2) { return }
     $protocol = ($parts[0] -split "\r?\n", 2)[0]
     if ($protocol -notin @("PAL_SKILL_DPS_HUD_V1", "PAL_SKILL_DPS_HUD_V2")) { return }
+    $script:lastStatePath = $StatePath
+    $script:lastStateWriteTicks = $writeTicks
+    $script:lastStateLength = $length
     $values = @{}
     foreach ($line in ($parts[0] -split "\r?\n")) {
         if ($line -match "^([^=]+)=(.*)$") { $values[$matches[1]] = $matches[2] }
@@ -1190,6 +1227,10 @@ function Read-HudState {
     [void][double]::TryParse([string]$values.expires_at, [Globalization.NumberStyles]::Float,
         [Globalization.CultureInfo]::InvariantCulture, [ref]$parsedExpiry)
     $script:expiresAt = $parsedExpiry
+    if (-not $script:shouldBeVisible) {
+        $script:lastSettingsOpen = $false
+        return
+    }
     if ($protocol -eq "PAL_SKILL_DPS_HUD_V2" -and $values.view -eq "settings") {
         Show-HudSettings $values $parts[1].TrimEnd("`r", "`n")
     } elseif ($protocol -eq "PAL_SKILL_DPS_HUD_V2" -and $values.view -eq "meter") {
@@ -1407,40 +1448,50 @@ $window.add_PreviewKeyDown({
     }
 })
 
-$timer = [Windows.Threading.DispatcherTimer]::new()
-$timer.Interval = [TimeSpan]::FromMilliseconds(200)
-$timer.add_Tick({
+function Update-HudRuntime {
     try {
+        if (-not (Test-HudGameRunning)) {
+            Write-HudLog "bound game exited; overlay closing"
+            $window.Close()
+            return
+        }
         Read-HudState
         Pump-HudCommandQueue
-        $script:timerTicks++
-        if (($script:timerTicks % 5) -eq 0) {
+        $nowMilliseconds = [DateTimeOffset]::Now.ToUnixTimeMilliseconds()
+        if ($nowMilliseconds - $script:lastHeartbeatAt -ge 2000) {
             Write-HudHeartbeat
-            $game = Get-Process -Name "Palworld-Win64-Shipping", "Palworld" -ErrorAction SilentlyContinue
-            $script:gameIsRunning = $null -ne $game
-            if (-not $script:gameIsRunning) {
-                $script:missingGameChecks++
-                if ($script:missingGameChecks -ge 10) { $window.Close(); return }
-            } else {
-                $script:missingGameChecks = 0
-            }
+            $script:lastHeartbeatAt = $nowMilliseconds
         }
         $nowEpoch = [DateTimeOffset]::Now.ToUnixTimeSeconds()
         $notExpired = $script:lastSettingsOpen -or $script:expiresAt -le 0 -or $nowEpoch -lt $script:expiresAt
-        $show = $script:gameIsRunning -and $script:shouldBeVisible -and $notExpired -and (Test-PalworldForeground)
+        $show = $script:shouldBeVisible -and $notExpired -and (Test-PalworldForeground)
         if ($show) {
-            if (-not $window.IsVisible) { $window.Show() }
-            Set-HudPosition $script:lastAnchor
-            if (($script:timerTicks % 5) -eq 0) {
+            if (-not $window.IsVisible) {
+                $window.Show()
                 Assert-HudWindow ([bool]$script:lastSettingsOpen) $false
             }
+            Set-HudPosition $script:lastAnchor
         } elseif ($window.IsVisible) {
             $window.Hide()
         }
+        # Hidden/Alt-Tabbed meters need only a cheap wake-up check. Visible
+        # meters keep the existing responsiveness; unchanged files are not parsed.
+        $timer.Interval = [TimeSpan]::FromMilliseconds($(if ($show) { 200 } else { 1000 }))
     } catch {
         Write-HudLog ("timer exception: " + $_.Exception.ToString())
     }
-})
+}
+
+if (-not (Initialize-HudGameProcess)) {
+    Write-HudLog "game not running; overlay launch cancelled"
+    $mutex.ReleaseMutex()
+    $mutex.Dispose()
+    exit 0
+}
+
+$timer = [Windows.Threading.DispatcherTimer]::new()
+$timer.Interval = [TimeSpan]::FromMilliseconds(200)
+$timer.add_Tick({ Update-HudRuntime })
 
 $window.add_Closed({
     $timer.Stop()
@@ -1459,6 +1510,7 @@ try {
     Write-HudLog ("fatal dispatcher exit: " + $_.Exception.ToString())
 } finally {
     Remove-OwnedHudHeartbeat
+    if ($null -ne $script:gameProcess) { $script:gameProcess.Dispose() }
     try { $mutex.ReleaseMutex() } catch {}
     $mutex.Dispose()
 }

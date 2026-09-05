@@ -6085,7 +6085,7 @@ local function register_hooks()
 
     if hooks.damage and hooks.death then
         log(string.format(
-            "loaded v0.5.28-mummy-rush-four-hit; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s waza_hook=%s action_hooks=%s/%s effect_hook=%s filter_hook=%s effect_attack_hooks=%d; captured_hooks=%d",
+            "loaded v0.5.29-hud-lifecycle-idle; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s waza_hook=%s action_hooks=%s/%s effect_hook=%s filter_hook=%s effect_attack_hooks=%d; captured_hooks=%d",
             hooks.damage_mode,
             tostring(config.EnableDPSRecording ~= false),
             tostring(config.EnableSkillDiagnostics == true),

@@ -12,6 +12,7 @@ powershell -ExecutionPolicy Bypass -File .\tests\run_all.ps1
 
 - Lua 語法、UTF-8、工作坊結構與相依項目。
 - 外部 WPF 純顯示儀表、固定視窗尺寸、隱藏啟動器及 F1 互動 fail-closed 的執行期解析。
+- 外部 HUD 的未變更狀態快取、隱藏時不重繪、降頻與喚醒、Alt+Tab、狀態檔替換短暫缺失，以及原程序退出後不得跟隨另一個程序。程序退出測試只啟動並等待一個短暫的隱藏 PowerShell 測試程序，不存取遊戲。
 - 傷害回呼不直接存取 UObject。
 - Boss 擊殺、捕捉、逾時與複合 Boss 生命週期。
 - 手動測試從第一下 Boss 有效傷害開始、可跨競技場與大世界 Boss 持續記錄，且可隨時歸零重新待命。
@@ -36,5 +37,7 @@ powershell -ExecutionPolicy Bypass -File .\tests\run_all.ps1
 6. 測試 Alt+Tab、傳送讀取及返回遊戲；HUD 應重新置頂，啟動與自動重啟時不應留下黑色 Windows Terminal。若手動結束外部 HUD PowerShell，約 5–10 秒內應自動重新出現；啟動器故障時最多重試三次後必須停止，不得無限閃現。`skill_dps_hud_overlay.log` 可追查顯示層錯誤。
 7. 從 `UE4SS.log` 檢查 `damage-sample` 與 `diagnostic-candidate` 的來源個體、技能候選與傷害。
 8. 對持續傷害、多段傷害與無投射物近戰技能各做一次驗證。
+9. 在遊戲內停用分析器並儲存快速重開：舊 HUD 應在原遊戲程序退出後的下一次檢查（顯示時約 0.2 秒、隱藏時約 1 秒）結束；重開後不應有舊 HUD 存活訊號持續更新。僅進選單、Alt+Tab 或 HUD 暫時隱藏不能結束同一遊戲程序的 HUD，返回後應恢復。
+10. 固定同一場景與相同模組、帕魯及技能，比對修正前後幀時間／卡頓；離線生命週期測試通過不代表已證明遊戲內卡頓消失。
 
 離線測試不能證明 Palworld 實際反射結構或兩種 Boss 標記在所有地圖都能辨識。完成上述讀回前，狀態只能標示為「本機離線驗證」。

@@ -36,7 +36,7 @@ Enable player damage in config.lua, restart the game, and use one weapon for the
 [h2]Scope[/h2]
 [list]
 [*][b]Target:[/b] Windows single-player worlds
-[*][b]Current status:[/b] v0.5.27 Comet Rain child-hit attribution release
+[*][b]Current status:[/b] v0.5.29 HUD shutdown and idle-update fix; damage attribution unchanged
 [*][b]Required dependency:[/b] UE4SS Experimental; PalSchema is not required
 [*][b]Not a goal:[/b] comparing players or producing a competitive DPS leaderboard
 [/list]

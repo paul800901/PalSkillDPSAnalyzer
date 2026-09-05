@@ -214,7 +214,7 @@ $expectedWorkshopTitle = -join @(
 )
 if ($workshopInfo.ModName -ne $expectedWorkshopTitle) { throw "unexpected Workshop ModName" }
 if ($workshopInfo.PackageName -ne "PalSkillDPSAnalyzerSP") { throw "unexpected Workshop PackageName" }
-if ($workshopInfo.Version -ne "0.5.28") { throw "unexpected Workshop version" }
+if ($workshopInfo.Version -ne "0.5.29") { throw "unexpected Workshop version" }
 if ($workshopInfo.Dependencies -notcontains "UE4SSExperimentalPW") { throw "Workshop UE4SS dependency missing" }
 if ($workshopInfo.InstallRule.Count -ne 3) {
     throw "Workshop Lua/Paks/LogicMods InstallRule count mismatch"
@@ -374,6 +374,11 @@ $overlayErrors = $null
 if ($overlayErrors.Count -gt 0) { throw "Workshop external HUD PowerShell parse failed" }
 
 $windowsPowerShell = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+$lifecycleValidation = & $windowsPowerShell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+    -File (Join-Path $testDirectory "test_overlay_lifecycle.ps1")
+if ($LASTEXITCODE -ne 0 -or -not ($lifecycleValidation -match "HUD lifecycle tests passed")) {
+    throw "external HUD lifecycle/idle regression failed: $lifecycleValidation"
+}
 $v1Validation = & $windowsPowerShell -NoLogo -NoProfile -NonInteractive -STA -ExecutionPolicy Bypass `
     -File $overlayScript -StatePath $hudV1Fixture -ValidationMode
 if ($LASTEXITCODE -ne 0 -or -not ($v1Validation -match "view=text rows=0")) {
@@ -444,7 +449,7 @@ try {
     $testOutput = & npx --yes --package=fengari-node-cli fengari test_main.lua 2>&1
     $testExitCode = $LASTEXITCODE
     $testOutput | Write-Host
-    if ($testExitCode -ne 0 -or -not ($testOutput -match "v0\.5\.28 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed")) {
+    if ($testExitCode -ne 0 -or -not ($testOutput -match "v0\.5\.29 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed")) {
         throw "Lua integration test failed or did not reach its completion marker"
     }
     $localeOutput = & npx --yes --package=fengari-node-cli fengari test_localization.lua 2>&1

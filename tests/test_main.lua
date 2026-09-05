@@ -4338,4 +4338,4 @@ assert(#delivered_by_uid[test_guid_key(uid_spectator)] == 0, "spectator received
 
 assert(#BossDPSBroadcastTestApi.sessions == 0, "sessions table must be map-like")
 assert(original_os_time ~= nil)
-print("PalSkillDPSAnalyzer v0.5.28 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed")
+print("PalSkillDPSAnalyzer v0.5.29 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed")

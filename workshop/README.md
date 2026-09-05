@@ -11,14 +11,14 @@ powershell -ExecutionPolicy Bypass -File .\workshop\build_workshop.ps1
 建包會同步共享 Lua 核心、驗證 `Info.json`、相依項目、診斷預設值、UTF-8 與 Lua 語法，輸出：
 
 ```text
-workshop/dist/PalSkillDPSAnalyzerSP-Workshop-v0.5.28.zip
+workshop/dist/PalSkillDPSAnalyzerSP-Workshop-v0.5.29.zip
 ```
 
 ## 獨立發布邊界
 
 - PackageName：`PalSkillDPSAnalyzerSP`
-- 本機候選版本：`0.5.28`（突襲木乃伊四段 Action 綁定）
-- 工坊公開版本：`0.5.28`
+- 本機候選版本：`0.5.29`（HUD 程序退出與閒置更新修正）
+- 工坊公開版本：`0.5.29`
 - UE4SS Workshop 相依：`3625223587`
 - `.workshop.json` 的 Published File ID 預設保持空白。
 - 第一次 SteamCMD 成功建立項目後，才由上傳腳本寫回新 ID。
