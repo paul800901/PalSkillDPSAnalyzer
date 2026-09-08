@@ -462,17 +462,13 @@ function New-HudSkillRow([pscustomobject]$row, [double]$maximumDamage, [double]$
     $primary.MinHeight = 46 * $scale
     $primary.Margin = [Windows.Thickness]::new(8 * $scale, 0, 10 * $scale, 0)
     [void]$primary.ColumnDefinitions.Add([Windows.Controls.ColumnDefinition]@{ Width = [Windows.GridLength]::new(1, [Windows.GridUnitType]::Star) })
-    [void]$primary.ColumnDefinitions.Add([Windows.Controls.ColumnDefinition]@{ Width = [Windows.GridLength]::new($(if ($tabletMode) { 0 } else { 150 * $scale })) })
+    [void]$primary.ColumnDefinitions.Add([Windows.Controls.ColumnDefinition]@{ Width = [Windows.GridLength]::new(150 * $scale) })
 
     $nameGroup = [Windows.Controls.StackPanel]::new()
     $nameGroup.VerticalAlignment = [Windows.VerticalAlignment]::Center
     $name = New-HudText $row.Name (13 * $scale) "#FFF3FBFD" ([Windows.FontWeights]::Medium)
     $nameGroup.Children.Add($name) | Out-Null
-    $subline = if ($tabletMode) {
-        "{0}%" -f (Format-HudDecimal $row.Share)
-    } else {
-        "{0} DPS  ·  {1}%" -f (Format-HudDecimal $row.Dps), (Format-HudDecimal $row.Share)
-    }
+    $subline = "{0} DPS  ·  {1}%" -f (Format-HudDecimal $row.Dps), (Format-HudDecimal $row.Share)
     $sub = New-HudText $subline (9.5 * $scale) "#FF9ABBC3" ([Windows.FontWeights]::Normal)
     $sub.Margin = [Windows.Thickness]::new(0, 1 * $scale, 0, 0)
     $nameGroup.Children.Add($sub) | Out-Null
@@ -482,7 +478,6 @@ function New-HudSkillRow([pscustomobject]$row, [double]$maximumDamage, [double]$
     $damage = New-HudText ($damageLabel + " " + (Format-HudInteger $row.Damage)) (13.5 * $scale) "#FFFFFFFF" ([Windows.FontWeights]::SemiBold)
     $damage.HorizontalAlignment = [Windows.HorizontalAlignment]::Right
     $damage.VerticalAlignment = [Windows.VerticalAlignment]::Center
-    if ($tabletMode) { $damage.Visibility = [Windows.Visibility]::Collapsed }
     [Windows.Controls.Grid]::SetColumn($damage, 1)
     [void]$primary.Children.Add($damage)
     [void]$vertical.Children.Add($primary)
@@ -503,11 +498,7 @@ function Update-HudSkillRow([hashtable]$cached, [pscustomobject]$row, [double]$m
     # stays the same, so WPF does not re-measure/layout the whole meter.
     $cached.Name.Text = [string]$row.Name
     $cached.RankValue = [int]$row.Rank
-    $cached.Sub.Text = if ($tabletMode) {
-        "{0}%" -f (Format-HudDecimal $row.Share)
-    } else {
-        "{0} DPS  ·  {1}%" -f (Format-HudDecimal $row.Dps), (Format-HudDecimal $row.Share)
-    }
+    $cached.Sub.Text = "{0} DPS  ·  {1}%" -f (Format-HudDecimal $row.Dps), (Format-HudDecimal $row.Share)
     $cached.Damage.Text = $damageLabel + " " + (Format-HudInteger $row.Damage)
     $ratio = if ($tabletMode) {
         [Math]::Max(0, [Math]::Min(1, $row.Share / 100.0))
@@ -681,10 +672,6 @@ function Show-HudMeter([hashtable]$values, [string]$body, [double]$scale) {
         [void]$right.Children.Add($damageText)
         $dpsText = New-HudText $dpsLine (9.5 * $scale) "#FF9ABBC3" ([Windows.FontWeights]::Normal)
         $dpsText.HorizontalAlignment = [Windows.HorizontalAlignment]::Right
-        if ($tabletMode) {
-            $damageText.Visibility = [Windows.Visibility]::Collapsed
-            $dpsText.Visibility = [Windows.Visibility]::Collapsed
-        }
         [void]$right.Children.Add($dpsText)
         [Windows.Controls.Grid]::SetColumn($right, 1)
         [void]$header.Children.Add($right)
@@ -1353,14 +1340,16 @@ if ($ValidationMode) {
             }
         }
         $coreFieldsOnly = if ($coreOk) { "1" } else { "0" }
-        $tabletPercentOnly = "n/a"
+        $tabletNumericFields = "n/a"
         if ([bool]$script:meterUi.TabletMode) {
-            $tabletOk = $script:meterUi.SourceHeaders.Count -ge 1
+            $tabletOk = $script:meterUi.SourceHeaders.Count -ge 1 -and
+                $script:meterUi.HeaderDamage.Visibility -eq [Windows.Visibility]::Visible -and
+                $script:meterUi.HeaderDps.Visibility -eq [Windows.Visibility]::Visible
             foreach ($key in @($script:meterUi.Rows.Keys)) {
                 $cached = $script:meterUi.Rows[$key]
-                if ($cached.Sub.Text -notmatch '^\d+(?:\.\d+)?%$' -or
-                    $cached.Sub.Text -match 'DPS' -or
-                    $cached.Damage.Visibility -ne [Windows.Visibility]::Collapsed) {
+                if ($cached.Sub.Text -notmatch ' DPS\s+·\s+.*%$' -or
+                    $cached.Damage.Text -notmatch $damagePattern -or
+                    $cached.Damage.Visibility -ne [Windows.Visibility]::Visible) {
                     $tabletOk = $false
                 }
             }
@@ -1371,7 +1360,7 @@ if ($ValidationMode) {
                     $groupHeaderOk = $true
                 }
             }
-            $tabletPercentOnly = if ($tabletOk -and $groupHeaderOk) { "1" } else { "0" }
+            $tabletNumericFields = if ($tabletOk -and $groupHeaderOk -and $coreOk) { "1" } else { "0" }
         }
 
         # Exercise the same single positioning owner used at runtime. Two data
@@ -1413,10 +1402,10 @@ if ($ValidationMode) {
         $stream = [IO.File]::Open($ValidationScreenshotPath, [IO.FileMode]::Create)
         try { $encoder.Save($stream) } finally { $stream.Dispose() }
     }
-    Write-Output ("HUD validation view={0} rows={1} desired={2:0.0}x{3:0.0} tab_stable={4} meter_rebuilds={5} position_moves={6} rank_ordered={7} rank_reordered_in_place={8} rank_gradient={9} core_fields_only={10} tablet_percent_only={11}" -f
+    Write-Output ("HUD validation view={0} rows={1} desired={2:0.0}x{3:0.0} tab_stable={4} meter_rebuilds={5} position_moves={6} rank_ordered={7} rank_reordered_in_place={8} rank_gradient={9} core_fields_only={10} tablet_numeric_fields={11}" -f
         $lastRenderedView, $lastRenderedRows, $desired.Width, $desired.Height, $tabStable,
         $script:meterRebuilds, $script:positionMoves, $rankOrdered, $rankReorderedInPlace, $rankGradient,
-        $coreFieldsOnly, $tabletPercentOnly)
+        $coreFieldsOnly, $tabletNumericFields)
     $mutex.ReleaseMutex()
     $mutex.Dispose()
     exit 0

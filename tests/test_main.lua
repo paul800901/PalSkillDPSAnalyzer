@@ -273,6 +273,10 @@ native_ui.widget = object(native_ui.named_widgets, {
     end,
     AddToViewport = function(_, z_order)
         assert(z_order == 10000, "native settings must use the intended viewport layer")
+        if (native_ui.add_failures or 0) > 0 then
+            native_ui.add_failures = native_ui.add_failures - 1
+            return false
+        end
         native_settings_events[#native_settings_events + 1] = "add"
     end,
     ActivateWidget = function()
@@ -473,6 +477,17 @@ local waza_enum = object({}, {
 
 function StaticFindObject(path)
     require_game_thread("StaticFindObject")
+    if path == "/Script/AssetRegistry.Default__AssetRegistryHelpers" then
+        return object({}, { GetAsset = function(_, data)
+            require_game_thread("AssetRegistryHelpers:GetAsset")
+            assert(data.PackageName:ToString() == "/Game/Mods/PalSkillDPSAnalyzerSP/WBP_PalSkillDPSSettings"
+                and data.AssetName:ToString() == "WBP_PalSkillDPSSettings_C",
+                "direct class load must target only our cooked settings widget")
+            native_ui.asset_loaded = true
+            native_ui.asset_load_count = native_ui.asset_load_count + 1
+            return native_ui.class
+        end })
+    end
     if path == "/Game/Mods/PalSkillDPSAnalyzerSP/WBP_PalSkillDPSSettings.WBP_PalSkillDPSSettings_C"
         and native_ui.asset_loaded then
         return native_ui.class
@@ -499,12 +514,7 @@ function StaticFindObject(path)
 end
 
 function LoadAsset(path)
-    require_game_thread("LoadAsset")
-    assert(path == "/Game/Mods/PalSkillDPSAnalyzerSP/WBP_PalSkillDPSSettings.WBP_PalSkillDPSSettings",
-        "unexpected native settings asset path")
-    native_ui.asset_loaded = true
-    native_ui.asset_load_count = native_ui.asset_load_count + 1
-    return native_ui.asset, true, true
+    error("Workshop settings must not require an AssetRegistry entry or BPModLoader")
 end
 
 function RegisterConsoleCommandHandler(name, callback)
@@ -531,7 +541,7 @@ function RegisterHook(path, callback, post_callback)
         ["/Script/Pal.PalActionBase:OnBeginAction"] = true,
         ["/Script/Pal.PalActionBase:OnEndAction"] = true,
         ["/Script/Pal.PalSkillEffectBase:OnInitialize"] = true,
-        ["/Script/Pal.PalAttackFilter:BindPrimitiveComponent"] = true,
+        ["/Script/Pal.PalHitFilter:BindPrimitiveComponent"] = true,
         ["/Script/Pal.PalEventNotify_Character:OnCharacterDead_ServerInternal"] = true,
         ["/Script/Pal.PalUtility:PalCaptureSuccess"] = true,
     }
@@ -1147,15 +1157,27 @@ do
     key_callbacks[Key.F3]()
     run_game_tasks()
     assert(BossDPSBroadcastTestApi.skill_hud.settings_open == true
-        and native_settings_creation_count == 1
+        and native_settings_creation_count == 2
         and native_ui.event_count("add") == 2,
-        "F3 did not reopen the same native settings widget")
+        "F3 must recreate the removed native widget while reusing the loaded class")
     phase = "game"
     key_callbacks[Key.F3]()
     run_game_tasks()
     assert(BossDPSBroadcastTestApi.skill_hud.settings_open == false
         and native_ui.event_count("remove") == 2,
         "second F3 press did not close the native settings widget")
+
+    -- Failed viewport insertion retries once, then releases the widget and
+    -- leaves gameplay input untouched instead of reporting a phantom panel.
+    phase = "game"
+    native_ui.add_failures = 2
+    native_ui.before_failed_create = native_settings_creation_count
+    assert(BossDPSBroadcastTestApi.skill_hud:toggle_settings() == false
+        and native_settings_creation_count == native_ui.before_failed_create + 2
+        and BossDPSBroadcastTestApi.skill_hud.native_settings_widget == nil
+        and BossDPSBroadcastTestApi.skill_hud.settings_open == false
+        and local_player_controller_fields.bShowMouseCursor == false,
+        "F3 failed insertion must stop after one retry and release UI/input state")
 
     -- Palworld stays the foreground process on its own pause/options screen.
     -- The overlay must use gameplay state rather than process foreground alone.
@@ -4338,4 +4360,4 @@ assert(#delivered_by_uid[test_guid_key(uid_spectator)] == 0, "spectator received
 
 assert(#BossDPSBroadcastTestApi.sessions == 0, "sessions table must be map-like")
 assert(original_os_time ~= nil)
-print("PalSkillDPSAnalyzer v0.5.29 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed")
+print("PalSkillDPSAnalyzer v0.5.30 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed")

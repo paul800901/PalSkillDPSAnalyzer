@@ -5988,7 +5988,7 @@ local function register_hooks()
             local filter_ok, filter_err = source_chain:register_filter_hook()
             hooks.attack_filter = filter_ok
             if filter_ok then
-                log("skill source hook=/Script/Pal.PalAttackFilter:BindPrimitiveComponent")
+                log("skill source hook=/Script/Pal.PalHitFilter:BindPrimitiveComponent")
             else
                 log("attack filter hook unavailable; uninitialized effects may stay unresolved: "
                     .. tostring(filter_err))
@@ -6085,7 +6085,7 @@ local function register_hooks()
 
     if hooks.damage and hooks.death then
         log(string.format(
-            "loaded v0.5.29-hud-lifecycle-idle; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s waza_hook=%s action_hooks=%s/%s effect_hook=%s filter_hook=%s effect_attack_hooks=%d; captured_hooks=%d",
+            "loaded v0.5.30-workshop-ui; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s waza_hook=%s action_hooks=%s/%s effect_hook=%s filter_hook=%s effect_attack_hooks=%d; captured_hooks=%d",
             hooks.damage_mode,
             tostring(config.EnableDPSRecording ~= false),
             tostring(config.EnableSkillDiagnostics == true),

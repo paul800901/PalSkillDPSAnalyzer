@@ -1,5 +1,12 @@
 # 測試說明
 
+## v0.5.30 工坊回歸
+
+- `test_main.lua` 將依賴 AssetRegistry 的 LoadAsset 設為失敗，確認 F3 只透過明確 PackageName／generated-class AssetName 載入自己的面板，重開時建立新的 Widget。
+- `test_runtime_source_chain.lua` 拒絕錯誤的 PalAttackFilter 宣告路徑，測試 PalHitFilter 綁定能取得 Waza，且一般無 Waza Filter 不進入技能來源鏈。
+- WPF 石板 fixture 必須顯示總傷害、DPS、逐技能傷害／DPS／占比；保留分組與原位更新。
+- 實機驗收必須經 Steam 工坊更新：完整退出遊戲，取得 0.5.30 後進世界，測試 F3 開啟／關閉／重開、F2 歸零及同一 Boss 戰鬥數值。離線測試不等於此步通過。
+
 ## 離線測試
 
 在專案根目錄執行：
@@ -32,7 +39,7 @@ powershell -ExecutionPolicy Bypass -File .\tests\run_all.ps1
 1. 非戰鬥狀態按 F1，確認不會開啟舊 WPF 設定窗，也不改變游標、鏡頭、人物或攻擊輸入；按 F2 後確認日誌只出現一次歸零事件。
 2. F3 選「野外／副本 Boss」並按 F2，確認基地派駐帕魯不會加入；坐騎或隊伍帕魯可正常記錄。
 3. F3 改選「石板 Boss」後再按 F2，確認同公會基地帕魯可加入，野生與其他公會帕魯仍被排除。
-4. 準備同種類同配招與同種類不同配招的基地帕魯：主 HUD 應分成 `A ×N`／`B ×N`，每組只顯示三技能占比；F3 應保留每隻帕魯的傷害與 DPS。
+4. 準備同種類同配招與同種類不同配招的基地帕魯：主 HUD 應分成 `A ×N`／`B ×N`，每組顯示三技能傷害、DPS 與占比；F3 應保留每隻帕魯的傷害與 DPS。
 5. 從即時儀表與日誌確認每隻帕魯有獨立來源列、各技能傷害正確，Boss 死亡不會自動歸零。
 6. 測試 Alt+Tab、傳送讀取及返回遊戲；HUD 應重新置頂，啟動與自動重啟時不應留下黑色 Windows Terminal。若手動結束外部 HUD PowerShell，約 5–10 秒內應自動重新出現；啟動器故障時最多重試三次後必須停止，不得無限閃現。`skill_dps_hud_overlay.log` 可追查顯示層錯誤。
 7. 從 `UE4SS.log` 檢查 `damage-sample` 與 `diagnostic-candidate` 的來源個體、技能候選與傷害。

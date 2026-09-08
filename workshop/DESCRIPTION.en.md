@@ -18,7 +18,7 @@ This is not a player ranking meter. Reset and start a test at any time; timing b
 [*]F3 explicitly selects Field/Dungeon Boss or Tablet Boss; profiles are not auto-mixed
 [*]Hard towers count only the main actor with a GYM character identity; adds stay excluded even when they also expose Boss/TowerBoss database flags
 [*]The tablet HUD merges only same-species Pals with an identical complete three-skill loadout; matching loadouts show ×N and different loadouts become A/B groups
-[*]The live HUD shows only the three highest-damage loadout groups and three skill-percentage bars per group; remaining groups are available in the complete F3 Grouped % report
+[*]The live HUD shows only the three highest-damage loadout groups and three skill bars with damage, DPS and percentage per group; remaining groups are available in the complete F3 Grouped % report
 [*]If a complete loadout cannot be read, that Pal remains separate instead of being merged from uncertain data
 [/list]
 
@@ -36,7 +36,7 @@ Enable player damage in config.lua, restart the game, and use one weapon for the
 [h2]Scope[/h2]
 [list]
 [*][b]Target:[/b] Windows single-player worlds
-[*][b]Current status:[/b] v0.5.29 HUD shutdown and idle-update fix; damage attribution unchanged
+[*][b]Current status:[/b] v0.5.30 Workshop F3 loading, numeric HUD and hit-filter hook fixes
 [*][b]Required dependency:[/b] UE4SS Experimental; PalSchema is not required
 [*][b]Not a goal:[/b] comparing players or producing a competitive DPS leaderboard
 [/list]

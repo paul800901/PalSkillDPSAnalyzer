@@ -85,6 +85,8 @@ local chain = source_chain_module.new({
     clock = function() return 2.0 end,
     action_records = function() return action_records end,
     register_hook = function(path, pre, post)
+        assert(path ~= "/Script/Pal.PalAttackFilter:BindPrimitiveComponent",
+            "inherited UFunction must be hooked on its declaring PalHitFilter class")
         registered_hooks[path] = { pre = pre, post = post }
         return 1, post and 2 or nil
     end,
@@ -114,8 +116,12 @@ assert(initialize ~= nil and type(initialize.post) == "function",
     "effect initialize post hook was not installed")
 local filter_hook_ok = chain:register_filter_hook()
 assert(filter_hook_ok == true, "attack filter hook registration failed")
-assert(registered_hooks["/Script/Pal.PalAttackFilter:BindPrimitiveComponent"] ~= nil,
+assert(registered_hooks["/Script/Pal.PalHitFilter:BindPrimitiveComponent"] ~= nil,
     "attack filter hook was not installed")
+registered_hooks["/Script/Pal.PalHitFilter:BindPrimitiveComponent"].pre(
+    object("PalHitFilter NonAttackFilter", 501))
+assert(next(chain.effect_records) == nil,
+    "base-class filter hook must ignore filters without Waza")
 initialize.post(effect)
 
 local attack_event = "BndEvt__AttackFilter_OnAttackDelegate__DelegateSignature"
@@ -151,7 +157,7 @@ equal(chain:consume_hit(pal, defender, identity(damage_info)), nil,
 -- BindPrimitiveComponent hook passes the real Filter object directly and must
 -- still recover its Waza without relying on effect.AttackFilter.
 effect.AttackFilter = nil
-registered_hooks["/Script/Pal.PalAttackFilter:BindPrimitiveComponent"].pre(filter)
+registered_hooks["/Script/Pal.PalHitFilter:BindPrimitiveComponent"].pre(filter)
 attack_hook(effect, defender, damage_info, 1, nil)
 local direct_filter_hit = chain:consume_hit(pal, defender, identity(damage_info))
 assert(direct_filter_hit ~= nil, "direct AttackFilter binding was not captured")

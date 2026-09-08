@@ -8,7 +8,6 @@ local OVERLAY_LOG_FILE = "skill_dps_hud_overlay.log"
 local OVERLAY_SCRIPT = "skill_dps_overlay.ps1"
 local OVERLAY_LAUNCHER = "skill_dps_overlay_launcher.vbs"
 local NATIVE_SETTINGS_PACKAGE = "/Game/Mods/PalSkillDPSAnalyzerSP/WBP_PalSkillDPSSettings"
-local NATIVE_SETTINGS_ASSET = NATIVE_SETTINGS_PACKAGE .. ".WBP_PalSkillDPSSettings"
 local NATIVE_SETTINGS_CLASS = "/Game/Mods/PalSkillDPSAnalyzerSP/WBP_PalSkillDPSSettings.WBP_PalSkillDPSSettings_C"
 local WIDGET_LIBRARY_PATH = "/Script/UMG.Default__WidgetBlueprintLibrary"
 
@@ -102,7 +101,6 @@ function hud.new(options)
         translate = options.translate,
         get_skill_name = options.get_skill_name,
         on_reset = options.on_reset,
-        load_asset = options.load_asset or rawget(_G, "LoadAsset"),
         static_find_object = options.static_find_object or rawget(_G, "StaticFindObject"),
         make_fname = options.make_fname or rawget(_G, "FName"),
         make_ftext = options.make_ftext or rawget(_G, "FText"),
@@ -1048,44 +1046,27 @@ function hud.new(options)
         if self.config.EnableNativeCommonUISettings ~= true then
             return false, "native CommonUI settings are disabled"
         end
-        if type(self.load_asset) ~= "function" or type(self.static_find_object) ~= "function" then
-            return false, "LoadAsset/StaticFindObject unavailable"
+        if self.make_fname == nil or type(self.static_find_object) ~= "function" then
+            return false, "FName/StaticFindObject unavailable"
         end
         if not object_is_valid(self.native_settings_widget_class) then
             local found, widget_class = pcall(self.static_find_object, NATIVE_SETTINGS_CLASS)
             if not found or not object_is_valid(widget_class) then
-                local called, loaded_asset, asset_found, asset_loaded =
-                    pcall(self.load_asset, NATIVE_SETTINGS_ASSET)
-                if not called then
-                    return false, "settings asset load failed: " .. tostring(loaded_asset)
-                end
-                if asset_found == false then
-                    return false, "settings asset is not registered: " .. NATIVE_SETTINGS_ASSET
-                end
-                if asset_loaded == false then
-                    return false, "settings asset was found but could not be loaded: "
-                        .. NATIVE_SETTINGS_ASSET
-                end
-
-                -- UE4SS LoadAsset queries the asset registry by full object
-                -- path (Package.Asset), not by package path alone. Prefer the
-                -- blueprint's GeneratedClass, then re-check the generated
-                -- class object after loading the asset.
-                if object_is_valid(loaded_asset) then
-                    local generated, generated_class = pcall(function()
-                        return loaded_asset.GeneratedClass
-                    end)
-                    if generated and object_is_valid(generated_class) then
-                        widget_class = generated_class
-                        found = true
-                    end
-                end
-                if not object_is_valid(widget_class) then
-                    found, widget_class = pcall(self.static_find_object, NATIVE_SETTINGS_CLASS)
-                end
+                -- Cooked Workshop PAKs need not have an AssetRegistry entry.
+                -- Use the UE5.1 BPModLoader GetAsset contract, but load only
+                -- our generated widget class; do not enable a global loader.
+                found, widget_class = pcall(function()
+                    local helpers = self.static_find_object(
+                        "/Script/AssetRegistry.Default__AssetRegistryHelpers")
+                    if not object_is_valid(helpers) then return nil end
+                    return helpers:GetAsset({
+                        PackageName = self.make_fname(NATIVE_SETTINGS_PACKAGE, 1),
+                        AssetName = self.make_fname("WBP_PalSkillDPSSettings_C", 1),
+                    })
+                end)
             end
             if not found or not object_is_valid(widget_class) then
-                return false, "settings widget class not found after loading " .. NATIVE_SETTINGS_ASSET
+                return false, "settings class load failed: " .. NATIVE_SETTINGS_CLASS
             end
             self.native_settings_widget_class = widget_class
         end
@@ -1122,6 +1103,35 @@ function hud.new(options)
         end
         self.native_settings_widget = widget
         self.native_settings_creations = self.native_settings_creations + 1
+        return true
+    end
+
+    function self:release_native_settings_widget(remove_from_parent)
+        local widget = self.native_settings_widget
+        if remove_from_parent == true and object_is_valid(widget) then
+            call_method(widget, "DeactivateWidget")
+            call_method(widget, "RemoveFromParent")
+        end
+        self.native_settings_widget = nil
+        self.native_settings_added = false
+    end
+
+    function self:add_native_settings_widget()
+        if not object_is_valid(self.native_settings_widget) then
+            return false, "settings widget unavailable"
+        end
+        local invoked, result = call_method(
+            self.native_settings_widget,
+            "AddToViewport",
+            10000
+        )
+        if not invoked then
+            return false, result
+        end
+        if result == false then
+            return false, "AddToViewport returned false"
+        end
+        self.native_settings_added = true
         return true
     end
 
@@ -1465,11 +1475,7 @@ function hud.new(options)
         self.settings_open = false
         self.settings_page = 0
         self:sync_input_lock(false)
-        if object_is_valid(self.native_settings_widget) and self.native_settings_added then
-            call_method(self.native_settings_widget, "DeactivateWidget")
-            call_method(self.native_settings_widget, "RemoveFromParent")
-        end
-        self.native_settings_added = false
+        self:release_native_settings_widget(self.native_settings_added)
         self.last_rendered_text = nil
         if self.waiting_reset then
             self:publish_waiting()
@@ -1583,25 +1589,34 @@ function hud.new(options)
             self:show_notice(self:text("hud_settings_unavailable"), 3)
             return false
         end
-        self.settings_open = true
         self.settings_page = 0
         self.gameplay_available = true
         self:write_external_state("", false)
-        local added = call_method(self.native_settings_widget, "AddToViewport", 10000)
+        local added, add_error = self:add_native_settings_widget()
+        if not added then
+            self.log("F3 settings AddToViewport failed; rebuilding once: " .. tostring(add_error))
+            self:release_native_settings_widget(true)
+            local recreated, recreate_error = self:ensure_native_settings_widget()
+            if recreated then
+                added, add_error = self:add_native_settings_widget()
+            else
+                add_error = recreate_error
+            end
+        end
         if not added then
             self.settings_open = false
-            self.log("F3 settings refused: AddToViewport failed")
+            self:release_native_settings_widget(true)
+            self:sync_input_lock(false)
+            self.log("F3 settings refused: AddToViewport failed: " .. tostring(add_error))
             self:show_notice(self:text("hud_settings_unavailable"), 3)
             return false
         end
-        self.native_settings_added = true
+        self.settings_open = true
         call_method(self.native_settings_widget, "ActivateWidget")
         if not self:sync_input_lock(true) then
             self.settings_open = false
-            call_method(self.native_settings_widget, "DeactivateWidget")
-            call_method(self.native_settings_widget, "RemoveFromParent")
-            self.native_settings_added = false
             self:sync_input_lock(false)
+            self:release_native_settings_widget(true)
             self.log("F3 settings refused: Palworld UI input mode could not be acquired")
             self:show_notice(self:text("hud_settings_unavailable"), 3)
             return false

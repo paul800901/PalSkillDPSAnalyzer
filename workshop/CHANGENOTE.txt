@@ -1,15 +1,17 @@
-v0.5.29 - HUD shutdown and idle-update fix
+v0.5.30 - Workshop settings and damage display fixes
 
-• The external HUD now exits when its original Palworld process ends instead of surviving a fast restart with the analyzer disabled.
-• Unchanged state files are no longer repeatedly parsed. Hidden HUDs perform fewer checks and skip rendering; repeated process-name scans and periodic topmost resets are removed.
-• Visible HUD checks remain at 200 ms. Damage collection, skill attribution, and native F3 behavior are unchanged from v0.5.28.
-• Local gameplay testing reported substantially less stutter; this is not a universal performance guarantee or a fix for unrelated UE4SS startup failures. UE4SS and PalSchema are not modified.
-• Fully exit Palworld before updating, allow the older HUD to exit, then restart the game.
+- Load the cooked F3 widget class directly, without an AssetRegistry entry or enabling the global BPModLoader.
+- Recreate the settings widget after closing; restore game input if opening fails.
+- Restore total damage, DPS and per-skill damage/DPS in the tablet HUD while retaining loadout grouping and percentages.
+- Correct BindPrimitiveComponent to its declaring PalHitFilter class and ignore non-attack filters. No relaxed timing or hit-count rules.
+- Retain the v0.5.29 HUD shutdown and idle-update fixes. UE4SS and PalSchema are not modified.
+- Offline regressions cover these paths. Fully exit Palworld, wait for Steam to update, then restart and verify F3 and combat in-game.
 
-v0.5.29 - HUD 退出與閒置更新修正
+v0.5.30 - 工坊設定面板與傷害顯示修正
 
-• 外部 HUD 在原本的遊戲程序結束時退出，不再因快速重開而讓已停用分析器的舊 HUD 繼續存活。
-• 狀態檔未變更時不再重複解析；隱藏時減少檢查並停止繪製，移除反覆按名稱查找程序及定期重設置頂。
-• 顯示時仍維持 200 毫秒檢查頻率；傷害收集、技能歸屬與原生 F3 行為沿用 v0.5.28。
-• 本機實戰回報卡頓明顯改善，但不保證所有硬體皆有相同效果，也不宣稱修復無關的 UE4SS 啟動失敗。本版不修改 UE4SS 或 PalSchema。
-• 更新前請完整退出 Palworld，等舊版 HUD 結束後再重開。
+- F3 直接載入已烘焙的面板類別，不再要求資產索引或啟用全域 BPModLoader。
+- 關閉設定後重新建立面板；開啟失敗時還原遊戲輸入。
+- 石板 HUD 恢復總傷害、DPS 與各技能傷害／DPS，保留配招分組及占比。
+- 修正 BindPrimitiveComponent 所屬的 PalHitFilter 路徑，排除非攻擊 Filter；不放寬時間或命中次數限制。
+- 保留 v0.5.29 HUD 退出與閒置更新修正，不修改 UE4SS 或 PalSchema。
+- 已納入離線回歸；請完整退出遊戲，等 Steam 更新後重開，再驗證 F3 與實戰。

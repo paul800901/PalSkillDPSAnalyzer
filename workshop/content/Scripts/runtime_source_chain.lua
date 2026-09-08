@@ -321,11 +321,16 @@ end
 
 function SourceChain:register_filter_hook()
     return pcall(function()
-        self.deps.register_hook("/Script/Pal.PalAttackFilter:BindPrimitiveComponent",
+        -- The UFunction is declared by PalHitFilter, inherited by
+        -- PalAttackFilter. RegisterHook requires its declaring class path.
+        self.deps.register_hook("/Script/Pal.PalHitFilter:BindPrimitiveComponent",
             function(filter)
                 local ok, err = pcall(function()
                     filter = self.deps.unwrap(filter)
                     if not self.deps.is_valid(filter) then return end
+                    -- The base hook also sees non-attack hit filters.
+                    local waza_ok, waza = self.deps.safe_property(filter, "Waza")
+                    if not waza_ok or waza == nil then return end
                     local filter_id = self.deps.object_identity(filter)
                     if filter_id ~= nil and self.filter_records[filter_id] ~= nil then
                         return
