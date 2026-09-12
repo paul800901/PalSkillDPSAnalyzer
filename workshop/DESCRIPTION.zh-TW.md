@@ -45,3 +45,7 @@
 原始碼與問題追蹤：[url=https://github.com/paul800901/PalSkillDPSAnalyzer]GitHub[/url]
 
 [i]獨立維護的 MIT 衍生作品。Boss 遭遇辨識、帕魯歸屬與安全訊息核心源自 AsahiChan-Game/PalBossDPSBroadcast；技能逐擊歸因、DPS HUD、原生 F3 CommonUI 與施放／命中統計由本專案後續開發。與 Pocketpair、Steam 或 UE4SS 無隸屬關係。[/i]
+
+[h2]問題回報[/h2]
+[url=https://discord.gg/Cv94zj2BB]Discord「帕魯模組問題回報」[/url] · [url=https://github.com/paul800901/PalSkillDPSAnalyzer/issues]GitHub[/url]
+請附模組／Palworld 版本、環境、步驟、UE4SS.log；勿公開私人資料。
