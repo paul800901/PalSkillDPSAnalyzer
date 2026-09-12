@@ -42,7 +42,7 @@
 [*][b]不做：[/b]比較不同玩家或建立競技 DPS 排名
 [/list]
 
-原始碼與問題追蹤：[url=https://github.com/paul800901/PalSkillDPSAnalyzer]GitHub[/url]
+原始碼：[url=https://github.com/paul800901/PalSkillDPSAnalyzer]GitHub[/url]
 
 [i]獨立維護的 MIT 衍生作品。Boss 遭遇辨識、帕魯歸屬與安全訊息核心源自 AsahiChan-Game/PalBossDPSBroadcast；技能逐擊歸因、DPS HUD、原生 F3 CommonUI 與施放／命中統計由本專案後續開發。與 Pocketpair、Steam 或 UE4SS 無隸屬關係。[/i]
 
