@@ -41,7 +41,7 @@ Enable player damage in config.lua, restart the game, and use one weapon for the
 [*][b]Not a goal:[/b] comparing players or producing a competitive DPS leaderboard
 [/list]
 
-Source and issue tracker: [url=https://github.com/paul800901/PalSkillDPSAnalyzer]GitHub[/url]
+Source: [url=https://github.com/paul800901/PalSkillDPSAnalyzer]GitHub[/url]
 
 [i]An independently maintained MIT-licensed derivative. Boss encounter detection, Pal ownership resolution, and safe messaging derive from AsahiChan-Game/PalBossDPSBroadcast. Per-hit skill attribution, the DPS HUD, native F3 CommonUI, and cast/hit statistics were developed by this project. Unofficial and not affiliated with Pocketpair, Steam, or UE4SS.[/i]
 
