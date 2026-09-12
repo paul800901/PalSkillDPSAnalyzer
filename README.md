@@ -106,6 +106,6 @@ powershell -ExecutionPolicy Bypass -File .\tests\run_all.ps1
 MIT License。Boss 遭遇辨識、帕魯歸屬與安全訊息核心衍生自 [AsahiChan-Game/PalBossDPSBroadcast](https://github.com/AsahiChan-Game/PalBossDPSBroadcast)，詳細見 [NOTICE.md](NOTICE.md)。17 語言技能名稱表由 `tools/update_skill_names.ps1` 從 [PalDB Active Skills](https://paldb.cc/en/Active_Skills) 的遊戲本地化資料產生。本專案為獨立 Mod，與 Pocketpair、PalDB、Steam 或 UE4SS 無隸屬關係。
 ## 問題回報 / Issue reports
 
-一般使用者可直接加入 [Discord「帕魯模組問題回報」](https://discord.gg/Cv94zj2BB)，也可使用本專案的 [GitHub Issues](https://github.com/paul800901/PalSkillDPSAnalyzer/issues)。請附模組名稱、Palworld 版本、模組版本、單人／多人／專用伺服器環境、重現步驟，以及相關 `UE4SS.log` 片段。請勿公開密碼、帳號資料或完整私人路徑。
+一般使用者可直接加入 [Discord「帕魯模組問題回報」](https://discord.gg/Swzj4UjejE)，也可使用本專案的 [GitHub Issues](https://github.com/paul800901/PalSkillDPSAnalyzer/issues)。請附模組名稱、Palworld 版本、模組版本、單人／多人／專用伺服器環境、重現步驟，以及相關 `UE4SS.log` 片段。請勿公開密碼、帳號資料或完整私人路徑。
 
-General users can join [Palworld Mod Issue Reports on Discord](https://discord.gg/Cv94zj2BB), or use this project's [GitHub Issues](https://github.com/paul800901/PalSkillDPSAnalyzer/issues). Include the mod name, Palworld version, mod version, single-player/multiplayer/dedicated-server environment, reproduction steps, and relevant `UE4SS.log` excerpts. Do not post passwords, account information, or full private paths.
+General users can join [Palworld Mod Issue Reports on Discord](https://discord.gg/Swzj4UjejE), or use this project's [GitHub Issues](https://github.com/paul800901/PalSkillDPSAnalyzer/issues). Include the mod name, Palworld version, mod version, single-player/multiplayer/dedicated-server environment, reproduction steps, and relevant `UE4SS.log` excerpts. Do not post passwords, account information, or full private paths.
