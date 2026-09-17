@@ -1,3 +1,8 @@
+[CmdletBinding()]
+param(
+    [switch]$ReuseExistingNativeUi
+)
+
 $ErrorActionPreference = "Stop"
 
 $workshopDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -25,8 +30,21 @@ Copy-Item -Path (Join-Path $projectDirectory "Scripts\locales\*.lua") -Destinati
 Copy-Item -LiteralPath (Join-Path $workshopDirectory "assets\thumbnail-pal-skill-dps-v1.png") -Destination (Join-Path $contentDirectory "thumbnail.png") -Force
 
 $nativeUiBuild = Join-Path $projectDirectory "ui-authoring\build_native_ui.ps1"
-& powershell -NoProfile -ExecutionPolicy Bypass -File $nativeUiBuild
-if ($LASTEXITCODE -ne 0) { throw "Native CommonUI package build failed" }
+if ($ReuseExistingNativeUi) {
+    foreach ($existingUiArtifact in @(
+        (Join-Path $contentDirectory "Paks\PalSkillDPSAnalyzerSP_P.pak"),
+        (Join-Path $contentDirectory "LogicMods\PalSkillDPSAnalyzerSP.pak")
+    )) {
+        if (-not (Test-Path -LiteralPath $existingUiArtifact -PathType Leaf)) {
+            throw "Existing native UI artifact missing: $existingUiArtifact"
+        }
+    }
+    Write-Host "Reusing verified native UI artifacts; UI source is unchanged in this release."
+}
+else {
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $nativeUiBuild
+    if ($LASTEXITCODE -ne 0) { throw "Native CommonUI package build failed" }
+}
 
 $infoPath = Join-Path $contentDirectory "Info.json"
 $info = Get-Content -LiteralPath $infoPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -36,11 +54,19 @@ $expectedWorkshopTitle = -join @(
 )
 if ($info.ModName -ne $expectedWorkshopTitle) { throw "Unexpected Workshop ModName" }
 if ($info.PackageName -ne "PalSkillDPSAnalyzerSP") { throw "Unexpected Workshop PackageName" }
-if ($info.Version -ne "0.5.30") { throw "Unexpected Workshop version" }
+if ($info.Version -ne "0.5.41") { throw "Unexpected Workshop version" }
 if ($info.Dependencies -notcontains "UE4SSExperimentalPW") { throw "UE4SS dependency missing" }
 $installRuleTypes = @($info.InstallRule | ForEach-Object { $_.Type })
 if ($info.InstallRule.Count -ne 3 -or $installRuleTypes -notcontains "Lua" -or $installRuleTypes -notcontains "Paks" -or $installRuleTypes -notcontains "LogicMods") {
     throw "Lua/Paks/LogicMods InstallRule missing"
+}
+$luaRule = @($info.InstallRule | Where-Object { $_.Type -eq "Lua" })[0]
+if ($luaRule.Targets -notcontains "./Scripts" -or $luaRule.Targets -notcontains "./dlls") {
+    throw "Lua rule must install Scripts and native dlls"
+}
+$nativeDll = Join-Path $contentDirectory "dlls\main.dll"
+if (-not (Test-Path -LiteralPath $nativeDll -PathType Leaf)) {
+    throw "Native source-bridge DLL missing: $nativeDll"
 }
 
 $configPath = Join-Path $contentScripts "config.lua"
@@ -145,7 +171,7 @@ foreach ($localePath in Get-ChildItem -LiteralPath $contentLocales -Filter "*.lu
 }
 
 New-Item -ItemType Directory -Path $distDirectory -Force | Out-Null
-$zipPath = Join-Path $distDirectory "PalSkillDPSAnalyzerSP-Workshop-v0.5.30.zip"
+$zipPath = Join-Path $distDirectory "PalSkillDPSAnalyzerSP-Workshop-v0.5.41.zip"
 Compress-Archive -Path (Join-Path $contentDirectory "*") -DestinationPath $zipPath -CompressionLevel Optimal -Force
 
 Write-Host "Workshop package ready: $zipPath"

@@ -357,6 +357,8 @@ waza_metadata = {
     [502] = { localized = "毒雾", cooldown = 30 },
     [601] = { localized = "切割龙息", cooldown = 16 },
     [602] = { localized = "晶钻之雨", cooldown = 22 },
+    [177] = { localized = "隕星雨", cooldown = 70, element = 9, power = 700 },
+    [9006] = { localized = "三重隕星", cooldown = 70, element = 9, power = 900 },
     [42] = { localized = "烈焰球", cooldown = 30 },
     [46] = { localized = "烈焰风暴", cooldown = 12 },
     [54] = { localized = "流火", cooldown = 16 },
@@ -368,6 +370,10 @@ waza_database = object({}, {
             return false
         end
         out_data.CoolTime = metadata.cooldown
+        out_data.Element = metadata.element
+        out_data.Power = metadata.power
+        out_data.DisplayPower = metadata.display_power
+        if metadata.failed then return false end
         return true
     end,
 })
@@ -459,6 +465,7 @@ local waza_names = {
     [307] = "EPalWazaID::Unique_MummyPal_MummyAttack",
     [158] = "EPalWazaID::Commet",
     [177] = "EPalWazaID::CommetRain",
+    [9006] = "EPalWazaID::ThreeCommet",
     [42] = "EPalWazaID::FireBall",
     [46] = "EPalWazaID::FlareTornado",
     [54] = "EPalWazaID::FlameFunnel",
@@ -468,6 +475,8 @@ local waza_names = {
     [701] = "EPalWazaID::IceAge",
     [702] = "EPalWazaID::Apocalypse",
     [703] = "EPalWazaID::SandTwister",
+    [134] = "EPalWazaID::Psychokinesis",
+    [202] = "EPalWazaID::ThunderStorm",
 }
 local waza_enum = object({}, {
     GetNameByValue = function(_, value)
@@ -714,6 +723,89 @@ end
 
 _G.__BOSS_DPS_TEST = true
 dofile("../Scripts/main.lua")
+
+-- The historical suite below tests candidate generation (including intentionally
+-- synthetic/missing elements), before the new final element-validation stage.
+-- Test the real final stage here, then isolate candidate-generation assertions.
+do
+    local guard = BossDPSBroadcastTestApi.hooks.reject_conflicting_inferred_element
+    phase = 'game'
+    local function event(id, actual, confidence)
+        return {damage=123, cast_key='cast', diagnostic_fields={
+            ['waza.ID']=id, ['waza.Name']='UnlistedSkill' .. id,
+            ['result.AttackElementType']=actual,
+            ['attribution.Confidence']=confidence or 'inferred'}}
+    end
+    waza_metadata[9001] = {element=6, cooldown=22, power=600, display_power=200}
+    waza_metadata[9002] = {element=8, cooldown=30}
+    for _, case in ipairs({{9001,6,false}, {9001,8,true},
+        {9002,8,false}, {9002,6,true}, {9003,8,true}, {9001,nil,true}}) do
+        local hit = event(case[1], case[2])
+        assert(guard(hit) == case[3], 'game element filter decision mismatch')
+        assert(hit.damage == 123, 'element filtering changed total damage')
+        if case[3] then
+            assert(hit.cast_key == nil and hit.diagnostic_fields['waza.Name'] == nil)
+            assert(hit.diagnostic_fields['attribution.Confidence'] == 'unresolved')
+        else
+            assert(hit.diagnostic_fields['metadata.ElementSource'] == 'game-waza-row')
+            if case[1] == 9001 then
+                assert(hit.diagnostic_fields['metadata.GamePower'] == 600)
+                assert(hit.diagnostic_fields['metadata.DisplayPower'] == 200)
+            end
+        end
+    end
+    assert(guard(event(9001,8,'exact')), 'exact label bypassed element conflict')
+    assert(not guard(event(9001,6,'exact')), 'matching exact evidence was rejected')
+    waza_metadata[9004] = {element=6, failed=true}
+    assert(guard(event(9004,6)), 'failed lookup must not accept populated out fields')
+    waza_metadata[9005] = {element=0}
+    assert(guard(event(9005,8)), 'None element must not pass')
+    -- A failed early lookup can recover; success is cached, misses retry after 5s.
+    waza_metadata[9003] = {element=8}
+    assert(guard(event(9003,8)), 'missing metadata should be throttled')
+    local saved_time = os.time
+    os.time = function() return saved_time() + 6 end
+    assert(not guard(event(9003,8)), 'temporary lookup failure did not recover')
+    os.time = saved_time
+    -- Same-element actions remain ambiguous even when headline powers differ.
+    waza_metadata[9010] = {element=8, power=400}
+    waza_metadata[9011] = {element=8, power=700}
+    local profile = {equipped_waza_count=2,
+        equipped_waza_ids_by_code={UnlistedSkill9010=9010, Other=9011}}
+    for _, route in ipairs({'inferred_active_equipped_action',
+        'inferred_current_equipped_action', 'inferred_recent_completed_action',
+        'inferred_native_bound_action_tail', 'inferred_native_unique_delayed_action',
+        'inferred_active_basic_action'}) do
+        for _, power in ipairs({400,700}) do
+            local hit = event(9010,8)
+            hit.diagnostic_fields['attribution.Source'] = route
+            hit.diagnostic_fields['result.BasePower'] = power
+            assert(guard(hit,profile), 'action guessed between same-element skills')
+            assert(hit.damage==123 and hit.cast_key==nil)
+            assert(hit.diagnostic_fields['waza.Name']==nil)
+            assert(hit.diagnostic_fields['attribution.Source']=='unresolved_action_ambiguity')
+        end
+    end
+    for _, route in ipairs({'effect_cast_link','inferred_effect_candidate'}) do
+        local hit = event(9010,8)
+        hit.diagnostic_fields['attribution.Source'] = route
+        assert(not guard(hit,profile), 'action guard changed a non-action route')
+    end
+    profile.equipped_waza_ids_by_code.Other = 9001 -- verified Ice
+    local hit = event(9010,8)
+    hit.diagnostic_fields['attribution.Source']='inferred_current_equipped_action'
+    assert(not guard(hit,profile), 'different element was not excluded')
+    profile.equipped_waza_ids_by_code.Other = 9099 -- unavailable
+    assert(guard(hit,profile), 'unknown competitor was silently excluded')
+    hit = event(9010,8)
+    hit.diagnostic_fields['attribution.Source']='inferred_current_equipped_action'
+    assert(guard(hit,{}), 'unread loadout manufactured uniqueness')
+    print('Action ambiguity tests passed (same element, both powers, unknown metadata/loadout, different element, source isolation)')
+    print('Game-row element filter tests passed (unlisted IDs, changed skill, mismatch, unknown, retry, exact, damage preservation)')
+    BossDPSBroadcastTestApi.hooks.test_real_element_guard = guard
+    BossDPSBroadcastTestApi.hooks.reject_conflicting_inferred_element = function() return false end
+    phase = 'bootstrap'
+end
 assert(type(_G.__BOSS_DPS_TEST_MESSAGE_SINK) == "function",
     "offline legacy report sink was lost while loading the runtime")
 
@@ -2796,13 +2888,26 @@ local tablet_snapshot = BossDPSBroadcastTestApi.skill_hud.latest_snapshot
 assert(tablet_snapshot ~= nil and tablet_snapshot.test_profile == "tablet"
     and #tablet_snapshot.sources == 2 and #tablet_snapshot.detail_sources == 4,
     "tablet snapshot did not separate compact loadout groups from individual details")
+local first_loadout_skill_count = 0
+local second_loadout_skill_count = 0
+local second_loadout_has_zero_damage_skill = false
+for _, skill in ipairs(tablet_snapshot.sources[1].skills) do
+    if skill.category == "skill" then first_loadout_skill_count = first_loadout_skill_count + 1 end
+end
+for _, skill in ipairs(tablet_snapshot.sources[2].skills) do
+    if skill.category == "skill" then
+        second_loadout_skill_count = second_loadout_skill_count + 1
+        if skill.damage == 0 then second_loadout_has_zero_damage_skill = true end
+    end
+end
 assert(tablet_snapshot.sources[1].count == 3
     and tablet_snapshot.sources[1].damage == 1000
-    and #tablet_snapshot.sources[1].skills == 3
+    and first_loadout_skill_count == 3
     and tablet_snapshot.sources[2].count == 1
     and tablet_snapshot.sources[2].damage == 100
-    and #tablet_snapshot.sources[2].skills == 3,
-    "same-loadout workers were not grouped or different loadouts were mixed")
+    and second_loadout_skill_count == 3
+    and second_loadout_has_zero_damage_skill,
+    "loadout grouping dropped a configured slot, including a zero-damage skill")
 assert(string.find(tablet_snapshot.sources[1].name, " A", 1, true) ~= nil
     and string.find(tablet_snapshot.sources[2].name, " B", 1, true) ~= nil,
     "same-species loadout variants were not labelled separately")
@@ -2819,6 +2924,61 @@ local uncertain_groups = BossDPSBroadcastTestApi.hooks.aggregate_tablet_sources(
 assert(#uncertain_groups == 2
     and uncertain_groups[1].count == 1 and uncertain_groups[2].count == 1,
     "Pals without a complete three-skill fingerprint were unsafely merged")
+local tablet_damage_case_total = 420000
+local tablet_damage_case = BossDPSBroadcastTestApi.hooks.aggregate_tablet_sources({
+    {
+        kind = "pal", name = "靈曦龍", species = "靈曦龍",
+        species_id = "GhostDragon", loadout_fingerprint = "CommetRain,Unique_GhostDragon_PhosphorousBeam,Unique_GhostDragon_TailSlash",
+        damage = tablet_damage_case_total, hits = 75,
+        skills = {
+            { name = "火花射線", internal_code = "Unique_GhostDragon_PhosphorousBeam", category = "skill",
+                damage = 221613, hits = 55 },
+            { name = "曳尾斬", internal_code = "Unique_GhostDragon_TailSlash", category = "skill",
+                damage = 108061, hits = 3 },
+            { name = "隕星雨", internal_code = "CommetRain", category = "skill",
+                damage = 17693, hits = 6 },
+            { name = "未歸屬傷害", internal_code = "UNRESOLVED_PAL_ATTACK_BP_180_ELEMENT_9",
+                category = "other", damage = 65186, hits = 8 },
+            { name = "龍息彈", internal_code = "DragonCanon", category = "basic",
+                damage = 7447, hits = 3 },
+        },
+    },
+}, 75, tablet_damage_case_total)
+assert(#tablet_damage_case == 1
+    and tablet_damage_case[1].damage == tablet_damage_case_total
+    and tablet_damage_case[1].hits == 75,
+    "tablet category regression did not retain the 420000 damage / 75 hit group total")
+local tablet_damage_case_rows_total = 0
+local tablet_damage_case_rows_hits = 0
+local tablet_damage_case_categories = { skill = 0, basic = 0, other = 0 }
+local kept_basic_name = false
+local kept_unresolved_name = false
+for _, row in ipairs(tablet_damage_case[1].skills) do
+    tablet_damage_case_rows_total = tablet_damage_case_rows_total + row.damage
+    tablet_damage_case_rows_hits = tablet_damage_case_rows_hits + row.hits
+    tablet_damage_case_categories[row.category] = (tablet_damage_case_categories[row.category] or 0) + 1
+    if row.category == "basic" and row.name == "龍息彈" then kept_basic_name = true end
+    if row.category == "other" and row.name == "未歸屬傷害" then kept_unresolved_name = true end
+end
+assert(tablet_damage_case_rows_total == tablet_damage_case_total
+    and tablet_damage_case_rows_total == tablet_damage_case[1].damage
+    and tablet_damage_case_rows_hits == 75
+    and tablet_damage_case_categories.skill == 3
+    and tablet_damage_case_categories.basic == 1
+    and tablet_damage_case_categories.other == 1
+    and kept_basic_name and kept_unresolved_name,
+    "tablet displayed category rows did not preserve original names or sum to the encounter total")
+local tablet_damage_case_meter = BossDPSBroadcastTestApi.skill_hud:build_external_meter_document({
+    state = "active", boss = "tablet category regression", duration = 75,
+    total_damage = tablet_damage_case_total, encounter_dps = tablet_damage_case_total / 75,
+    test_profile = "tablet", sources = tablet_damage_case,
+})
+local _, tablet_damage_case_meter_rows = string.gsub(tablet_damage_case_meter, "\nR\t", "")
+assert(tablet_damage_case_meter_rows == 5
+    and string.find(tablet_damage_case_meter, "龍息彈", 1, true) ~= nil
+    and string.find(tablet_damage_case_meter, "\tbasic\n", 1, true) ~= nil
+    and string.find(tablet_damage_case_meter, "\tother\n", 1, true) ~= nil,
+    "tablet external HUD did not emit every original damage category row")
 local tablet_meter = BossDPSBroadcastTestApi.skill_hud.last_external_state.text
 assert(string.find(tablet_meter, "test_profile=tablet", 1, true) ~= nil
     and string.find(tablet_meter, "\t3\t", 1, true) ~= nil,
@@ -3486,6 +3646,163 @@ assert(BossDPSBroadcastTestApi.hooks.infer_native_recent_exact_pair_hit(
         trailing_event, trailing_pal, "pal", trailing_profile)
         and trailing_event.diagnostic_fields["waza.Name"] == "DoubleIcicleThrow",
     "the 1.1-second trailing ice impact lost its linked batch skill")
+phase = "idle"
+end
+
+-- Live Night Bat tablet regression: 34 Psychokinesis hits retained exact cast
+-- evidence while 26 second BP700/Dark callbacks timed out without a source.
+-- Recover exactly one follow-up per exact cast and exact attacker/defender
+-- pair. The numeric signature is only a guard and cannot create ownership.
+do
+local psycho_profile = {
+    equipped_waza_count = 3,
+    equipped_waza_ids = { [134] = true, [202] = true, [702] = true },
+    equipped_waza_codes = {
+        Psychokinesis = true,
+        ThunderStorm = true,
+        Apocalypse = true,
+    },
+}
+local recovered_damage = 0
+local recovered_hits = 0
+for index = 1, 34 do
+    local psycho_pal = actor("BP_CatVampire_Psychokinesis_C_" .. tostring(index))
+    local psycho_boss = boss_actor("BP_RaidBoss_Psychokinesis_C_" .. tostring(index))
+    local cast_key = "cast:psychokinesis:" .. tostring(index)
+    phase = "game"
+    BossDPSBroadcastTestApi.hooks.remember_exact_pair_hit({
+        api_version = 2,
+        attacker = psycho_pal,
+        defender = psycho_boss,
+        cast_key = cast_key,
+        diagnostic_fields = {
+            ["waza.ID"] = 134,
+            ["waza.Name"] = "Psychokinesis",
+            ["waza.LocalizedName"] = "念動引力",
+            ["attribution.Source"] = "effect_waza",
+            ["result.BasePower"] = 700,
+            ["result.AttackElementType"] = 8,
+        },
+    }, "pal")
+    if index <= 26 then
+        local damage = index < 26 and 10382 or 10380
+        local unresolved = {
+            api_version = 2,
+            sequence = 8000 + index,
+            evidence_kind = "unresolved_post_effect_timeout",
+            attacker = psycho_pal,
+            defender = psycho_boss,
+            diagnostic_fields = {
+                ["result.BasePower"] = 700,
+                ["result.AttackElementType"] = 8,
+            },
+        }
+        assert(BossDPSBroadcastTestApi.hooks.infer_native_psychokinesis_followup(
+                unresolved, psycho_pal, "pal", psycho_profile)
+                and unresolved.diagnostic_fields["waza.Name"] == "Psychokinesis"
+                and unresolved.diagnostic_fields["attribution.Source"]
+                    == "inferred_psychokinesis_exact_cast_followup"
+                and unresolved.cast_key == cast_key,
+            "Psychokinesis exact-cast follow-up was not recovered")
+        recovered_damage = recovered_damage + damage
+        recovered_hits = recovered_hits + 1
+
+        local duplicate = {
+            api_version = 2,
+            sequence = 9000 + index,
+            evidence_kind = "unresolved_post_effect_timeout",
+            attacker = psycho_pal,
+            defender = psycho_boss,
+            diagnostic_fields = {
+                ["result.BasePower"] = 700,
+                ["result.AttackElementType"] = 8,
+            },
+        }
+        assert(not BossDPSBroadcastTestApi.hooks.infer_native_psychokinesis_followup(
+                duplicate, psycho_pal, "pal", psycho_profile),
+            "one Psychokinesis cast accepted a second source-less follow-up")
+    end
+end
+assert(recovered_hits == 26 and recovered_damage == 269930,
+    "Psychokinesis 34-exact/26-follow-up regression totals changed")
+
+local guard_pal = actor("BP_CatVampire_PsychokinesisGuard_C_1")
+local guard_boss = boss_actor("BP_RaidBoss_PsychokinesisGuard_C_1")
+BossDPSBroadcastTestApi.hooks.remember_exact_pair_hit({
+    api_version = 2,
+    attacker = guard_pal,
+    defender = guard_boss,
+    cast_key = "cast:psychokinesis:guard",
+    diagnostic_fields = {
+        ["waza.ID"] = 134,
+        ["waza.Name"] = "Psychokinesis",
+        ["attribution.Source"] = "effect_waza",
+        ["result.BasePower"] = 700,
+        ["result.AttackElementType"] = 8,
+    },
+}, "pal")
+local function guarded_event(defender, power, element)
+    return {
+        api_version = 2,
+        sequence = 9100,
+        evidence_kind = "unresolved_post_effect_timeout",
+        attacker = guard_pal,
+        defender = defender,
+        diagnostic_fields = {
+            ["result.BasePower"] = power,
+            ["result.AttackElementType"] = element,
+        },
+    }
+end
+assert(not BossDPSBroadcastTestApi.hooks.infer_native_psychokinesis_followup(
+        guarded_event(guard_boss, 400, 8), guard_pal, "pal", psycho_profile),
+    "Apocalypse BP400/Dark tail was stolen by Psychokinesis")
+assert(not BossDPSBroadcastTestApi.hooks.infer_native_psychokinesis_followup(
+        guarded_event(boss_actor("BP_RaidBoss_PsychokinesisGuard_Other_C_1"), 700, 8),
+        guard_pal, "pal", psycho_profile),
+    "Psychokinesis exact cast crossed to another target")
+local incomplete_profile = {
+    equipped_waza_count = 2,
+    equipped_waza_ids = { [134] = true, [702] = true },
+    equipped_waza_codes = { Psychokinesis = true, Apocalypse = true },
+}
+assert(not BossDPSBroadcastTestApi.hooks.infer_native_psychokinesis_followup(
+        guarded_event(guard_boss, 700, 8), guard_pal, "pal", incomplete_profile),
+    "Psychokinesis inference accepted an incomplete loadout")
+
+local conflict_pal = actor("BP_CatVampire_PsychokinesisConflict_C_1")
+local conflict_boss = boss_actor("BP_RaidBoss_PsychokinesisConflict_C_1")
+for _, marker in ipairs({
+    { id = 134, code = "Psychokinesis", cast = "cast:psychokinesis:conflict" },
+    { id = 9907, code = "OtherDark700", cast = "cast:other-dark-700" },
+}) do
+    BossDPSBroadcastTestApi.hooks.remember_exact_pair_hit({
+        api_version = 2,
+        attacker = conflict_pal,
+        defender = conflict_boss,
+        cast_key = marker.cast,
+        diagnostic_fields = {
+            ["waza.ID"] = marker.id,
+            ["waza.Name"] = marker.code,
+            ["attribution.Source"] = "effect_waza",
+            ["result.BasePower"] = 700,
+            ["result.AttackElementType"] = 8,
+        },
+    }, "pal")
+end
+assert(not BossDPSBroadcastTestApi.hooks.infer_native_psychokinesis_followup(
+        {
+            api_version = 2,
+            sequence = 9200,
+            evidence_kind = "unresolved_post_effect_timeout",
+            attacker = conflict_pal,
+            defender = conflict_boss,
+            diagnostic_fields = {
+                ["result.BasePower"] = 700,
+                ["result.AttackElementType"] = 8,
+            },
+        }, conflict_pal, "pal", psycho_profile),
+    "a conflicting exact BP700/Dark cast was guessed as Psychokinesis")
 phase = "idle"
 end
 
@@ -4360,4 +4677,313 @@ assert(#delivered_by_uid[test_guid_key(uid_spectator)] == 0, "spectator received
 
 assert(#BossDPSBroadcastTestApi.sessions == 0, "sessions table must be map-like")
 assert(original_os_time ~= nil)
-print("PalSkillDPSAnalyzer v0.5.30 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed")
+-- Probe must preserve per-hit fields, leave evidence unchanged and stop at
+-- its explicit bound without changing the damage collector.
+do
+BossDPSBroadcastTestApi.hooks.reject_conflicting_inferred_element = BossDPSBroadcastTestApi.hooks.test_real_element_guard
+BossDPSBroadcastTestApi.hooks.test_element_integration = function()
+    -- Real queued-damage integration: one matching hit and one conflicting hit.
+    waza_metadata[601].element = 9
+    waza_metadata[501].element = 8
+    waza_metadata[502].element = 8
+    fake_time = fake_time + 6
+    fake_game_time = fake_game_time + 100
+    BossDPSBroadcastTestApi.hooks.damage = true
+    BossDPSBroadcastTestApi.hooks.damage_mode = 'lua-fallback'
+    local target = boss_actor('BP_RaidBoss_ElementIntegration_C_90001')
+    current_action = actor('BP_ActionBeamSlicer_C_90001', {
+        GetWazaID = function() return 601 end,
+        GetActionCharacter = function() return action_pal end,
+    })
+    action_begin(current_action)
+    run_game_tasks()
+    damage(action_pal, target, 300, {BasePower=350, AttackElementType=9})
+    run_game_tasks()
+    damage(action_pal, target, 100, {BasePower=350, AttackElementType=8})
+    run_game_tasks()
+    current_action = actor('BP_ActionDarkBall_C_90002', {
+        GetWazaID = function() return 501 end,
+        GetActionCharacter = function() return action_pal end,
+    })
+    action_begin(current_action)
+    run_game_tasks()
+    damage(action_pal, target, 200, {BasePower=400, AttackElementType=8})
+    run_game_tasks()
+    local found = false
+    for _, session in pairs(BossDPSBroadcastTestApi.sessions) do
+        if session.name == 'RaidBoss_ElementIntegration' then
+            found = true
+            assert(session.total_damage == 600, 'element integration lost damage')
+            local named, unresolved = 0, 0
+            for _, source in pairs(session.diagnostic_sources) do
+                for _, candidate in pairs(source.skill_candidates) do
+                    if candidate.name == 'BeamSlicer' then named = named + candidate.damage
+                    elseif candidate.name:find('UNRESOLVED',1,true) then unresolved = unresolved + candidate.damage end
+                    assert(candidate.name ~= 'DarkBall' or candidate.damage == 0,
+                        'ambiguous action entered a named bucket')
+                end
+            end
+            assert(named == 300 and unresolved == 300, 'conflicting/ambiguous hit reached named skill bucket')
+        end
+    end
+    assert(found, 'element integration did not create session')
+    print('Game-row element and action ambiguity queued-damage integration passed')
+end
+BossDPSBroadcastTestApi.hooks.test_element_integration()
+phase = 'game'
+local rejection_event = {cast_key='old', damage=123, diagnostic_fields={
+    ["waza.Name"]='Apocalypse', ["waza.ID"]=165,
+    ["attribution.Confidence"]='inferred', ["result.AttackElementType"]=3}}
+assert(BossDPSBroadcastTestApi.hooks.reject_conflicting_inferred_element(rejection_event))
+assert(rejection_event.damage==123 and rejection_event.cast_key==nil)
+assert(rejection_event.diagnostic_fields['waza.Name']==nil)
+assert(rejection_event.diagnostic_fields['attribution.Confidence']=='unresolved')
+phase = 'bootstrap'
+phase = 'game'
+for _, case in ipairs({{'SeaGush',3,'exact'}, {'UnknownSkill',8,'exact'}, {'Apocalypse',3,'exact'}}) do
+    assert(BossDPSBroadcastTestApi.hooks.reject_conflicting_inferred_element({diagnostic_fields={
+        ['waza.Name']=case[1], ['result.AttackElementType']=case[2], ['attribution.Confidence']=case[3]}}))
+end
+phase = 'bootstrap'
+end
+local probe_lines = {}
+local saved_print = print
+print = function(message) probe_lines[#probe_lines + 1] = tostring(message) end
+runtime_config.EnableAttributionProbe = true
+local probe_session = {}
+local probe_source = { equipped_waza_codes = { SeaGush = true } }
+local probe_event = { observed_at = 1, probe_target = "boss", probe_raw_fields = "element=3" }
+local probe_evidence = { name = "GravityShot", confidence = "inferred", fields = "element=3", source_full_name = "pal", cast_key = "cast1" }
+BossDPSBroadcastTestApi.hooks.log_attribution_probe(probe_session, probe_source, probe_event, probe_evidence, 100, 1)
+probe_event.probe_raw_fields = "element=8"
+probe_evidence.fields = "element=8"
+BossDPSBroadcastTestApi.hooks.log_attribution_probe(probe_session, probe_source, probe_event, probe_evidence, 25, 1)
+assert(probe_lines[1]:find("raw=[element=3]", 1, true))
+assert(probe_lines[2]:find("raw=[element=8]", 1, true))
+assert(probe_lines[2]:find("resolved=[element=8]", 1, true))
+assert(probe_evidence.name == "GravityShot" and probe_evidence.cast_key == "cast1")
+probe_session.attribution_probe_count = 2047
+BossDPSBroadcastTestApi.hooks.log_attribution_probe(probe_session, probe_source, probe_event, probe_evidence, 25, 1)
+assert(probe_lines[#probe_lines]:find("LIMIT reached", 1, true))
+local probe_line_count = #probe_lines
+BossDPSBroadcastTestApi.hooks.log_attribution_probe(probe_session, probe_source, probe_event, probe_evidence, 25, 1)
+assert(#probe_lines == probe_line_count)
+runtime_config.EnableAttributionProbe = false
+BossDPSBroadcastTestApi.hooks.log_attribution_probe({}, probe_source, probe_event, probe_evidence, 25, 1)
+assert(#probe_lines == probe_line_count)
+print = saved_print
+
+-- The live native frame route must survive the existing OnDamage -> queued
+-- event -> skill-candidate path. Keep two same-element Waza IDs distinct by
+-- the synchronous native source, without adding this route to the reliable
+-- attribution signature seed table.
+do
+    native_frame_test = {}
+    native_frame_test.saved_native_reader = PalDpsReadSynchronousSource
+    native_frame_test.saved_measurement_mode = runtime_config.MeasurementMode
+    native_frame_test.saved_target_scope = runtime_config.TargetScope
+    native_frame_test.saved_include_player = runtime_config.IncludePlayerDamage
+    native_frame_test.saved_skill_diagnostics_only = runtime_config.SkillDiagnosticsOnly
+    native_frame_test.saved_dps_recording = runtime_config.EnableDPSRecording
+    native_frame_test.saved_damage = BossDPSBroadcastTestApi.hooks.damage
+    native_frame_test.saved_damage_mode = BossDPSBroadcastTestApi.hooks.damage_mode
+    native_frame_test.saved_action = current_action
+    native_frame_test.saved_501_element = waza_metadata[501].element
+    native_frame_test.saved_502_element = waza_metadata[502].element
+    native_frame_test.saved_601_element = waza_metadata[601].element
+    native_frame_test.pal = actor("BP_NativeFramePal_C_910", {
+        CharacterParameterComponent = player_two_pal_component,
+    })
+    native_frame_test.boss = boss_actor("BP_RaidBoss_NativeFrame_C_911")
+    trainer_by_actor[native_frame_test.pal] = player_two
+    phase = "game"
+    native_frame_test.saved_equip_waza = player_two_pal_parameter.SaveParameter.EquipWaza
+    player_two_pal_parameter.SaveParameter.EquipWaza = { 501, 177, 9006 }
+    native_frame_test.pal_address = native_frame_test.pal:GetAddress()
+    native_frame_test.boss_address = native_frame_test.boss:GetAddress()
+    phase = "idle"
+    -- The production bridge receives addresses while the UFunction hook is
+    -- active. Bypass only this harness object's game-thread guard for the
+    -- address getter; all later UObject reads still happen in game tasks.
+    rawset(native_frame_test.pal, "GetAddress", function() return native_frame_test.pal_address end)
+    rawset(native_frame_test.boss, "GetAddress", function() return native_frame_test.boss_address end)
+    waza_metadata[501].element = 8
+    waza_metadata[502].element = 8
+    waza_metadata[601].element = 9
+    runtime_config.MeasurementMode = "target"
+    runtime_config.TargetScope = "field"
+    runtime_config.IncludePlayerDamage = false
+    runtime_config.SkillDiagnosticsOnly = true
+    runtime_config.EnableDPSRecording = true
+    BossDPSBroadcastTestApi.hooks.damage = true
+    BossDPSBroadcastTestApi.hooks.damage_mode = "lua-fallback"
+    phase = "game"
+    BossDPSBroadcastTestApi.reset_skill_diagnostics()
+    phase = "idle"
+    native_frame_test.calls = 0
+    PalDpsReadSynchronousSource = function(attacker_address, defender_address)
+        native_frame_test.calls = native_frame_test.calls + 1
+        assert(attacker_address == native_frame_test.pal_address,
+            "native frame bridge received the wrong attacker address")
+        assert(defender_address == native_frame_test.boss_address,
+            "native frame bridge received the wrong defender address")
+        if native_frame_test.calls == 1 then
+            return "matched", 501, 0, 91001, 9101, "native_attack_filter_frame"
+        end
+        if native_frame_test.calls == 2 then
+            return "matched", 502, 0, 91002, 9102, "native_attack_filter_frame"
+        end
+        if native_frame_test.calls == 3 then
+            return "matched", 501, 91003, 91004, 9103, "native_blueprint_effect_frame"
+        end
+        if native_frame_test.calls == 4 then
+            return "matched", 177, 91005, 0, 9104, "native_spawned_meteor_frame"
+        end
+        if native_frame_test.calls == 5 then
+            return "matched", 9006, 91006, 0, 9105, "native_spawned_meteor_frame"
+        end
+        if native_frame_test.calls == 6 then
+            return "matched", 177, 91007, 0, 9106, "native_spawned_meteor_frame"
+        end
+        error("native frame bridge was called more than once per damage")
+    end
+    native_frame_test.ok, native_frame_test.error = pcall(function()
+        damage(native_frame_test.pal, native_frame_test.boss, 111, {
+            BasePower = 80,
+            AttackElementType = 8,
+        })
+        damage(native_frame_test.pal, native_frame_test.boss, 222, {
+            BasePower = 100,
+            AttackElementType = 8,
+        })
+        assert(native_frame_test.calls == 2,
+            "native frame bridge was not read synchronously by OnDamage")
+        assert(next(BossDPSBroadcastTestApi.sessions) == nil,
+            "OnDamage bypassed the game-task queue")
+        run_game_tasks()
+        for _, candidate in pairs(BossDPSBroadcastTestApi.sessions) do
+            if candidate.name == "RaidBoss_NativeFrame" then
+                native_frame_test.session = candidate
+                break
+            end
+        end
+        assert(native_frame_test.session ~= nil,
+            "native frame damage did not create a target session")
+        assert(native_frame_test.session.total_damage == 333,
+            "native frame route changed total damage")
+        for _, source in pairs(native_frame_test.session.diagnostic_sources) do
+            if source.kind == "pal" then
+                native_frame_test.source = source
+                break
+            end
+        end
+        assert(native_frame_test.source ~= nil,
+            "native frame route did not retain the Pal source")
+        native_frame_test.dark_ball = native_frame_test.source.skill_candidates["skill:DarkBall"]
+        native_frame_test.poison_fog = native_frame_test.source.skill_candidates["skill:PoisonFog"]
+        assert(native_frame_test.dark_ball ~= nil and native_frame_test.dark_ball.damage == 111
+                and native_frame_test.dark_ball.hits == 1,
+            "native frame route misattributed DarkBall damage")
+        assert(native_frame_test.poison_fog ~= nil and native_frame_test.poison_fog.damage == 222
+                and native_frame_test.poison_fog.hits == 1,
+            "native frame route misattributed PoisonFog damage")
+        assert(native_frame_test.dark_ball.confidence == "exact"
+                and native_frame_test.poison_fog.confidence == "exact",
+            "native frame route lost exact confidence")
+        assert(native_frame_test.dark_ball.attribution_sources.native_attack_filter_frame == true
+                and native_frame_test.poison_fog.attribution_sources.native_attack_filter_frame == true,
+            "native frame route lost attribution source")
+        assert(native_frame_test.dark_ball.fields:find("attribution.Source=native_attack_filter_frame", 1, true)
+                and native_frame_test.poison_fog.fields:find("attribution.Source=native_attack_filter_frame", 1, true),
+            "native frame diagnostic source was not retained")
+        assert(native_frame_test.dark_ball.fields:find("attribution.Confidence=exact", 1, true)
+                and native_frame_test.poison_fog.fields:find("attribution.Confidence=exact", 1, true),
+            "native frame diagnostic confidence was not retained")
+        assert(native_frame_test.dark_ball.fields:find("addr:0", 1, true) == nil
+                and native_frame_test.poison_fog.fields:find("addr:0", 1, true) == nil,
+            "native frame route exposed a fabricated addr:0 effect")
+        assert(native_frame_test.dark_ball.damage + native_frame_test.poison_fog.damage
+                == native_frame_test.session.total_damage,
+            "native frame route violated total damage conservation")
+        damage(native_frame_test.pal, native_frame_test.boss, 444, {
+            BasePower = 1, AttackElementType = 8,
+        })
+        run_game_tasks()
+        assert(native_frame_test.calls == 3
+                and native_frame_test.session.total_damage == 777
+                and native_frame_test.dark_ball.damage == 555
+                and native_frame_test.dark_ball.hits == 2,
+            "Blueprint child hit did not preserve damage and parent skill bucket")
+        assert(native_frame_test.dark_ball.confidence == "exact"
+                and native_frame_test.dark_ball.attribution_sources.native_blueprint_effect_frame,
+            "Blueprint source lost exact provenance in main collector")
+        -- These bridge values are controlled Lua fixtures, not live evidence
+        -- of Unreal parentage. They verify source propagation and conservation.
+        damage(native_frame_test.pal, native_frame_test.boss, 444, {
+            BasePower = 1, AttackElementType = 9,
+        })
+        damage(native_frame_test.pal, native_frame_test.boss, 555, {
+            BasePower = 1, AttackElementType = 9,
+        })
+        damage(native_frame_test.pal, native_frame_test.boss, 666, {
+            BasePower = 1, AttackElementType = 9,
+        })
+        run_game_tasks()
+        native_frame_test.commet_rain = native_frame_test.source.skill_candidates["skill:CommetRain"]
+        native_frame_test.three_commet = native_frame_test.source.skill_candidates["skill:ThreeCommet"]
+        assert(native_frame_test.calls == 6
+                and native_frame_test.session.total_damage == 2442,
+            "spawned meteor source changed the total damage or skipped a native frame read")
+        assert(native_frame_test.commet_rain ~= nil and native_frame_test.commet_rain.damage == 1110
+                and native_frame_test.commet_rain.hits == 2
+                and native_frame_test.commet_rain.confidence == "exact"
+                and native_frame_test.commet_rain.attribution_sources.native_spawned_meteor_frame,
+            "spawned source did not preserve exact CommetRain identity across interleaved hits")
+        assert(native_frame_test.three_commet ~= nil and native_frame_test.three_commet.damage == 555
+                and native_frame_test.three_commet.hits == 1
+                and native_frame_test.three_commet.confidence == "exact"
+                and native_frame_test.three_commet.attribution_sources.native_spawned_meteor_frame,
+            "same-element spawned source did not preserve exact ThreeCommet identity")
+        assert(native_frame_test.commet_rain.fields:find(
+                    "attribution.Source=native_spawned_meteor_frame", 1, true)
+                and native_frame_test.three_commet.fields:find(
+                    "attribution.Source=native_spawned_meteor_frame", 1, true)
+                and native_frame_test.commet_rain.fields:find("addr:0", 1, true) == nil
+                and native_frame_test.three_commet.fields:find("addr:0", 1, true) == nil,
+            "spawned source lost exact provenance or exposed a fabricated address")
+        local native_frame_test_candidate_total = 0
+        local native_frame_test_candidate_hits = 0
+        for _, candidate in pairs(native_frame_test.source.skill_candidates) do
+            native_frame_test_candidate_total = native_frame_test_candidate_total + candidate.damage
+            native_frame_test_candidate_hits = native_frame_test_candidate_hits + candidate.hits
+        end
+        assert(native_frame_test_candidate_total == native_frame_test.session.total_damage
+                and native_frame_test_candidate_hits == 6,
+            "spawned native source broke candidate damage/hit conservation")
+        death(native_frame_test.boss)
+        run_game_tasks()
+        run_delayed_tasks()
+    end)
+    PalDpsReadSynchronousSource = native_frame_test.saved_native_reader
+    runtime_config.MeasurementMode = native_frame_test.saved_measurement_mode
+    runtime_config.TargetScope = native_frame_test.saved_target_scope
+    runtime_config.IncludePlayerDamage = native_frame_test.saved_include_player
+    runtime_config.SkillDiagnosticsOnly = native_frame_test.saved_skill_diagnostics_only
+    runtime_config.EnableDPSRecording = native_frame_test.saved_dps_recording
+    BossDPSBroadcastTestApi.hooks.damage = native_frame_test.saved_damage
+    BossDPSBroadcastTestApi.hooks.damage_mode = native_frame_test.saved_damage_mode
+    current_action = native_frame_test.saved_action
+    phase = "game"
+    player_two_pal_parameter.SaveParameter.EquipWaza = native_frame_test.saved_equip_waza
+    phase = "bootstrap"
+    waza_metadata[501].element = native_frame_test.saved_501_element
+    waza_metadata[502].element = native_frame_test.saved_502_element
+    waza_metadata[601].element = native_frame_test.saved_601_element
+    trainer_by_actor[native_frame_test.pal] = nil
+    phase = "bootstrap"
+    assert(native_frame_test.ok, native_frame_test.error)
+    print("native spawned meteor source / total / exact integration Lua contract passed")
+    print("native attack-filter and Blueprint frame OnDamage queue/skill integration passed")
+    native_frame_test = nil
+end
+print("PalSkillDPSAnalyzer v0.5.41 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed; attribution probe tests passed")

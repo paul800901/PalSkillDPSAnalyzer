@@ -1,11 +1,11 @@
 # 測試說明
 
-## v0.5.30 工坊回歸
+## v0.5.41 工坊回歸
 
-- `test_main.lua` 將依賴 AssetRegistry 的 LoadAsset 設為失敗，確認 F3 只透過明確 PackageName／generated-class AssetName 載入自己的面板，重開時建立新的 Widget。
-- `test_runtime_source_chain.lua` 拒絕錯誤的 PalAttackFilter 宣告路徑，測試 PalHitFilter 綁定能取得 Waza，且一般無 Waza Filter 不進入技能來源鏈。
-- WPF 石板 fixture 必須顯示總傷害、DPS、逐技能傷害／DPS／占比；保留分組與原位更新。
-- 實機驗收必須經 Steam 工坊更新：完整退出遊戲，取得 0.5.30 後進世界，測試 F3 開啟／關閉／重開、F2 歸零及同一 Boss 戰鬥數值。離線測試不等於此步通過。
+- `test_main.lua` 重現念動引力 34 筆既有命中與 26 筆來源遺失尾段（合計 269,930），確認每次精確施法最多補接一段。
+- 啟示錄、不同目標、不完整配招、重複尾段及另一個 `BasePower 700／暗屬性` 精確技能存在時不得被歸入念動引力。
+- `test_runtime_source_chain.lua` 與既有 WPF／F3／原生來源回歸維持通過，正式內容與根來源必須逐檔同步。
+- 實機驗收必須經原 Steam 工坊訂閱更新：不手動安裝隔離版；完整退出遊戲，取得 0.5.41 後重開，按 F2 再以念動引力／閃電颶風／啟示錄配招測試。離線測試不等於此步通過。
 
 ## 離線測試
 

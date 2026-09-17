@@ -92,6 +92,10 @@ local function log(message)
     print(MOD .. " " .. tostring(message) .. "\n")
 end
 
+if config.EnableAttributionProbe == true then
+    log("attribution-probe READY baseline=v0.5.41 limit=2048/session mode=animation-collision-v11 total-unchanged=true")
+end
+
 hooks.log_native_diagnostic_status = function(reason)
     if type(BossDPSNativeStatus) ~= "function" then
         return
@@ -1293,7 +1297,6 @@ local function get_waza_database()
         cached_waza_database = database
         return database
     end
-    cached_waza_database = false
     return nil
 end
 
@@ -1301,13 +1304,16 @@ local function resolve_waza_metadata(waza_id, internal_name)
     waza_id = math.floor(to_number(waza_id))
     local cache_key = waza_id > 0 and tostring(waza_id) or tostring(internal_name or "")
     local cached = cached_waza_metadata[cache_key]
-    if cached ~= nil then
+    if cached ~= nil and (cached.attack_element ~= nil
+        or os.time() < (cached.retry_at or 0)) then
         return cached
     end
 
     local code = waza_id > 0 and waza_name_from_id(waza_id) or tostring(internal_name or "")
     local localized_name = ""
     local panel_cool_time = nil
+    local attack_element = nil
+    local game_power, display_power = nil, nil
     if waza_id > 0 then
         local ui_utility = get_pal_ui_utility()
         local world = find_world_context()
@@ -1322,12 +1328,24 @@ local function resolve_waza_metadata(waza_id, internal_name)
         local database = get_waza_database()
         if database ~= nil then
             local out_data = {}
-            safe_call(database, "FindWazaForBP", waza_id, out_data)
+            local found_ok, found = safe_call(database, "FindWazaForBP", waza_id, out_data)
             local raw = out_parameter_value(out_data, { "OutData", "outData", "ReturnValue" })
                 or out_data
-            panel_cool_time = finite_positive_number(
-                out_parameter_value(raw, { "CoolTime", "coolTime" })
-            )
+            if found_ok and found ~= false then
+                panel_cool_time = finite_positive_number(
+                    out_parameter_value(raw, { "CoolTime", "coolTime" })
+                )
+                attack_element = tonumber(unwrap(out_parameter_value(raw, { "Element" })))
+                -- These are skill-row values, NOT a complete per-stage profile.
+                -- Record independently of inferred hit buckets; never use a
+                -- panel power mismatch alone to exclude a multi-stage skill.
+                game_power = finite_positive_number(unwrap(out_parameter_value(raw, { "Power" })))
+                display_power = finite_positive_number(unwrap(out_parameter_value(raw, { "DisplayPower" })))
+                if attack_element ~= nil and (attack_element < 1 or attack_element > 9
+                    or attack_element ~= math.floor(attack_element)) then
+                    attack_element = nil
+                end
+            end
         end
     end
 
@@ -1342,11 +1360,22 @@ local function resolve_waza_metadata(waza_id, internal_name)
             fallback.PanelCoolTime or fallback.panel_cool_time
         )
     end
+    if config.EnableAttributionProbe == true and (cached == nil
+        or cached.attack_element ~= attack_element) then
+        log(string.format("skill-element id=%s code=%s element=%s source=%s game_power=%s display_power=%s stage_profile=unverified",
+            tostring(waza_id), tostring(code), tostring(attack_element),
+            attack_element ~= nil and "game-waza-row" or "unavailable",
+            tostring(game_power), tostring(display_power)))
+    end
     cached = {
         id = waza_id > 0 and waza_id or nil,
         code = code,
         localized_name = localized_name,
         panel_cool_time = panel_cool_time,
+        attack_element = attack_element,
+        game_power = game_power,
+        display_power = display_power,
+        retry_at = os.time() + 5,
     }
     cached_waza_metadata[cache_key] = cached
     return cached
@@ -1539,6 +1568,21 @@ source_chain = runtime_source_chain.new({
     object_info = diagnostic_object_info,
     object_identity = object_instance_identity,
     value_identity = captured_value_identity,
+    has_native_bridge = function() return type(PalDpsReadSynchronousSource) == "function" end,
+    has_meteor_child_bridge = function() return type(PalDpsRememberMeteorChild) == "function" end,
+    remember_meteor_child = function(rock)
+        if is_valid(rock) and type(PalDpsRememberMeteorChild) == "function" then
+            PalDpsRememberMeteorChild(rock:GetAddress())
+        end
+    end,
+    native_source = function(attacker, defender)
+        if type(PalDpsReadSynchronousSource) ~= "function" then return nil end
+        local ok, status, waza, effect, filter, sequence, source_kind = pcall(function()
+            return PalDpsReadSynchronousSource(attacker:GetAddress(), defender:GetAddress())
+        end)
+        if not ok then return "unavailable" end
+        return status, waza, effect, filter, sequence, source_kind
+    end,
     actor_key = diagnostic_actor_key,
     full_name = actor_full_name,
     clock = os.clock,
@@ -1711,6 +1755,7 @@ hooks.remember_exact_pair_hit = function(event, source_kind)
         panel_cool_time = fields["waza.PanelCoolTime"],
         cast_id = event.cast_key,
         clock = os.clock(),
+        signature = attack_signature(fields),
         attribution_source = attribution_source,
     }
     while #bucket > 8 do table.remove(bucket, 1) end
@@ -2528,6 +2573,86 @@ hooks.infer_native_recent_exact_pair_hit = function(
     return promoted
 end
 
+-- Psychokinesis produces a second BP700/Dark final-damage callback that can
+-- outlive the collector's ordinary two-second pair window. Recover only the
+-- one missing follow-up from an exact Psychokinesis cast on the same
+-- attacker/defender pair. BasePower/element is a guard against borrowing an
+-- unrelated hit; the exact cast identity remains the ownership evidence.
+hooks.infer_native_psychokinesis_followup = function(
+    event, source_actor, source_kind, source_profile)
+    if source_kind ~= "pal" or not is_valid(source_actor)
+        or math.floor(to_number(event.api_version)) < 2
+        or event.evidence_kind ~= "unresolved_post_effect_timeout"
+        or source_profile == nil
+        or math.floor(to_number(source_profile.equipped_waza_count)) ~= 3
+        or source_profile.equipped_waza_ids == nil
+        or source_profile.equipped_waza_ids[134] ~= true then
+        return false
+    end
+
+    local fields = event.diagnostic_fields or {}
+    local signature = attack_signature(fields)
+    if signature ~= "bp:700|element:8" then return false end
+
+    local pair_key = waza_pair_key(event.attacker, event.defender)
+    local bucket = pair_key ~= nil and hooks.recent_exact_hits_by_pair[pair_key] or nil
+    if bucket == nil or #bucket == 0 then return false end
+
+    local now_clock = os.clock()
+    local window = 8.0
+    local selected = nil
+    local selected_cast = nil
+    for index = #bucket, 1, -1 do
+        local marker = bucket[index]
+        local age = now_clock - (tonumber(marker.clock) or now_clock)
+        if age > window then break end
+        if age >= -0.05 and marker.signature == signature then
+            local marker_code = canonical_skill_name(marker.name or "")
+            local marker_id = math.floor(to_number(marker.id))
+            local marker_cast = tostring(marker.cast_id or "")
+            if marker_code ~= "Psychokinesis" or marker_id ~= 134
+                or marker_cast == "" then
+                return false
+            end
+            if marker.psychokinesis_followup_consumed == true then
+                if selected_cast == nil then selected_cast = marker_cast end
+                if selected_cast ~= marker_cast then return false end
+            elseif selected_cast == nil then
+                selected = marker
+                selected_cast = marker_cast
+            elseif selected_cast ~= marker_cast then
+                return false
+            end
+        end
+    end
+    if selected == nil or selected_cast == nil then return false end
+
+    local promoted = promote_inferred_waza(
+        event,
+        resolve_waza_metadata(134, "Psychokinesis"),
+        134,
+        "inferred_psychokinesis_exact_cast_followup",
+        selected_cast
+    )
+    if not promoted then return false end
+
+    -- Multiple exact callbacks may describe the same cast. Consume the cast,
+    -- not one marker entry, so a third source-less hit cannot reuse an older
+    -- marker from that cast.
+    for index = #bucket, 1, -1 do
+        local marker = bucket[index]
+        if tostring(marker.cast_id or "") == selected_cast then
+            marker.psychokinesis_followup_consumed = true
+        end
+    end
+    event.diagnostic_fields["native.EvidenceKind"] = event.evidence_kind
+    trace_skill_event(string.format(
+        "native-hit-inferred-psychokinesis-followup sequence=%s cast=%s",
+        tostring(event.sequence or "none"), selected_cast
+    ))
+    return true
+end
+
 local function attach_runtime_skill_evidence(event, source_actor, source_kind, source_profile)
     if config.EnableSkillDiagnostics ~= true then
         return
@@ -2542,10 +2667,28 @@ local function attach_runtime_skill_evidence(event, source_actor, source_kind, s
         event.diagnostic_fields["waza.Name"] = metadata.code or effect_attack.code
         event.diagnostic_fields["waza.LocalizedName"] = metadata.localized_name
         event.diagnostic_fields["waza.PanelCoolTime"] = metadata.panel_cool_time
-        event.diagnostic_fields["effect.Instance"] = effect_attack.effect_id
+        if effect_attack.effect_id ~= nil then
+            event.diagnostic_fields["effect.Instance"] = effect_attack.effect_id
+        end
         event.diagnostic_fields["attribution.Source"] = effect_attack.cast_id ~= nil
             and "effect_cast_link" or "effect_waza"
         event.cast_key = effect_attack.cast_id
+        local native_exact_source = effect_attack.confidence == "exact"
+            and (effect_attack.source == "native_attack_filter_frame"
+                or effect_attack.source == "native_blueprint_effect_frame"
+                or effect_attack.source == "native_spawned_meteor_frame"
+                or effect_attack.source == "native_call_scope")
+        if native_exact_source then
+            event.diagnostic_fields["attribution.Source"] = effect_attack.source
+            event.diagnostic_fields["attribution.Confidence"] = "exact"
+            if effect_attack.attack_filter_id ~= nil then
+                event.diagnostic_fields["native.Filter"] = effect_attack.attack_filter_id
+            end
+        elseif effect_attack.confidence == "inferred" then
+            event.diagnostic_fields["attribution.Source"] = effect_attack.source or "inferred_effect_candidate"
+            event.diagnostic_fields["attribution.Confidence"] = "inferred"
+            event.cast_key = nil
+        end
         trace_skill_event(string.format(
             "effect-hit-match token=%s effect=%s cast=%s code=%s",
             tostring(effect_attack.token), tostring(effect_attack.effect_id),
@@ -2640,6 +2783,10 @@ local function attach_runtime_skill_evidence(event, source_actor, source_kind, s
         return
     end
     if infer_native_pair_cast_link(
+        event, source_actor, source_kind, source_profile) then
+        return
+    end
+    if hooks.infer_native_psychokinesis_followup(
         event, source_actor, source_kind, source_profile) then
         return
     end
@@ -3176,12 +3323,99 @@ local function reliable_attribution(fields)
     )] == true
 end
 
+-- Temporary observation only: log this hit's evidence, not the first hit
+-- cached in its candidate bucket. No attribution inputs are modified.
+function hooks.log_attribution_probe(session, source, event, evidence, damage, hit_count)
+    if config.EnableAttributionProbe ~= true then return end
+    local limit = 2048
+    local count = session.attribution_probe_count or 0
+    if count >= limit then return end
+    count = count + 1
+    session.attribution_probe_count = count
+    local equipped = {}
+    for code in pairs(source.equipped_waza_codes or {}) do
+        equipped[#equipped + 1] = tostring(code)
+    end
+    table.sort(equipped)
+    log(string.format(
+        "attribution-probe hit=%d time=%s damage=%s hits=%s collector=%s actor=%s target=%s candidate=%s confidence=%s cast=%s equipped=%s raw=[%s] resolved=[%s]",
+        count, tostring(event.observed_at), tostring(damage), tostring(hit_count),
+        tostring(hooks.damage_mode), tostring(evidence.source_full_name),
+        tostring(event.probe_target), tostring(evidence.name), tostring(evidence.confidence),
+        tostring(evidence.cast_key), table.concat(equipped, "/"),
+        tostring(event.probe_raw_fields), tostring(evidence.fields)))
+    if count == limit then
+        log("attribution-probe LIMIT reached=2048; remaining hits are NOT sampled; recording unchanged")
+    end
+end
+
+-- Query the game's skill row by ID, never a hand-maintained skill-name list.
+-- Missing metadata is not evidence of compatibility. Preserve total damage,
+-- but do not assign an unverified inferred hit to a named skill.
+function hooks.reject_conflicting_inferred_element(event, source)
+    local fields = event.diagnostic_fields or {}
+    if fields["waza.ID"] == nil and fields["waza.Name"] == nil
+        and fields["inference.WazaID"] == nil then return false end
+    local code = fields["waza.Name"]
+    local metadata = resolve_waza_metadata(fields["waza.ID"] or fields["inference.WazaID"], code)
+    local expected = metadata.attack_element
+    local actual = tonumber(fields["result.AttackElementType"] or fields["info.AttackElementType"])
+    fields["metadata.SkillElement"] = expected
+    fields["metadata.GamePower"] = metadata.game_power
+    fields["metadata.DisplayPower"] = metadata.display_power
+    fields["metadata.ElementSource"] = expected ~= nil and "game-waza-row" or "unavailable"
+    local rejection
+    if expected ~= nil and actual ~= nil and actual == expected then
+        local route = tostring(fields["attribution.Source"] or "")
+        -- An animation/action proves a cast, not which lingering effect hit.
+        -- Do not eliminate a competing skill using its headline Power: live
+        -- multistage skills have already produced different per-hit powers.
+        if source == nil or not route:find("^inferred_.*action") then return false end
+        local competitors, read_count = {}, 0
+        for other_code, other_id in pairs(source.equipped_waza_ids_by_code or {}) do
+            read_count = read_count + 1
+            if other_code ~= code then
+                local other = resolve_waza_metadata(other_id, other_code)
+                if other.attack_element == nil or other.attack_element == actual then
+                    competitors[#competitors + 1] = other_code
+                end
+            end
+        end
+        table.sort(competitors)
+        if read_count == 0 or read_count ~= source.equipped_waza_count then
+            rejection = "unresolved_action_loadout"
+        elseif #competitors > 0 then
+            rejection = "unresolved_action_ambiguity"
+        else
+            return false
+        end
+        fields["rejected.Competitors"] = table.concat(competitors, ",")
+    end
+    fields["rejected.Skill"] = code
+    fields["rejected.Source"] = fields["attribution.Source"]
+    fields["rejected.ExpectedElement"] = expected
+    fields["rejected.ActualElement"] = actual
+    fields["waza.ID"] = nil
+    fields["waza.Name"] = nil
+    fields["waza.LocalizedName"] = nil
+    fields["waza.PanelCoolTime"] = nil
+    fields["inference.WazaID"] = nil
+    fields["inference.WazaName"] = nil
+    fields["inference.CastKey"] = nil
+    fields["attribution.Source"] = rejection or (expected == nil and "unresolved_skill_element"
+        or actual == nil and "unresolved_hit_element" or "rejected_element_conflict")
+    fields["attribution.Confidence"] = "unresolved"
+    event.cast_key = nil
+    return true
+end
+
 local function record_skill_candidate(session, source, event, source_actor, damage, hit_count)
     if config.EnableSkillDiagnostics ~= true or source == nil then
         return
     end
     source.skill_candidates = source.skill_candidates or {}
     local evidence = skill_candidate_from_event(event, source_actor, source.kind)
+    hooks.log_attribution_probe(session, source, event, evidence, damage, hit_count)
     if evidence.concrete and evidence.signature ~= nil
         and reliable_attribution(event.diagnostic_fields or {}) then
         source.skill_signatures = source.skill_signatures or {}
@@ -3291,10 +3525,10 @@ local function record_skill_candidate(session, source, event, source_actor, dama
             candidate.name,
             format_integer(damage),
             hit_count,
-            candidate.causer_full_name,
-            candidate.causer_class_name,
-            candidate.fields,
-            candidate.source_full_name
+            evidence.causer_full_name,
+            evidence.causer_class_name,
+            evidence.fields,
+            evidence.source_full_name
         ))
     end
 end
@@ -3830,9 +4064,10 @@ end
 
 -- Tablet battles can involve many base workers. Keep the authoritative
 -- per-individual rows for F3, but build a compact species + exact-loadout
--- comparison for the live HUD. The three equipped skills are shown even when
--- one dealt zero damage; basic/unresolved damage remains in the group total and
--- in the individual detail rows instead of being mislabelled as a skill.
+-- comparison for the live HUD. Keep every categorized damage row in the group
+-- breakdown, including basic/unresolved rows with their original category/name;
+-- the exact loadout supplies all three equipped skill slots, even with zero
+-- damage. Category labels keep other rows separate from equipped skills.
 hooks.aggregate_tablet_sources = function(detail_sources, duration, total_damage)
     local groups = {}
     for source_index, source in ipairs(detail_sources or {}) do
@@ -3868,46 +4103,50 @@ hooks.aggregate_tablet_sources = function(detail_sources, duration, total_damage
         group.damage = group.damage + (tonumber(source.damage) or 0)
         group.hits = group.hits + math.max(0, math.floor(tonumber(source.hits) or 0))
         for _, skill in ipairs(source.skills or {}) do
-            if source.kind ~= "pal" or tostring(skill.category or "skill") == "skill" then
-                local skill_key = tostring(skill.internal_code or skill.name or "UNKNOWN")
-                local combined = group.skill_map[skill_key]
-                if combined == nil then
-                    combined = {
-                        name = skill.name,
-                        runtime_name = skill.runtime_name,
-                        internal_code = skill.internal_code,
-                        category = skill.category,
-                        damage = 0,
-                        encounter_dps = 0,
-                        hits = 0,
-                        casts = 0,
-                        hit_casts = 0,
-                        zero_damage_casts = 0,
-                        pending_casts = 0,
-                        lifecycle_complete = 0,
-                        display_even_zero = true,
-                    }
-                    group.skill_map[skill_key] = combined
-                end
-                combined.damage = combined.damage + (tonumber(skill.damage) or 0)
-                combined.hits = combined.hits
-                    + math.max(0, math.floor(tonumber(skill.hits) or 0))
-                combined.casts = combined.casts
-                    + math.max(0, math.floor(tonumber(skill.casts) or 0))
-                combined.hit_casts = combined.hit_casts
-                    + math.max(0, math.floor(tonumber(skill.hit_casts) or 0))
-                combined.zero_damage_casts = combined.zero_damage_casts
-                    + math.max(0, math.floor(tonumber(skill.zero_damage_casts) or 0))
-                combined.pending_casts = combined.pending_casts
-                    + math.max(0, math.floor(tonumber(skill.pending_casts) or 0))
-                combined.lifecycle_complete = combined.lifecycle_complete
-                    + math.max(0, math.floor(tonumber(skill.lifecycle_complete) or 0))
+            local category = tostring(skill.category or "skill")
+            local internal_code = tostring(skill.internal_code or skill.name or "UNKNOWN")
+            -- Keep non-skill damage rows visible with their original category
+            -- and name. The category is part of the key so an unresolved/basic
+            -- row can never be folded into an equipped skill with the same code.
+            local skill_key = category .. "|" .. internal_code
+            local combined = group.skill_map[skill_key]
+            if combined == nil then
+                combined = {
+                    name = skill.name,
+                    runtime_name = skill.runtime_name,
+                    internal_code = skill.internal_code,
+                    category = skill.category,
+                    damage = 0,
+                    encounter_dps = 0,
+                    hits = 0,
+                    casts = 0,
+                    hit_casts = 0,
+                    zero_damage_casts = 0,
+                    pending_casts = 0,
+                    lifecycle_complete = 0,
+                    display_even_zero = true,
+                }
+                group.skill_map[skill_key] = combined
             end
+            combined.damage = combined.damage + (tonumber(skill.damage) or 0)
+            combined.hits = combined.hits
+                + math.max(0, math.floor(tonumber(skill.hits) or 0))
+            combined.casts = combined.casts
+                + math.max(0, math.floor(tonumber(skill.casts) or 0))
+            combined.hit_casts = combined.hit_casts
+                + math.max(0, math.floor(tonumber(skill.hit_casts) or 0))
+            combined.zero_damage_casts = combined.zero_damage_casts
+                + math.max(0, math.floor(tonumber(skill.zero_damage_casts) or 0))
+            combined.pending_casts = combined.pending_casts
+                + math.max(0, math.floor(tonumber(skill.pending_casts) or 0))
+            combined.lifecycle_complete = combined.lifecycle_complete
+                + math.max(0, math.floor(tonumber(skill.lifecycle_complete) or 0))
         end
         if source.kind == "pal" and tostring(source.loadout_fingerprint or "") ~= "" then
             for code in string.gmatch(tostring(source.loadout_fingerprint), "[^,]+") do
-                if group.skill_map[code] == nil then
-                    group.skill_map[code] = {
+                local skill_key = "skill|" .. code
+                if group.skill_map[skill_key] == nil then
+                    group.skill_map[skill_key] = {
                         name = skill_display_name(code, ""),
                         runtime_name = "",
                         internal_code = code,
@@ -3948,7 +4187,7 @@ hooks.aggregate_tablet_sources = function(detail_sources, duration, total_damage
         group.dps = group.damage / duration
         group.damage_share = total_damage > 0 and group.damage * 100 / total_damage or 0
         local ranked_skills = ranked_damage_entries(group.skill_map)
-        for index = 1, math.min(3, #ranked_skills) do
+        for index = 1, #ranked_skills do
             local skill = ranked_skills[index]
             skill.encounter_dps = skill.damage / duration
             skill.damage_per_cast = skill.casts > 0 and skill.damage / skill.casts or nil
@@ -4602,7 +4841,12 @@ local function record_damage(
         end
         session.diagnostic_sources["pal:" .. tostring(source_key)] = pal
         refresh_equipped_waza(pal, source_actor)
+        if config.EnableAttributionProbe == true then
+            event.probe_raw_fields = diagnostic_fields_text(event.diagnostic_fields)
+            event.probe_target = actor_full_name(event.defender)
+        end
         attach_runtime_skill_evidence(event, source_actor, source_kind, pal)
+        hooks.reject_conflicting_inferred_element(event, pal)
         hooks.remember_exact_pair_hit(event, source_kind)
         record_skill_candidate(session, pal, event, source_actor, damage, hit_count)
         session.last_hitter_label = tr("pal_killer", {
@@ -5336,7 +5580,8 @@ local function enqueue_event(event)
     schedule_drain()
 end
 
-local function capture_damage(damage_param)
+local function capture_damage(damage_param, received_at)
+    received_at = received_at or os.clock()
     if config.EnableDPSRecording == false then
         return
     end
@@ -5400,8 +5645,16 @@ local function capture_damage(damage_param)
         end
     end
 
-    local effect_attack = source_chain:consume_hit(
-        attacker, defender, damage_info_key)
+    local effect_attack, source_audit = source_chain:consume_hit(
+        attacker, defender, damage_info_key,
+        diagnostic_fields and (diagnostic_fields["result.AttackElementType"]
+            or diagnostic_fields["info.AttackElementType"]),
+        diagnostic_fields and (diagnostic_fields["result.BasePower"]
+            or diagnostic_fields["info.BasePower"]), received_at)
+
+    if diagnostic_fields and source_audit then
+        for key, value in pairs(source_audit) do diagnostic_fields["bridge." .. key] = value end
+    end
 
     enqueue_event({
         kind = "damage",
@@ -5423,6 +5676,7 @@ end
 -- struct that exposes Attacker/Defender/ActualDamage. No UFunction is called
 -- from the hook.
 local function capture_final_damage(...)
+    local received_at = os.clock()
     if config.EnableDPSRecording == false then return end
     for index = 1, select("#", ...) do
         local candidate = unwrap(select(index, ...))
@@ -5436,7 +5690,7 @@ local function capture_final_damage(...)
             usable = probe_ok and probe_result == true
         end
         if usable then
-            capture_damage(candidate)
+            capture_damage(candidate, received_at)
             return
         end
     end
@@ -6085,7 +6339,7 @@ local function register_hooks()
 
     if hooks.damage and hooks.death then
         log(string.format(
-            "loaded v0.5.30-workshop-ui; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s waza_hook=%s action_hooks=%s/%s effect_hook=%s filter_hook=%s effect_attack_hooks=%d; captured_hooks=%d",
+            "loaded v0.5.41-psychokinesis-cast-followup; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s waza_hook=%s action_hooks=%s/%s effect_hook=%s filter_hook=%s effect_attack_hooks=%d; captured_hooks=%d",
             hooks.damage_mode,
             tostring(config.EnableDPSRecording ~= false),
             tostring(config.EnableSkillDiagnostics == true),

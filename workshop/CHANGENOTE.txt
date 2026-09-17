@@ -1,17 +1,17 @@
-v0.5.30 - Workshop settings and damage display fixes
-
-- Load the cooked F3 widget class directly, without an AssetRegistry entry or enabling the global BPModLoader.
-- Recreate the settings widget after closing; restore game input if opening fails.
-- Restore total damage, DPS and per-skill damage/DPS in the tablet HUD while retaining loadout grouping and percentages.
-- Correct BindPrimitiveComponent to its declaring PalHitFilter class and ignore non-attack filters. No relaxed timing or hit-count rules.
-- Retain the v0.5.29 HUD shutdown and idle-update fixes. UE4SS and PalSchema are not modified.
-- Offline regressions cover these paths. Fully exit Palworld, wait for Steam to update, then restart and verify F3 and combat in-game.
-
-v0.5.30 - 工坊設定面板與傷害顯示修正
-
-- F3 直接載入已烘焙的面板類別，不再要求資產索引或啟用全域 BPModLoader。
-- 關閉設定後重新建立面板；開啟失敗時還原遊戲輸入。
-- 石板 HUD 恢復總傷害、DPS 與各技能傷害／DPS，保留配招分組及占比。
-- 修正 BindPrimitiveComponent 所屬的 PalHitFilter 路徑，排除非攻擊 Filter；不放寬時間或命中次數限制。
-- 保留 v0.5.29 HUD 退出與閒置更新修正，不修改 UE4SS 或 PalSchema。
-- 已納入離線回歸；請完整退出遊戲，等 Steam 更新後重開，再驗證 F3 與實戰。
+[b]v0.5.41 — Psychokinesis delayed follow-up attribution[/b]
+[list]
+[*]Reconnect one delayed BP700/Dark follow-up to the same exact Psychokinesis cast, Pal and target. Power and element are validation only, not ownership by themselves.
+[*]Each exact cast can recover at most one follow-up. Duplicate tails, another target, incomplete loadouts, missing cast IDs and competing exact BP700/Dark skills remain unresolved.
+[*]Regression coverage reproduces the reported 26 delayed hits totalling 269,930 and verifies Apocalypse, cross-target and conflict cases are not stolen.
+[*]Retains the public v0.5.40 native source bridge and meteor links. UE4SS and PalSchema are unchanged. Offline regressions passed; live acceptance follows the Steam update.
+[/list]
+[b]Update the existing subscription; do not install a separate test copy. Fully exit Palworld, wait for Steam to update, restart, then press F2 before retesting.[/b]
+[hr][/hr]
+[b]v0.5.41 — 念動引力延遲段歸屬[/b]
+[list]
+[*]將一段延遲的 BP700／暗屬傷害補接回同一次精確念動引力施法、同一隻帕魯與同一目標。威力與屬性只作核對，不單獨建立所有權。
+[*]每次精確施法最多補接一段；重複尾段、不同目標、配招不完整、缺少施法 ID，以及另一個精確 BP700／暗屬技能存在時仍維持未歸屬。
+[*]回歸案例重現回報中的 26 段、合計 269,930，並驗證啟示錄、跨目標與來源衝突不會被誤收。
+[*]保留公開 v0.5.40 的原生來源橋接與隕星連結；不修改 UE4SS 或 PalSchema。離線回歸通過，實戰驗收待 Steam 更新後進行。
+[/list]
+[b]沿用原訂閱，不要另外安裝內測檔。請完整退出 Palworld，等待 Steam 更新後重開，再按 F2 重新測試。[/b]

@@ -1,5 +1,5 @@
 {
   "publishedfileid": "3784125454",
-  "changenote": "v0.5.30 - Workshop settings and damage display fixes\n\n- Load the cooked F3 widget class directly, without an AssetRegistry entry or enabling the global BPModLoader.\n- Recreate the settings widget after closing; restore game input if opening fails.\n- Restore total damage, DPS and per-skill damage/DPS in the tablet HUD while retaining loadout grouping and percentages.\n- Correct BindPrimitiveComponent to its declaring PalHitFilter class and ignore non-attack filters. No relaxed timing or hit-count rules.\n- Retain the v0.5.29 HUD shutdown and idle-update fixes. UE4SS and PalSchema are not modified.\n- Offline regressions cover these paths. Fully exit Palworld, wait for Steam to update, then restart and verify F3 and combat in-game.\n\nv0.5.30 - 工坊設定面板與傷害顯示修正\n\n- F3 直接載入已烘焙的面板類別，不再要求資產索引或啟用全域 BPModLoader。\n- 關閉設定後重新建立面板；開啟失敗時還原遊戲輸入。\n- 石板 HUD 恢復總傷害、DPS 與各技能傷害／DPS，保留配招分組及占比。\n- 修正 BindPrimitiveComponent 所屬的 PalHitFilter 路徑，排除非攻擊 Filter；不放寬時間或命中次數限制。\n- 保留 v0.5.29 HUD 退出與閒置更新修正，不修改 UE4SS 或 PalSchema。\n- 已納入離線回歸；請完整退出遊戲，等 Steam 更新後重開，再驗證 F3 與實戰。",
-  "last_published_version": "0.5.30"
+  "changenote": "v0.5.41 — Psychokinesis delayed follow-up attribution / 念動引力延遲段歸屬",
+  "last_published_version": "0.5.41"
 }

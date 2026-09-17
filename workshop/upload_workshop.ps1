@@ -5,7 +5,9 @@ param(
     [string]$SteamAccountName = "",
 
     [ValidateSet(0, 1, 2)]
-    [int]$Visibility = 0
+    [int]$Visibility = 0,
+
+    [switch]$ReuseExistingNativeUi
 )
 
 $ErrorActionPreference = "Stop"
@@ -29,7 +31,12 @@ if ([string]::IsNullOrWhiteSpace($SteamAccountName)) {
     throw "Steam account name is required"
 }
 
-& powershell -ExecutionPolicy Bypass -File $buildScript
+if ($ReuseExistingNativeUi) {
+    & powershell -ExecutionPolicy Bypass -File $buildScript -ReuseExistingNativeUi
+}
+else {
+    & powershell -ExecutionPolicy Bypass -File $buildScript
+}
 if ($LASTEXITCODE -ne 0) { throw "Workshop package validation failed" }
 
 $metadataPath = Join-Path $contentDirectory ".workshop.json"
@@ -88,7 +95,7 @@ if (-not $match.Success -or $match.Groups[1].Value -eq "0") {
 
 $metadata.publishedfileid = $match.Groups[1].Value
 $metadata.changenote = $changeNote
-$metadata.last_published_version = "0.5.30"
+$metadata.last_published_version = "0.5.41"
 $publishedFileIdJson = ConvertTo-Json -InputObject ([string]$metadata.publishedfileid) -Compress
 $changeNoteJson = ConvertTo-Json -InputObject ([string]$metadata.changenote) -Compress
 $publishedVersionJson = ConvertTo-Json -InputObject ([string]$metadata.last_published_version) -Compress

@@ -1,51 +1,34 @@
 [h1]帕魯技能 DPS 分析器[/h1]
-[b]適用於 Palworld 1.0 單人世界的傷害驗證工具。[/b]
+[b]適用於 Palworld 1.0 單人世界的 Boss 傷害驗證工具。[/b]
 
-這不是玩家排名 Mod。可隨時開始新測試並歸零，從第一筆有效傷害開始計時。野外／副本 Boss 與石板 Boss 分開測試；石板戰報依帕魯種類與完整三格配招分組。
+測量每個帕魯技能的實際傷害、DPS、占比、命中段數與施放次數；不是玩家排行榜。野外／副本 Boss 與石板 Boss 由使用者明確選擇；石板戰報只合併同種且完整三格配招相同的帕魯。
 
-[h2]獨立 HUD 與安全歸零[/h2]
-[list]
-[*]預設只計算帕魯；人物與武器傷害預設關閉
-[*]原生逐擊來源鏈沿施放、效果、AttackFilter Waza、Blueprint OnAttack 連到最終傷害
-[*]同一帕魯對同一 Boss 的 2–4 筆傷害若先於唯一的引擎 OnAttack Waza 抵達，會以「推定」歸入該技能；較大批次、衝突與逾時仍保留未辨識
-[*]極寒雙星／鑽石星辰的長飛行尾段可沿用同目標近期已連結 Hit；完全缺少來源時只接受最近唯一且無鄰近衝突的這兩種已完成配裝動作，並標示為推定
-[*]雙槍一閃已建立同一施放綁定後，可承接 1 秒內且原生傷害序號緊接上一段的最後 Hit；中間插入其他傷害事件時不補接
-[*]閃雷衝鋒只在同一帕魯／目標的精確 Action 進行中、開始後 1.5–3.3 秒內接收每次施放第一筆無來源 Hit；不接受第二筆或動作尾段
-[*]推定來源不冒充精確來源，也不使用傷害大小、一般目前／最近動作或倍率＋元素猜測
-[*]F3 分成「設定」、「分組百分比」、「本次測試詳情」三個同層分頁；第三頁列出每隻帕魯的有傷／無傷施放、總命中段數、每次施放命中段數與單次施放最低／平均／最高段數
-[*]左側安全區的精簡技能 DPS 儀表即時更新；總傷害為主要大數字，DPS 為次要效率資訊，不再使用聊天框
-[*]F2 可隨時開始新測試並歸零，不開外部視窗、不改遊戲游標或輸入
-[*]F3 明確選擇「野外／副本 Boss」或「石板 Boss」，不自動混判
-[*]困難塔只統計具有 GYM 角色身分的主要塔主；小怪即使也帶 Boss／TowerBoss 資料旗標仍排除
-[*]石板主 HUD 只合併同種且完整三格配招相同的帕魯；相同配招顯示 ×N，不同配招分成 A、B 等組
-[*]主 HUD 只顯示傷害最高三個配招組與各組三技能傷害、DPS 與百分比；其餘組別會提示前往 F3，F3 分組頁完整列出全部組別
-[*]配招無法完整讀取時逐隻分開，不用不確定資料合併
-[/list]
-
-[h2]安裝[/h2]
+[h2]安裝與測試[/h2]
 [olist]
-[*]訂閱本 Mod。
-[*]訂閱並啟用 [url=https://steamcommunity.com/workshop/filedetails/?id=3625223587]UE4SS Experimental (Palworld)[/url]。
-[*]在 Palworld Mod 管理器啟用兩個 Mod。
-[*]進入世界按 F3 選擇測試類型，關閉設定後按 F2 歸零，再讓帕魯攻擊對應 Boss。
-[*]結束後保留 UE4SS.log。
+[*]訂閱本模組與 [url=https://steamcommunity.com/workshop/filedetails/?id=3625223587]UE4SS Experimental (Palworld)[/url]，在 Palworld 模組管理器啟用兩者，再完整重啟遊戲。不需要 PalSchema。
+[*]按 [b]F3[/b] 選擇「野外／副本 Boss」或「石板 Boss」，關閉設定後按 [b]F2[/b] 清除舊結果。第一筆有效 Boss 傷害才開始計時。
+[*]讓帕魯攻擊對應 Boss。即時儀表顯示總傷害、DPS 與技能列；F3 提供「設定」、「分組百分比」及「本次測試詳情」。
 [/olist]
 
-[h2]人物武器測試[/h2]
-可在 config.lua 開啟人物傷害，完整重開遊戲，並在整場戰鬥中只使用一種武器。能可靠辨識武器或投射物就建立獨立候選；不能辨識時保留為未知人物武器。
-
-[h2]適用範圍[/h2]
+[h2]技能歸屬與 v0.5.41[/h2]
 [list]
-[*][b]目標：[/b]Windows 單人世界
-[*][b]目前狀態：[/b]v0.5.30 修正工坊 F3 載入、HUD 數值顯示及命中來源掛鉤
-[*][b]必要前置：[/b]UE4SS Experimental；PalSchema 不是必要依賴
-[*][b]不做：[/b]比較不同玩家或建立競技 DPS 排名
+[*]原生證據沿施法、效果、AttackFilter Waza、Blueprint OnAttack 連到最終傷害；精確與推定證據分開，證據不足時維持「未歸屬傷害」。
+[*]v0.5.41 將念動引力的一段延遲傷害補接回同一次精確施法、同一隻帕魯與同一目標。BP700／暗屬性只作核對，不單獨建立所有權。重複尾段、不同目標、配招不完整、缺少施法 ID，或同時存在另一個精確 BP700／暗屬技能時仍維持未歸屬。
+[*]既有冰技能尾段、雙槍一閃、閃雷衝鋒、突襲木乃伊與隕星子技能仍使用各自的受限規則。傷害數字、一般目前／最近動作或僅憑三格配招都不會決定技能。
+[*]保留 v0.5.40 的原生來源橋接與隕石 Rock-to-Ring 物件身分連結；本次不修改 UE4SS 或 PalSchema。
 [/list]
 
-原始碼：[url=https://github.com/paul800901/PalSkillDPSAnalyzer]GitHub[/url]
+[h2]顯示與適用範圍[/h2]
+[list]
+[*]預設只計算帕魯；可在 F3 另行開啟人物／武器傷害。武器測試建議整場只使用一種武器。
+[*]石板主 HUD 顯示傷害最高三個配招組；所有組別及每隻帕魯的傷害、DPS、有傷／無傷施放與命中段數仍保留在 F3。
+[*]困難塔只計具有 GYM 身分的主要塔主。普通野生帕魯、PvP、多人與專用伺服器不在已驗證範圍。
+[*][b]目前版本：[/b]v0.5.41。目標為 Windows 單人世界；需要 UE4SS Experimental。
+[/list]
 
-[i]獨立維護的 MIT 衍生作品。Boss 遭遇辨識、帕魯歸屬與安全訊息核心源自 AsahiChan-Game/PalBossDPSBroadcast；技能逐擊歸因、DPS HUD、原生 F3 CommonUI 與施放／命中統計由本專案後續開發。與 Pocketpair、Steam 或 UE4SS 無隸屬關係。[/i]
+[url=https://github.com/paul800901/PalSkillDPSAnalyzer]原始碼與技術說明[/url]
+[i]獨立維護的 MIT 衍生作品，源自 AsahiChan-Game/PalBossDPSBroadcast。非官方模組，與 Pocketpair、Steam 或 UE4SS 無隸屬關係。[/i]
 
 [h2]問題回報[/h2]
-[url=https://discord.gg/Swzj4UjejE]Discord「帕魯模組問題回報」[/url] · [url=https://github.com/paul800901/PalSkillDPSAnalyzer/issues]GitHub[/url]
-請附模組／Palworld 版本、環境、步驟、UE4SS.log；勿公開私人資料。
+[url=https://discord.gg/Swzj4UjejE]Discord「帕魯模組問題回報」[/url] · [url=https://github.com/paul800901/PalSkillDPSAnalyzer/issues]GitHub Issues[/url]
+請附模組名稱、Palworld 版本、模組版本、單人／多人／專用伺服器環境、重現步驟，以及相關 UE4SS.log 片段。請勿公開密碼、帳號資料或完整私人路徑。

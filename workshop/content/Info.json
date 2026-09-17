@@ -2,7 +2,7 @@
   "ModName": "帕魯技能 DPS 分析器",
   "PackageName": "PalSkillDPSAnalyzerSP",
   "Thumbnail": "thumbnail.png",
-  "Version": "0.5.30",
+  "Version": "0.5.41",
   "DebugMode": false,
   "MinRevision": 82182,
   "Author": "paul800901",
@@ -16,7 +16,8 @@
     {
       "Type": "Lua",
       "Targets": [
-        "./Scripts"
+        "./Scripts",
+        "./dlls"
       ]
     },
     {

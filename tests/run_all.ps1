@@ -212,7 +212,7 @@ $expectedWorkshopTitle = -join @(
 )
 if ($workshopInfo.ModName -ne $expectedWorkshopTitle) { throw "unexpected Workshop ModName" }
 if ($workshopInfo.PackageName -ne "PalSkillDPSAnalyzerSP") { throw "unexpected Workshop PackageName" }
-if ($workshopInfo.Version -ne "0.5.30") { throw "unexpected Workshop version" }
+if ($workshopInfo.Version -ne "0.5.41") { throw "unexpected Workshop version" }
 if ($workshopInfo.Dependencies -notcontains "UE4SSExperimentalPW") { throw "Workshop UE4SS dependency missing" }
 if ($workshopInfo.InstallRule.Count -ne 3) {
     throw "Workshop Lua/Paks/LogicMods InstallRule count mismatch"
@@ -222,6 +222,14 @@ if ($workshopInstallRuleTypes -notcontains "Lua" -or
     $workshopInstallRuleTypes -notcontains "Paks" -or
     $workshopInstallRuleTypes -notcontains "LogicMods") {
     throw "Workshop Lua/Paks/LogicMods InstallRule missing"
+}
+$luaRule = @($workshopInfo.InstallRule | Where-Object { $_.Type -eq "Lua" })[0]
+if ($luaRule.Targets -notcontains "./Scripts" -or $luaRule.Targets -notcontains "./dlls") {
+    throw "Workshop Lua rule must install Scripts and native dlls"
+}
+$nativeDll = Join-Path $workshopDirectory "dlls\main.dll"
+if (-not (Test-Path -LiteralPath $nativeDll -PathType Leaf)) {
+    throw "Workshop native source-bridge DLL missing"
 }
 $nativeUiPak = Join-Path $workshopDirectory "Paks\PalSkillDPSAnalyzerSP_P.pak"
 if (-not (Test-Path -LiteralPath $nativeUiPak)) { throw "Workshop native CommonUI pak missing" }
@@ -447,7 +455,7 @@ try {
     $testOutput = & npx --yes --package=fengari-node-cli fengari test_main.lua 2>&1
     $testExitCode = $LASTEXITCODE
     $testOutput | Write-Host
-    if ($testExitCode -ne 0 -or -not ($testOutput -match "v0\.5\.30 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed")) {
+    if ($testExitCode -ne 0 -or -not ($testOutput -match "v0\.5\.41 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed")) {
         throw "Lua integration test failed or did not reach its completion marker"
     }
     $localeOutput = & npx --yes --package=fengari-node-cli fengari test_localization.lua 2>&1

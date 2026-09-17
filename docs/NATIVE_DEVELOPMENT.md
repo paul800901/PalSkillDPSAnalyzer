@@ -49,4 +49,12 @@ Workshop 是玩家發佈管道，只包含執行所需的 Lua、設定、原生 
 說明。發佈前必須從乾淨 Git commit 建置，記錄 commit、Palworld 版本、UE4SS
 hash 與成品 hash；Workshop 不包含 Visual Studio、UE4SS 原始碼或開發 log。
 
-目前只進行本機 Git 固化，不會自動 push GitHub，也不會發佈 Workshop。
+Git push 與 Workshop 發布是兩個獨立動作，只有在使用者明確授權後執行；發布後分別讀回遠端 commit 與公開 Workshop 項目。
+
+## 原生來源橋接
+
+`native/build_source_bridge.ps1` 是目前公開版原生來源鏈的可重建入口；來源位於
+`native/src/ScriptSourceBridge.cpp` 與 `native/include/NativeAttackFrame.hpp`，真實
+x64 unwind 與 Lua／C++ 參數邊界 fixture 位於 `native/tests/`。腳本會核對 UE4SS、
+UEPseudo 與實際 `UE4SS.dll` 雜湊後才產生 `main.dll`。Workshop 內容只配送建置後的
+DLL，不包含建置工具鏈、第三方來源或測試產物。
