@@ -1,5 +1,12 @@
 # 更新日志
 
+## 0.5.42-blueprint-effect-source — Blueprint 效果來源通用歸屬
+
+- 依 v0.5.41 公版實戰紀錄修正：同一場 22 筆、合計 235,365 的未歸屬傷害，都發生在正在執行的 `BP_SkillEffect_Psychokinesis2_C` Blueprint 效果內，而效果本身已有帶 Waza 134 的 AttackFilter。
+- 將原生來源橋接由隕石限定改為通用 Blueprint SkillEffect：任何正在同步造成最終傷害的技能效果，只要擁有自己的 AttackFilter，便直接讀取該 Filter 的攻擊者與 Waza ID，不依賴技能名稱或固定配招。
+- 仍驗證效果類別、同步攻擊者／目標、AttackFilter 所屬物件與 Waza；任一不符就維持未歸屬。一般目前／最近動作、威力、屬性與三格配招仍不能單獨決定技能。
+- 更新原生來源橋接 DLL；UE4SS、PalSchema 與 UI 資產未修改。原生編譯及離線完整回歸通過；公版更新後仍需遊戲內重測確認。
+
 ## 0.5.41-psychokinesis-followup — 念動引力延遲段歸屬
 
 - 修正念動引力第一批精確命中之後，延遲第二段落入「未歸屬傷害」的問題。補接必須沿用同一隻帕魯、同一 Boss 與同一次精確念動引力施法。

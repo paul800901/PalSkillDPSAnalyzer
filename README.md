@@ -1,4 +1,4 @@
-# PalSkillDPSAnalyzer v0.5.41-psychokinesis-followup
+# PalSkillDPSAnalyzer v0.5.42-blueprint-effect-source
 
 Palworld 1.0 單機用 UE4SS 傷害驗證 Mod。它不是玩家排行榜，而是專門測量帕魯對 Boss 造成的技能傷害。F3 明確分成「野外／副本 Boss」與「石板 Boss」兩種測試，不由模組自動混判；普通野怪與未選用石板模式的基地混戰不納入正式統計。
 
@@ -12,7 +12,7 @@ Palworld 1.0 單機用 UE4SS 傷害驗證 Mod。它不是玩家排行榜，而�
 
 實機已確認目前 Palworld／UE4SS 會在 Lua 動態 UMG 與 `PrintString` 路徑造成 GameThread 存取違規。顯示層因此隔離成隨附的 Windows WPF 程序：Lua 只寫入本機 UTF-8 結構化狀態檔，不再從傷害回呼呼叫 Unreal UI。面板只在 Palworld 位於前景時顯示，綁定當次遊戲程序；原程序結束後在下一次檢查自動退出，不跟隨快速重開的新程序。未變更的狀態不重讀，隱藏時每秒檢查一次，顯示時維持 200 毫秒檢查頻率。
 
-目前 `v0.5.41` 保留嚴格的技能來源規則：引擎可直接對接的 Waza、效果或來源鏈列為精確歸屬；受限補接一律標成「推定」。念動引力的延遲第二段只在同一隻帕魯、同一目標、完整三格配招與同一次精確施法成立時補接，每次施法最多一段；`BasePower 700／暗屬性` 只作核對，不建立技能所有權。若同時存在另一個相同簽名施法、施法 ID 缺失、目標不同或資料不完整，傷害維持未辨識。既有冰技能尾段、雙槍一閃、閃雷衝鋒、隕星雨與突襲木乃伊規則仍各自維持原本的來源、時間及一次性限制。其他較大批次、來源衝突、逾時或物件世代不符仍維持「未辨識傷害」。石板模式中的基地派駐帕魯必須同時具有非空基地 ID，且目前群組必須等於本機玩家公會。全程不按傷害大小、倍率＋元素或三格技能單獨反推。
+目前 `v0.5.42` 保留嚴格的技能來源規則：引擎可直接對接的 Waza、效果或來源鏈列為精確歸屬；受限補接一律標成「推定」。原生橋接現在可通用讀取正在同步造成最終傷害的 Blueprint SkillEffect 自有 AttackFilter，以其中的攻擊者與 Waza ID 建立來源，不綁特定技能或配招。v0.5.41 公版實戰中的 22 筆念動引力未歸屬傷害，正是由 `BP_SkillEffect_Psychokinesis2_C` 自有 Filter 提供 Waza 134。只憑傷害數字、屬性、配招或一般目前／最近動作仍不能決定技能；效果、Filter、攻擊者、目標或 Waza 任一驗證不符時維持未辨識。既有冰技能尾段、雙槍一閃、閃雷衝鋒、隕星雨與突襲木乃伊規則仍各自維持原本限制。
 
 - 顯示語言（跟隨遊戲／17 種指定語言）
 - 技能 DPS 面板開關
@@ -66,7 +66,7 @@ Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\
 powershell -ExecutionPolicy Bypass -File .\workshop\build_workshop.ps1
 ```
 
-候選套件輸出位於 `workshop/dist/PalSkillDPSAnalyzerSP-Workshop-v0.5.41.zip`。專案保留獨立的 `Info.json`、PackageName 與 Workshop Published File ID，不會覆蓋上游 Mod；套件包含 Lua、原生來源橋接 DLL、遊戲內 CommonUI 主介面 PAK 與 LogicMods 啟動 PAK。Steam Workshop 公開版更新後為 v0.5.41。
+候選套件輸出位於 `workshop/dist/PalSkillDPSAnalyzerSP-Workshop-v0.5.42.zip`。專案保留獨立的 `Info.json`、PackageName 與 Workshop Published File ID，不會覆蓋上游 Mod；套件包含 Lua、原生來源橋接 DLL、遊戲內 CommonUI 主介面 PAK 與 LogicMods 啟動 PAK。Steam Workshop 公開版更新後為 v0.5.42。
 
 ## 驗證流程
 

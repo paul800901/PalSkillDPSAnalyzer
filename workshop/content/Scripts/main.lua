@@ -93,7 +93,7 @@ local function log(message)
 end
 
 if config.EnableAttributionProbe == true then
-    log("attribution-probe READY baseline=v0.5.41 limit=2048/session mode=animation-collision-v11 total-unchanged=true")
+    log("attribution-probe READY baseline=v0.5.42 limit=2048/session mode=animation-collision-v11 total-unchanged=true")
 end
 
 hooks.log_native_diagnostic_status = function(reason)
@@ -6339,7 +6339,7 @@ local function register_hooks()
 
     if hooks.damage and hooks.death then
         log(string.format(
-            "loaded v0.5.41-psychokinesis-cast-followup; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s waza_hook=%s action_hooks=%s/%s effect_hook=%s filter_hook=%s effect_attack_hooks=%d; captured_hooks=%d",
+            "loaded v0.5.42-blueprint-effect-source; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s waza_hook=%s action_hooks=%s/%s effect_hook=%s filter_hook=%s effect_attack_hooks=%d; captured_hooks=%d",
             hooks.damage_mode,
             tostring(config.EnableDPSRecording ~= false),
             tostring(config.EnableSkillDiagnostics == true),

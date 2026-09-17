@@ -208,11 +208,12 @@ namespace
         { reason = "blueprint_reflection_failed"; return nullptr; }
     }
 
-    // CommetRain and ThreeCommet inherit the base rock's Blueprint damage
-    // implementation. Its child DamageInfo says Commet, but the executing
-    // rock's own AttackFilter carries the real parent Waza. Read only that
-    // synchronous object; no previous action, time window or damage estimate.
-    auto blueprint_meteor_filter(const pal_dps::NativeAttackFrame& frame,
+    // A Blueprint SkillEffect that is synchronously executing the final-damage
+    // call may own an AttackFilter carrying the originating Waza. This is the
+    // same reflected identity used by native filter frames and applies to any
+    // SkillEffect class, not a named skill or loadout. The outer check prevents
+    // borrowing a filter from another effect object.
+    auto blueprint_effect_filter(const pal_dps::NativeAttackFrame& frame,
                                   UClass* effect_class, std::uintptr_t attacker,
                                   std::uintptr_t defender) -> UObject*
     {
@@ -222,11 +223,6 @@ namespace
                 || frame.attacker != attacker || frame.defender != defender) return nullptr;
             auto* effect = reinterpret_cast<FFrame*>(frame.script_frame)->Object();
             if (!effect || !effect_class || !effect->IsA(effect_class)) return nullptr;
-            bool meteor = false;
-            for (auto* type = effect->GetClassPrivate(); type; type = type->GetSuperClass())
-                if (type->GetFName() == FName(STR("BP_SkillEffect_Commet_Rock_C")))
-                { meteor = true; break; }
-            if (!meteor) return nullptr;
             auto* filter = member(effect, "attackfilter");
             return filter && filter->GetOuterPrivate() == effect ? filter : nullptr;
         }
@@ -333,8 +329,8 @@ namespace
                     }
                     else if (object)
                     {
-                        filter = blueprint_meteor_filter(frame, instance->effect_class, attacker, defender);
-                        validation = "blueprint_meteor_identity_missing";
+                        filter = blueprint_effect_filter(frame, instance->effect_class, attacker, defender);
+                        validation = "blueprint_effect_filter_missing";
                     }
                 }
                 if (filter)
@@ -394,7 +390,7 @@ namespace
         ScriptSourceBridge()
         {
             ModName = STR("PalDpsSourceBridge");
-            ModVersion = STR("0.2.4-meteor-ring-spawn-link");
+            ModVersion = STR("0.2.5-blueprint-effect-filter");
             ModDescription = STR("Read-only native attack frame source bridge");
             ModAuthors = STR("AsahiChan-Game");
             instance = this;

@@ -23,7 +23,7 @@ config.IncludePlayerDamage = true
 Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\config.lua
 ```
 
-v0.5.41 修正念動引力延遲第二段落入「未歸屬傷害」：只在同一隻帕魯、同一目標、完整三格配招與同一次精確念動引力施法成立時補接，每次施法最多一段。`BasePower 700／暗屬性` 只作核對；重複尾段、跨目標、配招不完整、缺少施法 ID，或同時存在另一個相同簽名精確技能時仍維持未歸屬。保留 v0.5.40 的原生來源橋接與隕石 Rock-to-Ring 連結，也保留既有 F3、HUD、冰技能尾段、雙槍一閃、閃雷衝鋒與突襲木乃伊規則。本版不修改 UE4SS 或 PalSchema。請只沿用 Steam 工坊原訂閱，不要另外安裝內測檔；完整退出遊戲，等 Steam 更新後重開，再按 F2 測試。
+v0.5.42 將原生來源橋接擴充至所有正在同步執行、且擁有自有 AttackFilter 的 Blueprint SkillEffect，直接以效果自己的攻擊者與 Waza ID 建立精確來源，不綁技能名稱或固定配招。這會處理 v0.5.41 公版實戰中由 `BP_SkillEffect_Psychokinesis2_C` 產生的 22 筆未歸屬傷害，也適用於其他使用相同引擎流程的技能。效果、Filter、攻擊者、目標或 Waza 任一驗證不符時仍維持未歸屬；傷害、屬性、配招及一般目前／最近動作不會單獨決定技能。本版不修改 UE4SS、PalSchema 或 UI。請只沿用 Steam 工坊原訂閱，不要另外安裝內測檔；完整退出遊戲，等 Steam 更新後重開，再按 F2 測試。
 
 專案：https://github.com/paul800901/PalSkillDPSAnalyzer
 

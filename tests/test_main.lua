@@ -4986,4 +4986,4 @@ do
     print("native attack-filter and Blueprint frame OnDamage queue/skill integration passed")
     native_frame_test = nil
 end
-print("PalSkillDPSAnalyzer v0.5.41 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed; attribution probe tests passed")
+print("PalSkillDPSAnalyzer v0.5.42 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed; attribution probe tests passed")

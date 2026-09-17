@@ -15,14 +15,14 @@ powershell -ExecutionPolicy Bypass -File .\workshop\build_workshop.ps1
 建包會同步共享 Lua 核心、驗證 `Info.json`、相依項目、診斷預設值、UTF-8 與 Lua 語法，輸出：
 
 ```text
-workshop/dist/PalSkillDPSAnalyzerSP-Workshop-v0.5.41.zip
+workshop/dist/PalSkillDPSAnalyzerSP-Workshop-v0.5.42.zip
 ```
 
 ## 獨立發布邊界
 
 - PackageName：`PalSkillDPSAnalyzerSP`
-- 本機候選版本：`0.5.41`（念動引力同施法延遲段歸屬）
-- 工坊公開版本：`0.5.41`（上傳後須由公開 API 與頁面讀回確認）
+- 本機候選版本：`0.5.42`（Blueprint SkillEffect 自有 Filter 通用歸屬）
+- 工坊公開版本：`0.5.42`（上傳後須由公開 API 與頁面讀回確認）
 - UE4SS Workshop 相依：`3625223587`
 - 沿用本專案既有 Published File ID `3784125454`，只更新原訂閱，不建立第二個項目。
 - 不得填入或沿用 `PalBossDPSBroadcast` 的 Published File ID。
