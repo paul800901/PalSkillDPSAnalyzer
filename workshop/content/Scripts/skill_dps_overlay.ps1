@@ -468,7 +468,7 @@ function New-HudSkillRow([pscustomobject]$row, [double]$maximumDamage, [double]$
     $nameGroup.VerticalAlignment = [Windows.VerticalAlignment]::Center
     $name = New-HudText $row.Name (13 * $scale) "#FFF3FBFD" ([Windows.FontWeights]::Medium)
     $nameGroup.Children.Add($name) | Out-Null
-    $subline = "{0} DPS  ·  {1}%" -f (Format-HudDecimal $row.Dps), (Format-HudDecimal $row.Share)
+    $subline = "{0}%" -f (Format-HudDecimal $row.Share)
     $sub = New-HudText $subline (9.5 * $scale) "#FF9ABBC3" ([Windows.FontWeights]::Normal)
     $sub.Margin = [Windows.Thickness]::new(0, 1 * $scale, 0, 0)
     $nameGroup.Children.Add($sub) | Out-Null
@@ -498,7 +498,7 @@ function Update-HudSkillRow([hashtable]$cached, [pscustomobject]$row, [double]$m
     # stays the same, so WPF does not re-measure/layout the whole meter.
     $cached.Name.Text = [string]$row.Name
     $cached.RankValue = [int]$row.Rank
-    $cached.Sub.Text = "{0} DPS  ·  {1}%" -f (Format-HudDecimal $row.Dps), (Format-HudDecimal $row.Share)
+    $cached.Sub.Text = "{0}%" -f (Format-HudDecimal $row.Share)
     $cached.Damage.Text = $damageLabel + " " + (Format-HudInteger $row.Damage)
     $ratio = if ($tabletMode) {
         [Math]::Max(0, [Math]::Min(1, $row.Share / 100.0))
@@ -542,8 +542,8 @@ function New-HudDetailRow([pscustomobject]$row, [double]$maximumDamage, [string]
     [void]$header.ColumnDefinitions.Add([Windows.Controls.ColumnDefinition]@{ Width = [Windows.GridLength]::Auto })
     $name = New-HudText ("{0}. {1}" -f $row.Rank, $row.Name) 12.5 "#FFF3FBFD" ([Windows.FontWeights]::SemiBold)
     [void]$header.Children.Add($name)
-    $damage = New-HudText ("{0} {1}  ·  {2} DPS  ·  {3}%" -f
-        $damageLabel, (Format-HudInteger $row.Damage), (Format-HudDecimal $row.Dps),
+    $damage = New-HudText ("{0} {1}  ·  {2}%" -f
+        $damageLabel, (Format-HudInteger $row.Damage),
         (Format-HudDecimal $row.Share)) 11.5 "#FFFFFFFF" ([Windows.FontWeights]::SemiBold)
     $damage.HorizontalAlignment = [Windows.HorizontalAlignment]::Right
     [Windows.Controls.Grid]::SetColumn($damage, 1)
@@ -618,15 +618,12 @@ function Show-HudMeter([hashtable]$values, [string]$body, [double]$scale) {
     if ([string]::IsNullOrWhiteSpace($primarySource)) {
         $primarySource = ConvertFrom-HudField ([string]$values.title)
     }
-    $duration = Format-HudDuration (ConvertTo-HudNumber ([string]$values.duration))
-    $contextLine = $duration
+    $contextLine = ""
     $shortcutHint = ConvertFrom-HudField ([string]$values.shortcut_hint)
     $moreDetailsHint = ConvertFrom-HudField ([string]$values.more_details_hint)
-    $encounterDps = ConvertTo-HudNumber ([string]$values.encounter_dps)
     $damageLabel = ConvertFrom-HudField ([string]$values.damage_label)
     if ([string]::IsNullOrWhiteSpace($damageLabel)) { $damageLabel = "DMG" }
     $damageLine = $damageLabel + " " + (Format-HudInteger (ConvertTo-HudNumber ([string]$values.total_damage)))
-    $dpsLine = (Format-HudDecimal $encounterDps) + " DPS"
     $sourceCount = [int](ConvertTo-HudNumber ([string]$values.source_count))
 
     # The meter visual tree is built once and updated in place. Rebuilding on
@@ -670,9 +667,6 @@ function Show-HudMeter([hashtable]$values, [string]$body, [double]$scale) {
         $damageText = New-HudText $damageLine (16 * $scale) "#FFFFFFFF" ([Windows.FontWeights]::SemiBold)
         $damageText.HorizontalAlignment = [Windows.HorizontalAlignment]::Right
         [void]$right.Children.Add($damageText)
-        $dpsText = New-HudText $dpsLine (9.5 * $scale) "#FF9ABBC3" ([Windows.FontWeights]::Normal)
-        $dpsText.HorizontalAlignment = [Windows.HorizontalAlignment]::Right
-        [void]$right.Children.Add($dpsText)
         [Windows.Controls.Grid]::SetColumn($right, 1)
         [void]$header.Children.Add($right)
         [void]$panel.Children.Add($header)
@@ -706,7 +700,6 @@ function Show-HudMeter([hashtable]$values, [string]$body, [double]$scale) {
             HeaderSource = $sourceName
             HeaderContext = $contextText
             HeaderDamage = $damageText
-            HeaderDps = $dpsText
             RowHost = $rowHost
             Rows = @{}
             SourceHeaders = @{}
@@ -723,7 +716,6 @@ function Show-HudMeter([hashtable]$values, [string]$body, [double]$scale) {
         $script:meterUi.HeaderSource.Text = $primarySource
         $script:meterUi.HeaderContext.Text = $contextLine
         $script:meterUi.HeaderDamage.Text = $damageLine
-        $script:meterUi.HeaderDps.Text = $dpsLine
         $script:meterUi.MoreDetails.Text = $moreDetailsHint
         $script:meterUi.MoreDetails.Visibility = if ([string]::IsNullOrWhiteSpace($moreDetailsHint)) {
             [Windows.Visibility]::Collapsed
@@ -1087,9 +1079,8 @@ function Show-HudSettings([hashtable]$values, [string]$body) {
         $empty.TextWrapping = [Windows.TextWrapping]::Wrap
         [void]$resultsPanel.Children.Add($empty)
     } else {
-        $summary = "{0}  ·  {3} {2}  ·  {1} DPS" -f
+        $summary = "{0}  ·  {2} {1}" -f
             (ConvertFrom-HudField ([string]$values.result_context)),
-            (Format-HudDecimal (ConvertTo-HudNumber ([string]$values.result_dps))),
             (Format-HudInteger (ConvertTo-HudNumber ([string]$values.result_damage))),
             $damageLabel
         $summaryText = New-HudText $summary 12 "#FFB9D5DB" ([Windows.FontWeights]::Medium)
@@ -1100,9 +1091,8 @@ function Show-HudSettings([hashtable]$values, [string]$body) {
         foreach ($row in $resultRows) {
             if ($row.SourceIndex -ne $lastSourceIndex -and $sources.ContainsKey($row.SourceIndex)) {
                 $source = $sources[$row.SourceIndex]
-                $sourceHeader = New-HudText ("{0}   {3} {2}   {1} DPS" -f $source.Name,
-                    (Format-HudDecimal $source.Dps), (Format-HudInteger $source.Damage),
-                    $damageLabel) 12.5 "#FF74D9EC" ([Windows.FontWeights]::SemiBold)
+                $sourceHeader = New-HudText ("{0}   {2} {1}" -f $source.Name,
+                    (Format-HudInteger $source.Damage), $damageLabel) 12.5 "#FF74D9EC" ([Windows.FontWeights]::SemiBold)
                 $sourceHeader.Margin = [Windows.Thickness]::new(6, $(if ($null -eq $lastSourceIndex) { 2 } else { 13 }), 6, 5)
                 [void]$resultsPanel.Children.Add($sourceHeader)
                 $lastSourceIndex = $row.SourceIndex
@@ -1322,19 +1312,19 @@ if ($ValidationMode) {
         $rankGradient = if ($gradientOk) { "1" } else { "0" }
 
         # The live row has exactly three visible text values: skill name,
-        # per-skill DPS/share, and per-skill total damage. Encounter time stays
-        # in the header. Cast/Hit diagnostics belong exclusively to F3 page 2.
+        # damage share, and per-skill total damage. Cast/Hit diagnostics belong
+        # exclusively to F3 page 2.
         $damagePrefix = [string]$script:meterUi.DamageLabel
         if ([string]::IsNullOrWhiteSpace($damagePrefix)) { $damagePrefix = "DMG" }
         $damagePattern = '^' + [regex]::Escape($damagePrefix) + ' '
-        $coreOk = $script:meterUi.HeaderContext.Text -match '^\d{2}:\d{2}$'
+        $coreOk = [string]::IsNullOrWhiteSpace($script:meterUi.HeaderContext.Text)
         foreach ($key in @($script:meterUi.Rows.Keys)) {
             $cached = $script:meterUi.Rows[$key]
             $textBlocks = [Collections.Generic.List[object]]::new()
             Add-HudTextBlocks $cached.Row $textBlocks
             if ($textBlocks.Count -ne 3 -or
                 [string]::IsNullOrWhiteSpace($cached.Name.Text) -or
-                $cached.Sub.Text -notmatch ' DPS\s+·\s+.*%$' -or
+                $cached.Sub.Text -notmatch '^.*%$' -or
                 $cached.Damage.Text -notmatch $damagePattern) {
                 $coreOk = $false
             }
@@ -1343,11 +1333,10 @@ if ($ValidationMode) {
         $tabletNumericFields = "n/a"
         if ([bool]$script:meterUi.TabletMode) {
             $tabletOk = $script:meterUi.SourceHeaders.Count -ge 1 -and
-                $script:meterUi.HeaderDamage.Visibility -eq [Windows.Visibility]::Visible -and
-                $script:meterUi.HeaderDps.Visibility -eq [Windows.Visibility]::Visible
+                $script:meterUi.HeaderDamage.Visibility -eq [Windows.Visibility]::Visible
             foreach ($key in @($script:meterUi.Rows.Keys)) {
                 $cached = $script:meterUi.Rows[$key]
-                if ($cached.Sub.Text -notmatch ' DPS\s+·\s+.*%$' -or
+                if ($cached.Sub.Text -notmatch '^.*%$' -or
                     $cached.Damage.Text -notmatch $damagePattern -or
                     $cached.Damage.Visibility -ne [Windows.Visibility]::Visible) {
                     $tabletOk = $false

@@ -1,4 +1,4 @@
-# PalSkillDPSAnalyzer v0.5.43-settings-localization
+# PalSkillDPSAnalyzer v0.5.44-damage-only-hud-cache
 
 Palworld 1.0 單機用 UE4SS 傷害驗證 Mod。它不是玩家排行榜，而是專門測量帕魯對 Boss 造成的技能傷害。F3 明確分成「野外／副本 Boss」與「石板 Boss」兩種測試，不由模組自動混判；普通野怪與未選用石板模式的基地混戰不納入正式統計。
 
@@ -6,13 +6,13 @@ Palworld 1.0 單機用 UE4SS 傷害驗證 Mod。它不是玩家排行榜，而�
 
 ## 獨立技能 DPS 面板
 
-第一次有效命中後，畫面左側安全區會開啟縮小至 85% 的透明置頂 HUD；模組完全不向遊戲聊天室送出任何資料，也沒有聊天輸出設定。野外／副本模式維持技能名稱、累計傷害、DPS、占比與測試時間。石板模式則改成簡化戰報：依「種類＋三技能配招」分組，同種同配招顯示 `×N`，同種不同配招分成 A／B 組；每組顯示三技能的累計傷害、DPS、占比與長條，表頭保留整場總傷害與 DPS；普攻及未歸屬仍計入總傷害，可在詳情查看。主 HUD 固定只保留傷害最高的三組，其餘以提示導向 `F3`。F3 有三個同層分頁：「設定」、「分組百分比」完整列出所有配招組；第三頁「本次測試詳情」保留原有每隻帕魯的實際傷害、DPS、施放與 Hit 詳情。
+第一次有效命中後，畫面左側安全區會開啟縮小至 85% 的透明置頂 HUD；模組完全不向遊戲聊天室送出任何資料，也沒有聊天輸出設定。主面板只顯示技能名稱、累計傷害與占比，不再顯示經過時間或 DPS。石板模式依「種類＋三技能配招」分組，同種同配招顯示 `×N`，同種不同配招分成 A／B 組；主 HUD 固定只保留傷害最高的三組，其餘以提示導向 `F3`。F3 有三個同層分頁：「設定」、「分組百分比」完整列出所有配招組；第三頁「本次測試詳情」保留每隻帕魯的實際傷害、占比、施放與 Hit 詳情。
 
 預設是「手動測試區間＋野外／副本 Boss」：按 `F2` 可安全歸零並重新待命，直到第一下有效 Boss 傷害才開始計時；基地派駐帕魯在此模式會被排除。要測召喚石板戰，先在 F3 把「測試類型」切到「石板 Boss」，再按 `F2` 開始新測試。困難塔主只統計具有 `GYM` 角色身分、實際擁有塔主血條的主體；塔內小怪即使也帶 Boss／TowerBoss 資料旗標仍會排除。世界倍率產生的多隻真正 Boss 仍會持續累計，直到下一次 `F2` 才清空。
 
 實機已確認目前 Palworld／UE4SS 會在 Lua 動態 UMG 與 `PrintString` 路徑造成 GameThread 存取違規。顯示層因此隔離成隨附的 Windows WPF 程序：Lua 只寫入本機 UTF-8 結構化狀態檔，不再從傷害回呼呼叫 Unreal UI。面板只在 Palworld 位於前景時顯示，綁定當次遊戲程序；原程序結束後在下一次檢查自動退出，不跟隨快速重開的新程序。未變更的狀態不重讀，隱藏時每秒檢查一次，顯示時維持 200 毫秒檢查頻率。
 
-目前 `v0.5.43` 保留嚴格的技能來源規則：引擎可直接對接的 Waza、效果或來源鏈列為精確歸屬；受限補接一律標成「推定」。原生橋接現在可通用讀取正在同步造成最終傷害的 Blueprint SkillEffect 自有 AttackFilter，以其中的攻擊者與 Waza ID 建立來源，不綁特定技能或配招。v0.5.43 另修正 F3 原生設定頁切到 English 後，分組標題、欄位名稱與重設／關閉按鈕仍保留中文的問題。傷害統計、技能歸屬與計時邏輯未改動。
+目前 `v0.5.44` 保留嚴格的技能來源規則：引擎可直接對接的 Waza、效果或來源鏈列為精確歸屬；受限補接一律標成「推定」。原生橋接現在可通用讀取正在同步造成最終傷害的 Blueprint SkillEffect 自有 AttackFilter，以其中的攻擊者與 Waza ID 建立來源，不綁特定技能或配招。v0.5.44 修正大量帕魯手動測試停止交戰後，遊戲執行緒仍反覆完整重建技能明細而持續拖慢 FPS 的問題；沒有新資料時直接沿用快取。介面同時移除經過時間與 DPS，只保留累計傷害、占比、Hit 與施放資料。
 
 - 顯示語言（跟隨遊戲／17 種指定語言）
 - 技能 DPS 面板開關
@@ -66,7 +66,7 @@ Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\
 powershell -ExecutionPolicy Bypass -File .\workshop\build_workshop.ps1
 ```
 
-候選套件輸出位於 `workshop/dist/PalSkillDPSAnalyzerSP-Workshop-v0.5.43.zip`。專案保留獨立的 `Info.json`、PackageName 與 Workshop Published File ID，不會覆蓋上游 Mod；套件包含 Lua、原生來源橋接 DLL、遊戲內 CommonUI 主介面 PAK 與 LogicMods 啟動 PAK。Steam Workshop 公開版更新後為 v0.5.43。
+候選套件輸出位於 `workshop/dist/PalSkillDPSAnalyzerSP-Workshop-v0.5.44.zip`。專案保留獨立的 `Info.json`、PackageName 與 Workshop Published File ID，不會覆蓋上游 Mod；套件包含 Lua、原生來源橋接 DLL、遊戲內 CommonUI 主介面 PAK 與 LogicMods 啟動 PAK。Steam Workshop 公開版更新後為 v0.5.44。
 
 ## 驗證流程
 

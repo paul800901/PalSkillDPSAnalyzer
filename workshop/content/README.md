@@ -7,7 +7,7 @@ Palworld 1.0 單人世界傷害驗證 Mod。預設只計算帕魯；野外／副
 1. 訂閱並啟用本 Mod 與 `UE4SS Experimental (Palworld)`。
 2. 按 F3，在「測試類型」選擇「野外／副本 Boss」或「石板 Boss」，再關閉設定。
 3. 按 F2 開始新測試（傷害歸零）；第一筆有效傷害才會開始計時。
-4. 石板模式主 HUD 以配招組顯示三個技能的傷害、DPS 與占比；F3「本次測試詳情」保留每隻帕魯的實際傷害、DPS 與 Hit／施放資料。
+4. 石板模式主 HUD 以配招組顯示三個技能的累計傷害與占比；F3「本次測試詳情」保留每隻帕魯的實際傷害與 Hit／施放資料。
 
 人物傷害預設關閉。要測試武器時，修改：
 
@@ -23,7 +23,7 @@ config.IncludePlayerDamage = true
 Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\config.lua
 ```
 
-v0.5.43 修正 F3 設定頁切到 English 後，分組標題、欄位名稱與「重設／關閉」按鈕仍保留中文的問題。現在標題、分頁、欄位名稱、設定值與按鈕會一起切換語言。本版不改變傷害統計、技能歸屬、計時、UE4SS、PalSchema 或原生來源橋接 DLL。請只沿用 Steam 工坊原訂閱，不要另外安裝內測檔；完整退出遊戲，等 Steam 更新後重開。
+v0.5.44 修正大量帕魯手動測試停止交戰後，遊戲執行緒仍每 0.5 秒完整掃描技能明細，造成 CPU 持續偏高與 FPS 無法恢復的問題。沒有新資料時現在直接沿用快取；介面也移除經過時間與 DPS，只保留累計傷害、占比、Hit 與施放資料。請只沿用 Steam 工坊原訂閱，不要另外安裝內測檔；完整退出遊戲，等 Steam 更新後重開。
 
 專案：https://github.com/paul800901/PalSkillDPSAnalyzer
 

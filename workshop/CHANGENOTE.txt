@@ -1,17 +1,19 @@
-[b]v0.5.43 — Complete F3 settings localization[/b]
+[b]v0.5.44 — Large-test performance and damage-only display[/b]
 [list]
-[*]Fixed the native F3 Settings page when Display language is set to English.
-[*]Section headings, all eight setting labels, and the Reset/Close buttons now switch together with the existing title, tabs, and values instead of remaining in Chinese.
-[*]Damage recording, attribution, timing, UE4SS, PalSchema, and the native source bridge are unchanged.
+[*]Fixed severe post-combat CPU/FPS degradation after large manual tests such as 48-Pal raids.
+[*]When no new damage or cast data arrives, the game thread now reuses the completed detail snapshot instead of rescanning the full action history every 0.5 seconds.
+[*]Removed elapsed time and all DPS values from the meter and F3 results. Cumulative damage, share, Hit, and cast data remain.
+[*]Damage recording, attribution, F2 reset, UE4SS, PalSchema, and the native source bridge are unchanged.
 [*]The full offline suite and localization checks for all 17 supported languages passed.
 [/list]
 [b]Keep the existing Workshop subscription; do not install a separate test copy. Fully exit Palworld, wait for Steam to update, then restart.[/b]
 [hr][/hr]
-[b]v0.5.43 — F3 設定頁完整語系切換[/b]
+[b]v0.5.44 — 大型測試效能修正與純傷害顯示[/b]
 [list]
-[*]修正原生 F3 設定頁選擇 English 後，部分文字仍顯示中文的問題。
-[*]區段標題、8 個設定欄位名稱、重設／關閉按鈕，現在會與既有標題、分頁與設定值一起切換。
-[*]傷害紀錄、技能歸屬、計時、UE4SS、PalSchema 與原生來源橋接均未改動。
+[*]修正 48 隻帕魯等大型手動測試結束交戰後，CPU 持續偏高、FPS 無法恢復的問題。
+[*]沒有新傷害或施法資料時，遊戲執行緒不再每 0.5 秒重掃完整動作紀錄，改為沿用完成的明細快照。
+[*]主面板與 F3 結果移除經過時間及所有 DPS，只保留累計傷害、占比、Hit 與施放資料。
+[*]傷害紀錄、技能歸屬、F2 重設、UE4SS、PalSchema 與原生來源橋接均未改動。
 [*]完整離線測試與 17 種支援語言的本地化檢查全數通過。
 [/list]
 [b]沿用現有 Steam 工坊訂閱，不要另裝內測檔。請完整退出 Palworld，等待 Steam 更新後重開。[/b]

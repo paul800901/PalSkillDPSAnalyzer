@@ -905,11 +905,7 @@ function hud.new(options)
         local snapshot = self.latest_snapshot
         local result_context = ""
         if snapshot ~= nil then
-            result_context = self:text("hud_result_context", {
-                target = snapshot.boss,
-                seconds = decimal(snapshot.duration),
-                count = math.floor(tonumber(snapshot.target_count) or 1),
-            })
+            result_context = tostring(snapshot.boss or "")
         end
         local header = {
             "PAL_SKILL_DPS_HUD_V2",
@@ -1237,17 +1233,8 @@ function hud.new(options)
         local snapshot = self.latest_snapshot
         if snapshot == nil then return self:text("hud_no_results") end
         local lines = {
-            self:text("hud_result_context", {
-                target = snapshot.boss,
-                seconds = decimal(snapshot.duration),
-                count = math.floor(tonumber(snapshot.target_count) or 1),
-            }),
-            string.format(
-                "%s %s  ·  %s DPS",
-                self:text("hud_total_damage_label"),
-                integer(snapshot.total_damage),
-                decimal(snapshot.encounter_dps)
-            ),
+            tostring(snapshot.boss or ""),
+            string.format("%s %s", self:text("hud_total_damage_label"), integer(snapshot.total_damage)),
             "",
         }
         local group_count = 0
@@ -1291,39 +1278,28 @@ function hud.new(options)
         local snapshot = self.latest_snapshot
         if snapshot == nil then return self:text("hud_no_results") end
         local lines = {
-            self:text("hud_result_context", {
-                target = snapshot.boss,
-                seconds = decimal(snapshot.duration),
-                count = math.floor(tonumber(snapshot.target_count) or 1),
-            }),
-            string.format(
-                "%s %s  ·  %s DPS",
-                self:text("hud_total_damage_label"),
-                integer(snapshot.total_damage),
-                decimal(snapshot.encounter_dps)
-            ),
+            tostring(snapshot.boss or ""),
+            string.format("%s %s", self:text("hud_total_damage_label"), integer(snapshot.total_damage)),
             "",
         }
         local shown = 0
         for _, source in ipairs(snapshot.detail_sources or snapshot.sources or {}) do
             lines[#lines + 1] = string.format(
-                "%s  ·  %s %s  ·  %s DPS",
+                "%s  ·  %s %s",
                 tostring(source.name or ""),
                 self:text("hud_total_damage_label"),
-                integer(source.damage),
-                decimal(source.dps)
+                integer(source.damage)
             )
             for _, skill in ipairs(source.skills or {}) do
                 shown = shown + 1
                 local skill_name = self:skill_display_name(skill)
                 local detail = self:detail_skill(skill)
                 lines[#lines + 1] = string.format(
-                    "%d. %s  ·  %s %s  ·  %s DPS",
+                    "%d. %s  ·  %s %s",
                     shown,
                     skill_name,
                     self:text("hud_total_damage_label"),
-                    integer(skill.damage),
-                    decimal(skill.encounter_dps)
+                    integer(skill.damage)
                 )
                 lines[#lines + 1] = detail.casts_text
                 lines[#lines + 1] = detail.hits_text
@@ -1805,57 +1781,42 @@ function hud.new(options)
         local final = snapshot.state == "finished"
         local header = self:text("hud_title")
         local state = self:text(final and "hud_state_finished" or "hud_state_live")
-        local summary = self:text("hud_summary", {
-            state = state,
-            boss = snapshot.boss,
-            seconds = decimal(snapshot.duration),
-            damage = integer(snapshot.total_damage),
-            dps = decimal(snapshot.encounter_dps),
-        })
+        local summary = string.format(
+            "%s｜%s｜%s %s",
+            state,
+            tostring(snapshot.boss or ""),
+            self:text("hud_total_damage_label"),
+            integer(snapshot.total_damage)
+        )
         local lines = {}
         local shown = 0
         local maximum = math.max(1, math.floor(tonumber(self.config.HUDMaxSkillRows) or 6))
         for _, source in ipairs(snapshot.sources or {}) do
             if shown >= maximum then break end
-            lines[#lines + 1] = self:text("hud_source", {
-                source = source.name,
-                damage = integer(source.damage),
-                dps = decimal(source.dps),
-                hits = source.hits,
-            })
+            lines[#lines + 1] = string.format(
+                "%s｜%s %s｜Hit %d",
+                tostring(source.name or ""),
+                self:text("hud_total_damage_label"),
+                integer(source.damage),
+                math.floor(tonumber(source.hits) or 0)
+            )
             for _, skill in ipairs(source.skills or {}) do
                 if shown >= maximum then break end
                 shown = shown + 1
                 local skill_name = self:skill_display_name(skill)
                 if self.config.HUDDetailMode == "compact" then
-                    lines[#lines + 1] = self:text("hud_skill_compact", {
-                        rank = shown,
-                        skill = skill_name,
-                        damage = integer(skill.damage),
-                        dps = decimal(skill.encounter_dps),
-                        casts = skill.casts,
-                    })
+                    lines[#lines + 1] = string.format(
+                        "%d. %s｜%s %s｜Cast %d",
+                        shown, skill_name, self:text("hud_total_damage_label"),
+                        integer(skill.damage), math.floor(tonumber(skill.casts) or 0)
+                    )
                 else
-                    lines[#lines + 1] = self:text("hud_skill_primary", {
-                        rank = shown,
-                        skill = skill_name,
-                        damage = integer(skill.damage),
-                        dps = decimal(skill.encounter_dps),
-                        hits = skill.hits,
-                        casts = skill.casts,
-                    })
-                    lines[#lines + 1] = self:text("hud_skill_timing", {
-                        per_cast = decimal(skill.damage_per_cast),
-                        action = decimal(skill.action_duration),
-                        cast_dps = decimal(skill.action_dps),
-                        complete = skill.lifecycle_complete,
-                        casts = skill.casts,
-                    })
-                    lines[#lines + 1] = self:text("hud_skill_cooldown", {
-                        panel = decimal(skill.panel_cd),
-                        interval = decimal(skill.actual_interval),
-                        gap = decimal(skill.reuse_gap),
-                    })
+                    lines[#lines + 1] = string.format(
+                        "%d. %s｜%s %s｜Hit %d｜Cast %d",
+                        shown, skill_name, self:text("hud_total_damage_label"),
+                        integer(skill.damage), math.floor(tonumber(skill.hits) or 0),
+                        math.floor(tonumber(skill.casts) or 0)
+                    )
                 end
             end
         end

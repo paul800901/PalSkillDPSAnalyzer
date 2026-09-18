@@ -86,6 +86,8 @@ local metrics = {
     action_begins = 0,
     action_ends = 0,
     trace_events = 0,
+    hud_snapshot_rebuilds = 0,
+    hud_snapshot_cache_hits = 0,
 }
 
 local function log(message)
@@ -93,7 +95,7 @@ local function log(message)
 end
 
 if config.EnableAttributionProbe == true then
-    log("attribution-probe READY baseline=v0.5.43 limit=2048/session mode=animation-collision-v11 total-unchanged=true")
+    log("attribution-probe READY baseline=v0.5.44 limit=2048/session mode=animation-collision-v11 total-unchanged=true")
 end
 
 hooks.log_native_diagnostic_status = function(reason)
@@ -3156,6 +3158,21 @@ local function invalidate_equipped_waza(actor_key)
     end
 end
 
+hooks.mark_actor_sessions_hud_dirty = function(actor_key)
+    if actor_key == nil then return end
+    local now = game_time_seconds()
+    for _, session in pairs(sessions) do
+        for _, source in pairs(session.diagnostic_sources or {}) do
+            if source.runtime_actor_keys ~= nil
+                and source.runtime_actor_keys[actor_key] == true then
+                session.hud_revision = (session.hud_revision or 0) + 1
+                session.hud_revision_changed_at = now
+                break
+            end
+        end
+    end
+end
+
 local function process_action_lifecycle_event(event)
     local details = action_lifecycle_details(event.action)
     if details == nil then
@@ -3216,6 +3233,7 @@ local function process_action_lifecycle_event(event)
             tostring(record.waza_id), tostring(record.code), now
         ))
     end
+    hooks.mark_actor_sessions_hud_dirty(record.actor_key)
 end
 
 attack_signature = function(diagnostic_fields)
@@ -4203,6 +4221,24 @@ local function diagnostic_snapshot(session, state, reason)
     local now = finished_at or game_time_seconds()
     local duration = math.max(0.1, now - (session.started_game_at or now))
     local translator_code = get_translator().code
+    local revision = session.hud_revision or 0
+    local settle_seconds = math.max(1, tonumber(config.SkillActionPostHitSeconds) or 10)
+    local revision_changed_at = session.hud_revision_changed_at
+        or session.started_game_at or now
+    local settlement_epoch = finished_at ~= nil
+        or now >= revision_changed_at + settle_seconds
+    local cache = session.hud_snapshot_cache
+    if cache ~= nil
+        and cache.revision == revision
+        and cache.language == translator_code
+        and cache.test_profile == tostring(session.target_scope or "field")
+        and cache.include_player == (config.IncludePlayerDamage == true)
+        and cache.finished_at == finished_at
+        and cache.settlement_epoch == settlement_epoch then
+        metrics.hud_snapshot_cache_hits = metrics.hud_snapshot_cache_hits + 1
+        return cache.snapshot, false
+    end
+    metrics.hud_snapshot_rebuilds = metrics.hud_snapshot_rebuilds + 1
     local snapshot = {
         state = state or "active",
         reason = reason,
@@ -4284,14 +4320,27 @@ local function diagnostic_snapshot(session, state, reason)
         and hooks.aggregate_tablet_sources(
             snapshot.detail_sources, duration, session.total_damage)
         or snapshot.detail_sources
-    return snapshot
+    session.hud_snapshot_cache = {
+        revision = revision,
+        language = translator_code,
+        test_profile = snapshot.test_profile,
+        include_player = snapshot.include_player,
+        finished_at = finished_at,
+        settlement_epoch = settlement_epoch,
+        snapshot = snapshot,
+    }
+    return snapshot, true
 end
 
 local function publish_skill_hud(session, state, reason)
     if skill_hud == nil or session == nil then
         return
     end
-    skill_hud:publish(diagnostic_snapshot(session, state, reason))
+    local snapshot, changed = diagnostic_snapshot(session, state, reason)
+    if changed == false then
+        return
+    end
+    skill_hud:publish(snapshot)
 end
 
 local function log_candidate_casts(session, source, candidate, timing)
@@ -4520,6 +4569,8 @@ local function finish_session(session, reason)
     end
     session.finished = true
     session.finished_game_at = game_time_seconds()
+    session.hud_revision = (session.hud_revision or 0) + 1
+    session.hud_revision_changed_at = session.finished_game_at
     sessions[session.key] = nil
     for address in pairs(session.actor_addresses or {}) do
         session_addresses[address] = nil
@@ -4705,6 +4756,8 @@ local function start_session(boss_info)
         skill_candidate_count = 0,
         start_announced = false,
         finished = false,
+        hud_revision = 0,
+        hud_revision_changed_at = game_time_seconds(),
     }
     sessions[session.key] = session
     bind_session_actor(session, boss_info)
@@ -4784,6 +4837,8 @@ local function record_damage(
     session.total_damage = session.total_damage + damage
     session.progress_damage = session.progress_damage + damage
     session.last_damage_at = os.time()
+    session.hud_revision = (session.hud_revision or 0) + 1
+    session.hud_revision_changed_at = game_time_seconds()
 
     local team = session.teams[entry.team_key]
     if team == nil then
@@ -5107,6 +5162,9 @@ hooks.lock_manual_tower_target = function(session)
         session.skill_candidate_count = 0
         session.last_hitter_label = nil
         session.start_announced = false
+        session.hud_revision = (session.hud_revision or 0) + 1
+        session.hud_revision_changed_at = game_time_seconds()
+        session.hud_snapshot_cache = nil
         if skill_hud ~= nil then
             skill_hud:clear()
         end
@@ -6339,7 +6397,7 @@ local function register_hooks()
 
     if hooks.damage and hooks.death then
         log(string.format(
-            "loaded v0.5.43-settings-localization; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s waza_hook=%s action_hooks=%s/%s effect_hook=%s filter_hook=%s effect_attack_hooks=%d; captured_hooks=%d",
+            "loaded v0.5.44-damage-only-hud-cache; collector=%s enabled=%s diagnostics=%s diagnostics_only=%s include_player=%s waza_hook=%s action_hooks=%s/%s effect_hook=%s filter_hook=%s effect_attack_hooks=%d; captured_hooks=%d",
             hooks.damage_mode,
             tostring(config.EnableDPSRecording ~= false),
             tostring(config.EnableSkillDiagnostics == true),

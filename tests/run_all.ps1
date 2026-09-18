@@ -127,9 +127,8 @@ foreach ($requiredOverlayFeature in @(
     'Assert-HudWindow ([bool]$script:lastSettingsOpen) $false',
     '0x0020',
     '$damageLabel + " " + (Format-HudInteger $row.Damage)',
-    'Format-HudDecimal $row.Dps',
-    '{1}%" -f (Format-HudDecimal $row.Dps), (Format-HudDecimal $row.Share)',
-    '$contextLine = $duration',
+    '"{0}%" -f (Format-HudDecimal $row.Share)',
+    '$contextLine = ""',
     'New-HudDetailRow'
 )) {
     if (-not $overlayText.Contains($requiredOverlayFeature)) {
@@ -212,7 +211,7 @@ $expectedWorkshopTitle = -join @(
 )
 if ($workshopInfo.ModName -ne $expectedWorkshopTitle) { throw "unexpected Workshop ModName" }
 if ($workshopInfo.PackageName -ne "PalSkillDPSAnalyzerSP") { throw "unexpected Workshop PackageName" }
-if ($workshopInfo.Version -ne "0.5.43") { throw "unexpected Workshop version" }
+if ($workshopInfo.Version -ne "0.5.44") { throw "unexpected Workshop version" }
 if ($workshopInfo.Dependencies -notcontains "UE4SSExperimentalPW") { throw "Workshop UE4SS dependency missing" }
 if ($workshopInfo.InstallRule.Count -ne 3) {
     throw "Workshop Lua/Paks/LogicMods InstallRule count mismatch"
@@ -412,14 +411,14 @@ if (-not ($v2Validation -match "rank_gradient=1")) {
     throw "external HUD rank colors do not match the bright-blue gradient/basic-attack palette"
 }
 if (-not ($v2Validation -match "core_fields_only=1")) {
-    throw "external HUD live rows expose fields outside skill name/damage/DPS/share, or duration left the header"
+    throw "external HUD live rows expose fields outside skill name/damage/share, or elapsed time remained visible"
 }
 $tabletValidation = & $windowsPowerShell -NoLogo -NoProfile -NonInteractive -STA -ExecutionPolicy Bypass `
     -File $overlayScript -StatePath $hudV2TabletFixture -ValidationMode
 if ($LASTEXITCODE -ne 0 -or
     -not ($tabletValidation -match "view=meter rows=6") -or
     -not ($tabletValidation -match "tablet_numeric_fields=1")) {
-    throw "external HUD tablet report did not keep damage/DPS and three skill bars per loadout group"
+    throw "external HUD tablet report did not keep damage/share and three skill bars per loadout group"
 }
 $settingsValidation = & $windowsPowerShell -NoLogo -NoProfile -NonInteractive -STA -ExecutionPolicy Bypass `
     -File $overlayScript -StatePath $hudV2SettingsFixture -ValidationMode
@@ -455,7 +454,7 @@ try {
     $testOutput = & npx --yes --package=fengari-node-cli fengari test_main.lua 2>&1
     $testExitCode = $LASTEXITCODE
     $testOutput | Write-Host
-    if ($testExitCode -ne 0 -or -not ($testOutput -match "v0\.5\.43 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed")) {
+    if ($testExitCode -ne 0 -or -not ($testOutput -match "v0\.5\.44 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed")) {
         throw "Lua integration test failed or did not reach its completion marker"
     }
     $localeOutput = & npx --yes --package=fengari-node-cli fengari test_localization.lua 2>&1

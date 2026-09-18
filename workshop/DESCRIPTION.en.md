@@ -10,8 +10,10 @@ Measure each Pal skill's actual damage, DPS, share, hits and casts. This is not 
 [*]Let your Pals attack the selected Boss. The live HUD shows total damage, DPS and skill rows; F3 contains Settings, Grouped %, and Current Test Details.
 [/olist]
 
-[h2]Attribution and v0.5.43[/h2]
+[h2]Performance, display, and v0.5.44[/h2]
 [list]
+[*]v0.5.44 fixes severe post-combat CPU/FPS degradation after large manual tests such as 48-Pal raids. The game thread no longer rebuilds every Pal/skill detail from the full action history every 0.5 seconds while no new combat data arrives.
+[*]The meter and F3 result pages now focus on cumulative damage, share, hits, and casts. Elapsed time and all DPS values have been removed from the display.
 [*]v0.5.43 fixes the native F3 Settings page so English also updates section headings, field labels, and the Reset/Close buttons instead of leaving those controls in Chinese.
 [*]Native evidence links casts, effects, AttackFilter Waza, Blueprint OnAttack and final damage. Exact and inferred evidence remain distinct; insufficient evidence stays Unattributed Damage.
 [*]v0.5.42 extends the native bridge to every synchronously executing Blueprint SkillEffect that owns an AttackFilter. The effect's own attacker and Waza ID provide exact source identity without naming a skill or requiring a fixed loadout. This covers the reported Psychokinesis hits and the same engine pattern in other skills.

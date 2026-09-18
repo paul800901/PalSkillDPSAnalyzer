@@ -1042,7 +1042,10 @@ do
     assert(string.find(BossDPSBroadcastTestApi.skill_hud.last_external_state.text,
         "切割龍息", 1, true) ~= nil, "external HUD state did not receive localized text")
     assert(string.find(hud_header, "帕魯技能 DPS", 1, true) ~= nil, "HUD title missing")
-    assert(string.find(hud_summary, "總傷害 2,000", 1, true) ~= nil, "HUD encounter summary missing")
+    assert(string.find(hud_summary, "累計傷害 2,000", 1, true) ~= nil,
+        "HUD damage summary missing")
+    assert(string.find(hud_summary, "DPS", 1, true) == nil,
+        "HUD summary should not display DPS")
     assert(string.find(hud_body, "切割龍息", 1, true) ~= nil,
         "HUD localized skill name missing")
     assert(string.find(hud_body, "BeamSlicer", 1, true) == nil,
@@ -1126,10 +1129,10 @@ do
 
     runtime_config.HUDDetailMode = "full"
     local _, _, detailed_body = BossDPSBroadcastTestApi.skill_hud:format_snapshot(snapshot)
-    assert(string.find(detailed_body, "施放DPS 400.0", 1, true) ~= nil,
-        "full HUD action DPS missing")
-    assert(string.find(detailed_body, "實際間隔 20.5秒", 1, true) ~= nil,
-        "full HUD observed interval missing")
+    assert(string.find(detailed_body, "DPS", 1, true) == nil,
+        "full HUD should not display DPS")
+    assert(string.find(detailed_body, "Hit 4｜Cast 2", 1, true) ~= nil,
+        "full HUD damage-count row missing")
     BossDPSBroadcastTestApi.skill_hud:publish(snapshot)
     assert(string.find(BossDPSBroadcastTestApi.skill_hud.last_external_state.text,
         "detail=full", 1, true) ~= nil, "structured HUD should expose full diagnostics mode")
@@ -1145,7 +1148,8 @@ do
         BossDPSBroadcastTestApi.skill_hud:format_snapshot(snapshot)
     assert(string.find(english_header, "PAL SKILL DPS", 1, true) ~= nil,
         "HUD did not switch its interface to English")
-    assert(string.find(english_summary, "damage 2,000", 1, true) ~= nil,
+    assert(string.find(english_summary, "2,000", 1, true) ~= nil
+        and string.find(english_summary, "DPS", 1, true) == nil,
         "HUD English summary did not refresh")
     assert(string.find(english_body, "Beam Slicer", 1, true) ~= nil,
         "HUD did not switch the skill name to English")
@@ -2970,6 +2974,19 @@ local tablet_snapshot = BossDPSBroadcastTestApi.skill_hud.latest_snapshot
 assert(tablet_snapshot ~= nil and tablet_snapshot.test_profile == "tablet"
     and #tablet_snapshot.sources == 2 and #tablet_snapshot.detail_sources == 4,
     "tablet snapshot did not separate compact loadout groups from individual details")
+local tablet_snapshot_builds = BossDPSBroadcastTestApi.metrics.hud_snapshot_rebuilds
+local tablet_snapshot_hits = BossDPSBroadcastTestApi.metrics.hud_snapshot_cache_hits
+local tablet_snapshot_before_idle = tablet_snapshot
+fake_game_time = fake_game_time + 1
+phase = "game"
+BossDPSBroadcastTestApi.publish_current_skill_hud()
+phase = "idle"
+local tablet_idle_snapshot = BossDPSBroadcastTestApi.skill_hud.latest_snapshot
+assert(BossDPSBroadcastTestApi.metrics.hud_snapshot_rebuilds == tablet_snapshot_builds
+        and BossDPSBroadcastTestApi.metrics.hud_snapshot_cache_hits == tablet_snapshot_hits + 1,
+    "idle HUD refresh rebuilt the full multi-Pal skill snapshot")
+assert(tablet_idle_snapshot == tablet_snapshot_before_idle,
+    "idle HUD refresh replaced an unchanged damage snapshot")
 local first_loadout_skill_count = 0
 local second_loadout_skill_count = 0
 local second_loadout_has_zero_damage_skill = false
@@ -3111,8 +3128,8 @@ assert(BossDPSBroadcastTestApi.skill_hud.settings_page == 2
     and string.find(native_settings_text.PSDPS_DetailRows or "", "基地帕魯乙", 1, true) ~= nil
     and string.find(native_settings_text.PSDPS_DetailRows or "", "異配帕魯", 1, true) ~= nil
     and string.find(native_settings_text.PSDPS_DetailRows or "", "500", 1, true) ~= nil
-    and string.find(native_settings_text.PSDPS_DetailRows or "", "DPS", 1, true) ~= nil,
-    "F3 did not retain per-worker damage and DPS details")
+    and string.find(native_settings_text.PSDPS_DetailRows or "", "DPS", 1, true) == nil,
+    "F3 did not retain per-worker damage details without DPS")
 phase = "game"
 BossDPSBroadcastTestApi.skill_hud:close_settings()
 BossDPSBroadcastTestApi.reset_skill_diagnostics()
@@ -5068,4 +5085,4 @@ do
     print("native attack-filter and Blueprint frame OnDamage queue/skill integration passed")
     native_frame_test = nil
 end
-print("PalSkillDPSAnalyzer v0.5.43 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed; attribution probe tests passed")
+print("PalSkillDPSAnalyzer v0.5.44 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed; attribution probe tests passed")
