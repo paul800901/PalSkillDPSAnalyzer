@@ -1,5 +1,12 @@
 # 更新日志
 
+## 0.5.43-settings-localization — F3 設定頁完整語系切換
+
+- 修正 F3 原生設定頁切到 English 後，分組標題、欄位名稱與「重設／關閉」按鈕仍顯示中文的問題。
+- 執行時現在會沿用已發布 CommonUI 資產的確定層級，將上述文字與既有標題、分頁、設定值一起更新；不需要另裝內測 PAK。
+- 新增英文切換回歸，覆蓋重設、關閉、3 個區段標題與 8 個設定欄位；完整離線測試與 17 種語言驗證通過。
+- 本版不修改傷害統計、技能歸屬、計時、UE4SS、PalSchema 或原生來源橋接 DLL。
+
 ## 0.5.42-blueprint-effect-source — Blueprint 效果來源通用歸屬
 
 - 依 v0.5.41 公版實戰紀錄修正：同一場 22 筆、合計 235,365 的未歸屬傷害，都發生在正在執行的 `BP_SkillEffect_Psychokinesis2_C` Blueprint 效果內，而效果本身已有帶 Waza 134 的 AttackFilter。

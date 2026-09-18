@@ -23,7 +23,7 @@ config.IncludePlayerDamage = true
 Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\config.lua
 ```
 
-v0.5.42 將原生來源橋接擴充至所有正在同步執行、且擁有自有 AttackFilter 的 Blueprint SkillEffect，直接以效果自己的攻擊者與 Waza ID 建立精確來源，不綁技能名稱或固定配招。這會處理 v0.5.41 公版實戰中由 `BP_SkillEffect_Psychokinesis2_C` 產生的 22 筆未歸屬傷害，也適用於其他使用相同引擎流程的技能。效果、Filter、攻擊者、目標或 Waza 任一驗證不符時仍維持未歸屬；傷害、屬性、配招及一般目前／最近動作不會單獨決定技能。本版不修改 UE4SS、PalSchema 或 UI。請只沿用 Steam 工坊原訂閱，不要另外安裝內測檔；完整退出遊戲，等 Steam 更新後重開，再按 F2 測試。
+v0.5.43 修正 F3 設定頁切到 English 後，分組標題、欄位名稱與「重設／關閉」按鈕仍保留中文的問題。現在標題、分頁、欄位名稱、設定值與按鈕會一起切換語言。本版不改變傷害統計、技能歸屬、計時、UE4SS、PalSchema 或原生來源橋接 DLL。請只沿用 Steam 工坊原訂閱，不要另外安裝內測檔；完整退出遊戲，等 Steam 更新後重開。
 
 專案：https://github.com/paul800901/PalSkillDPSAnalyzer
 
