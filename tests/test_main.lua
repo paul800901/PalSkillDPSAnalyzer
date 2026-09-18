@@ -226,7 +226,7 @@ local world = object()
 game_paused = false
 
 native_ui = { named_widgets = {}, reset_count = 0, asset_loaded = false, asset_load_count = 0 }
-native_ui.text_widget = function(name)
+native_ui.text_widget = function(name, expose)
     local widget = object({}, {
         SetText = function(_, value)
             assert(type(value) == "table" and value:type() == "FText",
@@ -235,8 +235,25 @@ native_ui.text_widget = function(name)
             native_settings_text[name] = value:ToString()
         end,
     })
-    native_ui.named_widgets[name] = widget
+    if expose ~= false then
+        native_ui.named_widgets[name] = widget
+    end
     return widget
+end
+
+native_ui.content_widget = function(child)
+    return object({}, {
+        GetContent = function() return child end,
+        GetChildAt = function(_, index)
+            if index == 0 then return child end
+            return nil
+        end,
+    })
+end
+
+native_ui.button_with_label = function(button_name, label_name)
+    local label = native_ui.text_widget(label_name, false)
+    native_ui.named_widgets[button_name] = native_ui.content_widget(native_ui.content_widget(label))
 end
 
 native_ui.switcher = object({}, {
@@ -254,17 +271,56 @@ native_ui.text_widget("PSDPS_DetailIntro")
 native_ui.text_widget("PSDPS_TabSettingsLabel")
 native_ui.text_widget("PSDPS_TabGroupsLabel")
 native_ui.text_widget("PSDPS_TabDetailsLabel")
+native_ui.button_with_label("PSDPS_Reset", "PSDPS_ResetLabel")
+native_ui.button_with_label("PSDPS_Close", "PSDPS_CloseLabel")
+
+native_ui.settings_page_children = {}
+native_ui.settings_page = object({}, {
+    GetChildAt = function(_, index) return native_ui.settings_page_children[index + 1] end,
+})
+
+native_ui.add_section = function(name)
+    native_ui.settings_page_children[#native_ui.settings_page_children + 1] =
+        native_ui.text_widget(name, false)
+end
+
+native_ui.add_setting_row = function(key)
+    local label = native_ui.text_widget("PSDPS_" .. key .. "_Label", false)
+    local label_container = native_ui.content_widget(label)
+    local border
+    local row = object({}, {
+        GetParent = function() return border end,
+        GetChildAt = function(_, index)
+            if index == 0 then return label_container end
+            return nil
+        end,
+    })
+    border = object({}, { GetParent = function() return native_ui.settings_page end })
+    native_ui.named_widgets["PSDPS_" .. key .. "_Prev"] = object({}, {
+        GetParent = function() return row end,
+    })
+    native_ui.settings_page_children[#native_ui.settings_page_children + 1] = border
+    native_ui.text_widget("PSDPS_" .. key .. "_Value")
+end
+
+native_ui.add_section("PSDPS_GroupGeneral")
+native_ui.add_setting_row("Language")
+native_ui.add_section("PSDPS_GroupMeasurement")
 for _, key in ipairs({
-    "Language",
     "MeasurementMode",
     "TargetScope",
     "IncludePlayerDamage",
+}) do
+    native_ui.add_setting_row(key)
+end
+native_ui.add_section("PSDPS_GroupDisplay")
+for _, key in ipairs({
     "EnableSkillDPSHUD",
     "HUDAnchor",
     "HUDScale",
     "HUDFinalResultSeconds",
 }) do
-    native_ui.text_widget("PSDPS_" .. key .. "_Value")
+    native_ui.add_setting_row(key)
 end
 
 native_ui.widget = object(native_ui.named_widgets, {
@@ -1136,6 +1192,32 @@ do
     assert(native_settings_text.PSDPS_Title ~= nil
         and native_settings_text.PSDPS_Title ~= "",
         "native settings title was not populated")
+    phase = "game"
+    assert(console_command_callbacks.psdps("psdps", { "ui", "cycle", "Language", "1" }) == true,
+        "native language setting command was not accepted")
+    run_game_tasks()
+    assert(runtime_config.Language == "en"
+        and native_settings_text.PSDPS_ResetLabel == "Start new test (reset damage)"
+        and native_settings_text.PSDPS_CloseLabel == "CLOSE"
+        and native_settings_text.PSDPS_GroupGeneral == "GENERAL"
+        and native_settings_text.PSDPS_GroupMeasurement == "MEASUREMENT"
+        and native_settings_text.PSDPS_GroupDisplay == "COMBAT METER"
+        and native_settings_text.PSDPS_Language_Label == "Display language"
+        and native_settings_text.PSDPS_MeasurementMode_Label == "Test session mode"
+        and native_settings_text.PSDPS_TargetScope_Label == "Test type"
+        and native_settings_text.PSDPS_IncludePlayerDamage_Label == "Include player/weapon damage"
+        and native_settings_text.PSDPS_EnableSkillDPSHUD_Label == "Show skill DPS panel"
+        and native_settings_text.PSDPS_HUDAnchor_Label == "Panel position"
+        and native_settings_text.PSDPS_HUDScale_Label == "Panel scale"
+        and native_settings_text.PSDPS_HUDFinalResultSeconds_Label == "Automatic result duration",
+        "native English settings retained hard-coded Chinese labels")
+    phase = "game"
+    assert(console_command_callbacks.psdps("psdps", { "ui", "cycle", "Language", "-1" }) == true,
+        "native language restore command was not accepted")
+    run_game_tasks()
+    assert(runtime_config.Language == "zh-TW",
+        "native language setting was not restored after localization regression")
+    phase = "game"
     assert(console_command_callbacks.psdps("psdps", { "ui", "tab", "groups" }) == true,
         "native grouped-percentage tab button command was not accepted")
     run_game_tasks()

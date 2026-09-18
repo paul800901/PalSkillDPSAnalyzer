@@ -1157,9 +1157,8 @@ function hud.new(options)
         return widget
     end
 
-    function self:set_native_text(name, value)
-        local widget = self:native_widget(name)
-        if widget == nil then return false end
+    function self:set_native_widget_text(widget, name, value)
+        if not object_is_valid(widget) then return false end
         local text = tostring(value or "")
         if self.make_ftext == nil then
             if self.native_text_failure_logged[name] ~= "FText unavailable" then
@@ -1192,6 +1191,46 @@ function hud.new(options)
             self.log("native CommonUI text bridge ready type=FText")
         end
         return true
+    end
+
+    function self:set_native_text(name, value)
+        return self:set_native_widget_text(self:native_widget(name), name, value)
+    end
+
+    function self:native_content(widget)
+        if not object_is_valid(widget) then return nil end
+        local ok, child = call_method(widget, "GetContent")
+        if ok and object_is_valid(child) then return child end
+        ok, child = call_method(widget, "GetChildAt", 0)
+        if ok and object_is_valid(child) then return child end
+        return nil
+    end
+
+    function self:native_button_label(button_name)
+        local content = self:native_content(self:native_widget(button_name))
+        return self:native_content(content)
+    end
+
+    function self:native_setting_label(key)
+        local previous = self:native_widget("PSDPS_" .. key .. "_Prev")
+        local ok, row = call_method(previous, "GetParent")
+        if not ok or not object_is_valid(row) then return nil end
+        local label_ok, label_container = call_method(row, "GetChildAt", 0)
+        if not label_ok then return nil end
+        return self:native_content(label_container)
+    end
+
+    function self:native_settings_section(anchor_key, child_index)
+        local previous = self:native_widget("PSDPS_" .. anchor_key .. "_Prev")
+        local row_ok, row = call_method(previous, "GetParent")
+        if not row_ok or not object_is_valid(row) then return nil end
+        local border_ok, border = call_method(row, "GetParent")
+        if not border_ok or not object_is_valid(border) then return nil end
+        local page_ok, page = call_method(border, "GetParent")
+        if not page_ok or not object_is_valid(page) then return nil end
+        local title_ok, title = call_method(page, "GetChildAt", child_index)
+        if title_ok and object_is_valid(title) then return title end
+        return nil
     end
 
     function self:native_group_detail_text()
@@ -1315,11 +1354,35 @@ function hud.new(options)
         self:set_native_text("PSDPS_TabSettingsLabel", self:text("hud_tab_settings"))
         self:set_native_text("PSDPS_TabGroupsLabel", self:text("hud_detail_tab_groups"))
         self:set_native_text("PSDPS_TabDetailsLabel", self:text("hud_tab_results"))
+        self:set_native_widget_text(
+            self:native_button_label("PSDPS_Reset"),
+            "PSDPS_ResetLabel",
+            self:setting_label("reset"))
+        self:set_native_widget_text(
+            self:native_button_label("PSDPS_Close"),
+            "PSDPS_CloseLabel",
+            self:text("hud_settings_close"))
+        self:set_native_widget_text(
+            self:native_settings_section("Language", 0),
+            "PSDPS_GroupGeneral",
+            self:text("hud_group_general"))
+        self:set_native_widget_text(
+            self:native_settings_section("MeasurementMode", 2),
+            "PSDPS_GroupMeasurement",
+            self:text("hud_group_measurement"))
+        self:set_native_widget_text(
+            self:native_settings_section("EnableSkillDPSHUD", 6),
+            "PSDPS_GroupDisplay",
+            self:text("hud_group_display"))
         self:set_native_text("PSDPS_GroupIntro", self:text("hud_detail_intro_groups"))
         self:set_native_text("PSDPS_DetailIntro", self:text("hud_detail_intro_individual"))
         self:set_native_text("PSDPS_GroupRows", self:native_group_detail_text())
         self:set_native_text("PSDPS_DetailRows", self:native_individual_detail_text())
         for _, key in ipairs(self.native_setting_keys) do
+            self:set_native_widget_text(
+                self:native_setting_label(key),
+                "PSDPS_" .. key .. "_Label",
+                self:setting_label(key))
             self:set_native_text("PSDPS_" .. key .. "_Value", self:setting_value_text(key))
         end
         return true
