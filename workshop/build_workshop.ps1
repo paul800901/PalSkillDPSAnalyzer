@@ -48,13 +48,10 @@ else {
 
 $infoPath = Join-Path $contentDirectory "Info.json"
 $info = Get-Content -LiteralPath $infoPath -Raw -Encoding UTF8 | ConvertFrom-Json
-$expectedWorkshopTitle = -join @(
-    [char]0x5E15, [char]0x9B6F, [char]0x6280, [char]0x80FD,
-    " DPS ", [char]0x5206, [char]0x6790, [char]0x5668
-)
+$expectedWorkshopTitle = -join @(24085, 39791, 25216, 33021, 20663, 23475, 35336, 37327, 22120 | ForEach-Object { [char]$_ })
 if ($info.ModName -ne $expectedWorkshopTitle) { throw "Unexpected Workshop ModName" }
 if ($info.PackageName -ne "PalSkillDPSAnalyzerSP") { throw "Unexpected Workshop PackageName" }
-if ($info.Version -ne "0.5.44") { throw "Unexpected Workshop version" }
+if ($info.Version -ne "0.5.45") { throw "Unexpected Workshop version" }
 if ($info.Dependencies -notcontains "UE4SSExperimentalPW") { throw "UE4SS dependency missing" }
 $installRuleTypes = @($info.InstallRule | ForEach-Object { $_.Type })
 if ($info.InstallRule.Count -ne 3 -or $installRuleTypes -notcontains "Lua" -or $installRuleTypes -notcontains "Paks" -or $installRuleTypes -notcontains "LogicMods") {
@@ -171,7 +168,7 @@ foreach ($localePath in Get-ChildItem -LiteralPath $contentLocales -Filter "*.lu
 }
 
 New-Item -ItemType Directory -Path $distDirectory -Force | Out-Null
-$zipPath = Join-Path $distDirectory "PalSkillDPSAnalyzerSP-Workshop-v0.5.44.zip"
+$zipPath = Join-Path $distDirectory "PalSkillDPSAnalyzerSP-Workshop-v0.5.45.zip"
 Compress-Archive -Path (Join-Path $contentDirectory "*") -DestinationPath $zipPath -CompressionLevel Optimal -Force
 
 Write-Host "Workshop package ready: $zipPath"

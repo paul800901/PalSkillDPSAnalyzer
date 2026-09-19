@@ -1,8 +1,8 @@
 {
-  "ModName": "帕魯技能 DPS 分析器",
+  "ModName": "帕魯技能傷害計量器",
   "PackageName": "PalSkillDPSAnalyzerSP",
   "Thumbnail": "thumbnail.png",
-  "Version": "0.5.44",
+  "Version": "0.5.45",
   "DebugMode": false,
   "MinRevision": 82182,
   "Author": "paul800901",

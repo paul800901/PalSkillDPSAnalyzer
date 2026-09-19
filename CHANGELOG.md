@@ -1,5 +1,11 @@
 # 更新日志
 
+## 0.5.45-damage-meter-name — 技能實際傷害與名稱調整
+
+- F3「分組百分比」現在於每個技能旁同時顯示實際累計傷害與占比，不需要再用整組傷害自行換算。
+- 公開名稱與英文／繁中文／簡中文介面由「Pal Skill DPS Analyzer」改為「Pal Skill Damage Meter／帕魯技能傷害計量器」，使名稱符合已移除 DPS 與計時器後的實際功能。
+- 內部 PackageName、設定檔路徑、Workshop Published File ID 與既有訂閱維持不變。
+
 ## 0.5.44-damage-only-hud-cache — 大量帕魯戰後效能修正
 
 - 修正手動測試累積大量帕魯與技能紀錄後，即使戰鬥已停止，遊戲執行緒仍每 0.5 秒完整重建明細，導致 CPU 持續偏高與 FPS 無法恢復的問題。

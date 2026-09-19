@@ -1,4 +1,4 @@
-# 帕魯技能 DPS 分析器
+# 帕魯技能傷害計量器
 
 Palworld 1.0 單人世界傷害驗證 Mod。預設只計算帕魯；野外／副本 Boss 與石板 Boss 分開測試。石板戰報只合併同種且三格配招完全相同的基地帕魯，配招不同就分成 A、B 等組。模組不向遊戲聊天室輸出任何資料，也不進行玩家排名。
 
@@ -23,7 +23,7 @@ config.IncludePlayerDamage = true
 Palworld\Mods\NativeMods\UE4SS\Mods\PalSkillDPSAnalyzerSP\Scripts\config.lua
 ```
 
-v0.5.44 修正大量帕魯手動測試停止交戰後，遊戲執行緒仍每 0.5 秒完整掃描技能明細，造成 CPU 持續偏高與 FPS 無法恢復的問題。沒有新資料時現在直接沿用快取；介面也移除經過時間與 DPS，只保留累計傷害、占比、Hit 與施放資料。請只沿用 Steam 工坊原訂閱，不要另外安裝內測檔；完整退出遊戲，等 Steam 更新後重開。
+v0.5.45 在 F3「分組百分比」頁的每個技能旁同時顯示實際累計傷害與占比，並將公開及遊戲內名稱改為「帕魯技能傷害計量器」。既有 Workshop 訂閱與內部套件身分不變。請只沿用原訂閱，不要另裝測試檔；完整退出遊戲，等 Steam 更新後重開。
 
 專案：https://github.com/paul800901/PalSkillDPSAnalyzer
 

@@ -1,4 +1,4 @@
-[h1]Pal Skill DPS Analyzer[/h1]
+[h1]Pal Skill Damage Meter[/h1]
 [b]A single-player Boss damage verification tool for Palworld 1.0.[/b]
 
 Measure each Pal skill's actual damage, DPS, share, hits and casts. This is not a player ranking meter. Field/dungeon Boss and tablet Boss tests are selected explicitly; tablet reports group same-species Pals only when their complete three-skill loadouts match.
@@ -10,8 +10,10 @@ Measure each Pal skill's actual damage, DPS, share, hits and casts. This is not 
 [*]Let your Pals attack the selected Boss. The live HUD shows total damage, DPS and skill rows; F3 contains Settings, Grouped %, and Current Test Details.
 [/olist]
 
-[h2]Performance, display, and v0.5.44[/h2]
+[h2]Skill totals, naming, and v0.5.45[/h2]
 [list]
+[*]v0.5.45 adds each skill's actual cumulative damage beside its percentage on the Grouped tab, so no manual calculation is needed.
+[*]The public and in-game name is now Pal Skill Damage Meter to match the damage-focused display. The existing Workshop subscription, package identity, settings, and save compatibility are unchanged.
 [*]v0.5.44 fixes severe post-combat CPU/FPS degradation after large manual tests such as 48-Pal raids. The game thread no longer rebuilds every Pal/skill detail from the full action history every 0.5 seconds while no new combat data arrives.
 [*]The meter and F3 result pages now focus on cumulative damage, share, hits, and casts. Elapsed time and all DPS values have been removed from the display.
 [*]v0.5.43 fixes the native F3 Settings page so English also updates section headings, field labels, and the Reset/Close buttons instead of leaving those controls in Chinese.

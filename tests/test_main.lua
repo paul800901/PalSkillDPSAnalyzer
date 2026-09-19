@@ -1041,7 +1041,7 @@ do
         "external HUD state should be visible after rendering")
     assert(string.find(BossDPSBroadcastTestApi.skill_hud.last_external_state.text,
         "切割龍息", 1, true) ~= nil, "external HUD state did not receive localized text")
-    assert(string.find(hud_header, "帕魯技能 DPS", 1, true) ~= nil, "HUD title missing")
+    assert(string.find(hud_header, "帕魯技能傷害計量器", 1, true) ~= nil, "HUD title missing")
     assert(string.find(hud_summary, "累計傷害 2,000", 1, true) ~= nil,
         "HUD damage summary missing")
     assert(string.find(hud_summary, "DPS", 1, true) == nil,
@@ -1146,7 +1146,7 @@ do
     runtime_config.Language = "en"
     local english_header, english_summary, english_body =
         BossDPSBroadcastTestApi.skill_hud:format_snapshot(snapshot)
-    assert(string.find(english_header, "PAL SKILL DPS", 1, true) ~= nil,
+    assert(string.find(english_header, "PAL SKILL DAMAGE METER", 1, true) ~= nil,
         "HUD did not switch its interface to English")
     assert(string.find(english_summary, "2,000", 1, true) ~= nil
         and string.find(english_summary, "DPS", 1, true) == nil,
@@ -1210,7 +1210,7 @@ do
         and native_settings_text.PSDPS_MeasurementMode_Label == "Test session mode"
         and native_settings_text.PSDPS_TargetScope_Label == "Test type"
         and native_settings_text.PSDPS_IncludePlayerDamage_Label == "Include player/weapon damage"
-        and native_settings_text.PSDPS_EnableSkillDPSHUD_Label == "Show skill DPS panel"
+        and native_settings_text.PSDPS_EnableSkillDPSHUD_Label == "Show skill damage meter"
         and native_settings_text.PSDPS_HUDAnchor_Label == "Panel position"
         and native_settings_text.PSDPS_HUDScale_Label == "Panel scale"
         and native_settings_text.PSDPS_HUDFinalResultSeconds_Label == "Automatic result duration",
@@ -1236,7 +1236,7 @@ do
         and string.find(native_settings_text.PSDPS_GroupRows or "",
             "1. 測試帕魯", 1, true) ~= nil
         and string.find(native_settings_text.PSDPS_GroupRows or "",
-            "切割龍息  ·  100.0%", 1, true) ~= nil
+            "切割龍息  ·  累計傷害 2,000  ·  100.0%", 1, true) ~= nil
         and string.find(native_settings_text.PSDPS_GroupRows or "",
             "總命中段數", 1, true) == nil,
         "native grouped-percentage page did not retain the grouped report")
@@ -5085,4 +5085,4 @@ do
     print("native attack-filter and Blueprint frame OnDamage queue/skill integration passed")
     native_frame_test = nil
 end
-print("PalSkillDPSAnalyzer v0.5.44 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed; attribution probe tests passed")
+print("PalSkillDPSAnalyzer v0.5.45 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed; attribution probe tests passed")

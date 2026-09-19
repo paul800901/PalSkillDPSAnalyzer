@@ -205,13 +205,10 @@ foreach ($entry in $workshopLocalizationEntries) {
 
 Write-Host "[4/5] Validating Steam Workshop package"
 $workshopInfo = Get-Content -LiteralPath (Join-Path $workshopDirectory "Info.json") -Raw -Encoding UTF8 | ConvertFrom-Json
-$expectedWorkshopTitle = -join @(
-    [char]0x5E15, [char]0x9B6F, [char]0x6280, [char]0x80FD,
-    " DPS ", [char]0x5206, [char]0x6790, [char]0x5668
-)
+$expectedWorkshopTitle = -join @(24085, 39791, 25216, 33021, 20663, 23475, 35336, 37327, 22120 | ForEach-Object { [char]$_ })
 if ($workshopInfo.ModName -ne $expectedWorkshopTitle) { throw "unexpected Workshop ModName" }
 if ($workshopInfo.PackageName -ne "PalSkillDPSAnalyzerSP") { throw "unexpected Workshop PackageName" }
-if ($workshopInfo.Version -ne "0.5.44") { throw "unexpected Workshop version" }
+if ($workshopInfo.Version -ne "0.5.45") { throw "unexpected Workshop version" }
 if ($workshopInfo.Dependencies -notcontains "UE4SSExperimentalPW") { throw "Workshop UE4SS dependency missing" }
 if ($workshopInfo.InstallRule.Count -ne 3) {
     throw "Workshop Lua/Paks/LogicMods InstallRule count mismatch"
@@ -454,7 +451,7 @@ try {
     $testOutput = & npx --yes --package=fengari-node-cli fengari test_main.lua 2>&1
     $testExitCode = $LASTEXITCODE
     $testOutput | Write-Host
-    if ($testExitCode -ne 0 -or -not ($testOutput -match "v0\.5\.44 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed")) {
+    if ($testExitCode -ne 0 -or -not ($testOutput -match "v0\.5\.45 damage-lab/display/multitarget/source/thread/lifetime/stress tests passed")) {
         throw "Lua integration test failed or did not reach its completion marker"
     }
     $localeOutput = & npx --yes --package=fengari-node-cli fengari test_localization.lua 2>&1

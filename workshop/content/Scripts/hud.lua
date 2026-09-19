@@ -1263,8 +1263,10 @@ function hud.new(options)
                 local share = source_damage > 0
                     and ((tonumber(skill.damage) or 0) / source_damage * 100) or 0
                 lines[#lines + 1] = string.format(
-                    "   %s  ·  %s%%",
+                    "   %s  ·  %s %s  ·  %s%%",
                     skill_name,
+                    self:text("hud_total_damage_label"),
+                    integer(skill.damage),
                     decimal(share)
                 )
             end

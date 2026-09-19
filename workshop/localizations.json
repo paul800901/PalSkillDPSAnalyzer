@@ -1,4 +1,4 @@
 [
-  { "locale": "en", "steam": "english", "title": "Pal Skill DPS Analyzer — Damage Verification", "description": "DESCRIPTION.en.md" },
-  { "locale": "zh-TW", "steam": "tchinese", "title": "帕魯技能 DPS 分析器 — 傷害驗證", "description": "DESCRIPTION.zh-TW.md" }
+  { "locale": "en", "steam": "english", "title": "Pal Skill Damage Meter", "description": "DESCRIPTION.en.md" },
+  { "locale": "zh-TW", "steam": "tchinese", "title": "帕魯技能傷害計量器", "description": "DESCRIPTION.zh-TW.md" }
 ]

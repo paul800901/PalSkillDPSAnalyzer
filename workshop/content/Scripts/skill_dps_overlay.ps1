@@ -214,7 +214,7 @@ if (-not $createdNew) {
 Write-HudLog "overlay starting"
 
 $window = [Windows.Window]::new()
-$window.Title = "Pal Skill DPS Analyzer"
+$window.Title = "Pal Skill Damage Meter"
 $window.WindowStyle = [Windows.WindowStyle]::None
 $window.ResizeMode = [Windows.ResizeMode]::NoResize
 $window.AllowsTransparency = $true

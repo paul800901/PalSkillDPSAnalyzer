@@ -5,5 +5,5 @@ anchor=top-right
 scale=1.0
 settings=1
 ---
-帕魯技能 DPS｜設定
+帕魯技能傷害計量器｜設定
 ↑↓ 選擇  ←→／Enter 調整
