@@ -28,7 +28,7 @@ Measure each Pal skill's actual damage, DPS, share, hits and casts. This is not 
 [*]Pal damage is enabled by default; optional player/weapon damage can be enabled in F3. Use one weapon throughout a weapon test.
 [*]The tablet HUD shows the three highest-damage loadout groups; all groups and each Pal's damage, DPS, damaging/no-damage casts and hit segments remain available in F3.
 [*]Hard towers count only the main actor with a GYM identity. Ordinary wild Pals, PvP, multiplayer and dedicated servers are outside the verified scope.
-[*][b]Current version:[/b] v0.5.43. Windows single-player target; UE4SS Experimental required.
+[*][b]Current version:[/b] v0.5.45. Windows single-player target; UE4SS Experimental required.
 [/list]
 
 [url=https://github.com/paul800901/PalSkillDPSAnalyzer]Source and technical details[/url]

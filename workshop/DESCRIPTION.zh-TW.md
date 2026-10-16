@@ -28,7 +28,7 @@
 [*]預設只計算帕魯；可在 F3 另行開啟人物／武器傷害。武器測試建議整場只使用一種武器。
 [*]石板主 HUD 顯示傷害最高三個配招組；所有組別及每隻帕魯的傷害、DPS、有傷／無傷施放與命中段數仍保留在 F3。
 [*]困難塔只計具有 GYM 身分的主要塔主。普通野生帕魯、PvP、多人與專用伺服器不在已驗證範圍。
-[*][b]目前版本：[/b]v0.5.43。目標為 Windows 單人世界；需要 UE4SS Experimental。
+[*][b]目前版本：[/b]v0.5.45。目標為 Windows 單人世界；需要 UE4SS Experimental。
 [/list]
 
 [url=https://github.com/paul800901/PalSkillDPSAnalyzer]原始碼與技術說明[/url]
