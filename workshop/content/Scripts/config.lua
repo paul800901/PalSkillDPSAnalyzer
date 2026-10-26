@@ -49,10 +49,11 @@ config.EnableBoundedSkillInference = true
 config.MeasurementMode = "manual"
 -- The operator chooses the encounter type explicitly; the analyzer does not
 -- guess whether a Boss is a field/dungeon encounter or a summoned tablet raid.
--- "field" records the player's active Pal against field/dungeon Bosses.
--- "tablet" additionally accepts same-guild base workers and groups only Pals
--- with the same species and complete three-skill loadout. "all" remains an internal compatibility lane
--- for non-Boss regression diagnostics and is not exposed by F3.
+-- Both Boss profiles accept verified same-guild workers with a valid base ID.
+-- "field" keeps every Pal as an individual source. "tablet" additionally
+-- groups only Pals with the same species and complete three-skill loadout.
+-- "all" remains an internal compatibility lane for non-Boss diagnostics, but
+-- base workers are still restricted to confirmed Boss targets there.
 config.TargetScope = "field"
 -- Off by default. Enable for a separate player-character test run. When the
 -- damage causer exposes a weapon/projectile, the analyzer creates one bucket

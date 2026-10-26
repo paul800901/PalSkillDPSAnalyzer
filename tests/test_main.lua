@@ -225,7 +225,14 @@ local normal_target = actor("BP_Sheep_C_4", {
 local world = object()
 game_paused = false
 
-native_ui = { named_widgets = {}, reset_count = 0, asset_loaded = false, asset_load_count = 0 }
+native_ui = {
+    named_widgets = {},
+    reset_count = 0,
+    asset_loaded = false,
+    asset_load_count = 0,
+    widgets = {},
+    add_failure_queue = {},
+}
 native_ui.text_widget = function(name)
     local widget = object({}, {
         SetText = function(_, value)
@@ -267,27 +274,40 @@ for _, key in ipairs({
     native_ui.text_widget("PSDPS_" .. key .. "_Value")
 end
 
-native_ui.widget = object(native_ui.named_widgets, {
-    GetWidgetFromName = function()
-        error("native settings must use exposed Blueprint widget variables")
-    end,
-    AddToViewport = function(_, z_order)
-        assert(z_order == 10000, "native settings must use the intended viewport layer")
-        native_settings_events[#native_settings_events + 1] = "add"
-    end,
-    ActivateWidget = function()
-        native_settings_events[#native_settings_events + 1] = "activate"
-    end,
-    DeactivateWidget = function()
-        native_settings_events[#native_settings_events + 1] = "deactivate"
-    end,
-    RemoveFromParent = function()
-        native_settings_events[#native_settings_events + 1] = "remove"
-    end,
-    SetKeyboardFocus = function()
-        native_settings_events[#native_settings_events + 1] = "focus"
-    end,
-})
+native_ui.make_widget = function()
+    local widget = object(native_ui.named_widgets, {
+        GetWidgetFromName = function()
+            error("native settings must use exposed Blueprint widget variables")
+        end,
+        AddToViewport = function(_, z_order)
+            assert(z_order == 10000, "native settings must use the intended viewport layer")
+            local failure_mode = table.remove(native_ui.add_failure_queue, 1)
+            if failure_mode ~= nil then
+                native_settings_events[#native_settings_events + 1] = "add-failed"
+                if failure_mode == "error" then
+                    error("simulated AddToViewport failure")
+                end
+                return false
+            end
+            native_settings_events[#native_settings_events + 1] = "add"
+        end,
+        ActivateWidget = function()
+            native_settings_events[#native_settings_events + 1] = "activate"
+        end,
+        DeactivateWidget = function()
+            native_settings_events[#native_settings_events + 1] = "deactivate"
+        end,
+        RemoveFromParent = function()
+            native_settings_events[#native_settings_events + 1] = "remove"
+        end,
+        SetKeyboardFocus = function()
+            native_settings_events[#native_settings_events + 1] = "focus"
+        end,
+    })
+    native_ui.widgets[#native_ui.widgets + 1] = widget
+    native_ui.widget = widget
+    return widget
+end
 native_ui.class = object()
 native_ui.asset = object({ GeneratedClass = native_ui.class })
 native_ui.widget_library = object({}, {
@@ -296,7 +316,7 @@ native_ui.widget_library = object({}, {
         assert(widget_class == native_ui.class, "native settings used the wrong widget class")
         assert(controller == local_player_controller, "native settings used the wrong player controller")
         native_settings_creation_count = native_settings_creation_count + 1
-        return native_ui.widget
+        return native_ui.make_widget()
     end,
     SetInputMode_UIOnlyEx = function(_, controller, widget, mouse_lock, flush_input)
         assert(controller == local_player_controller and widget == native_ui.widget,
@@ -1017,6 +1037,7 @@ do
         and BossDPSBroadcastTestApi.skill_hud.settings_open == true
         and BossDPSBroadcastTestApi.skill_hud.settings_page == 0,
         "F3 did not open the settings page")
+    local first_native_settings_widget = native_ui.widget
     assert(native_ui.asset_load_count == 1
         and native_settings_creation_count == 1
         and native_ui.event_count("add") == 1
@@ -1110,7 +1131,8 @@ do
     run_game_tasks()
     assert(BossDPSBroadcastTestApi.skill_hud.settings_open == false
         and native_ui.event_count("deactivate") == 1
-        and native_ui.event_count("remove") == 1,
+        and native_ui.event_count("remove") == 1
+        and BossDPSBroadcastTestApi.skill_hud.native_settings_widget == nil,
         "native close button did not deactivate and remove the settings widget")
     assert(input_mode_events[#input_mode_events] == "game"
         and input_cursor_events[#input_cursor_events] == false
@@ -1147,15 +1169,44 @@ do
     key_callbacks[Key.F3]()
     run_game_tasks()
     assert(BossDPSBroadcastTestApi.skill_hud.settings_open == true
-        and native_settings_creation_count == 1
+        and native_settings_creation_count == 2
+        and native_ui.widget ~= first_native_settings_widget
         and native_ui.event_count("add") == 2,
-        "F3 did not reopen the same native settings widget")
+        "F3 did not recreate the native settings widget after closing it")
     phase = "game"
     key_callbacks[Key.F3]()
     run_game_tasks()
     assert(BossDPSBroadcastTestApi.skill_hud.settings_open == false
-        and native_ui.event_count("remove") == 2,
+        and native_ui.event_count("remove") == 2
+        and BossDPSBroadcastTestApi.skill_hud.native_settings_widget == nil,
         "second F3 press did not close the native settings widget")
+
+    native_ui.add_failure_queue = { "error" }
+    phase = "game"
+    assert(BossDPSBroadcastTestApi.skill_hud:toggle_settings() == true
+        and BossDPSBroadcastTestApi.skill_hud.settings_open == true
+        and native_settings_creation_count == 4
+        and native_ui.event_count("add-failed") == 1
+        and native_ui.event_count("add") == 3,
+        "F3 did not rebuild once after a stale widget failed AddToViewport")
+    BossDPSBroadcastTestApi.skill_hud:close_settings()
+    assert(BossDPSBroadcastTestApi.skill_hud.settings_open == false
+        and BossDPSBroadcastTestApi.skill_hud.native_settings_widget == nil
+        and input_mode_events[#input_mode_events] == "game"
+        and input_cursor_events[#input_cursor_events] == false,
+        "F3 retry success did not release its widget and restore gameplay input")
+
+    native_ui.add_failure_queue = { "false", "error" }
+    local creations_before_permanent_failure = native_settings_creation_count
+    phase = "game"
+    assert(BossDPSBroadcastTestApi.skill_hud:toggle_settings() == false
+        and BossDPSBroadcastTestApi.skill_hud.settings_open == false
+        and BossDPSBroadcastTestApi.skill_hud.native_settings_widget == nil
+        and native_settings_creation_count == creations_before_permanent_failure + 2
+        and native_ui.event_count("add-failed") == 3
+        and input_mode_events[#input_mode_events] == "game"
+        and input_cursor_events[#input_cursor_events] == false,
+        "F3 permanent AddToViewport failure retried beyond one rebuild or left UI input active")
 
     -- Palworld stays the foreground process on its own pause/options screen.
     -- The overlay must use gameplay state rather than process foreground alone.
@@ -2661,9 +2712,9 @@ runtime_config.IncludePlayerDamage = true
 runtime_config.SkillDiagnosticsOnly = false
 end
 
--- Tablet mode accepts same-guild base workers. The main HUD groups only Pals
--- with both the same species and the same three-skill loadout; F3 keeps every
--- worker as an individual damage/DPS source.
+-- Both Boss profiles accept same-guild base workers. Field mode keeps every
+-- worker as an individual source; tablet mode additionally groups only Pals
+-- with both the same species and the same three-skill loadout.
 function run_manual_damage_lab_test()
 runtime_config.MeasurementMode = "manual"
 runtime_config.TargetScope = "field"
@@ -2716,8 +2767,24 @@ waza(base_pal, alpha_target, 502, field_info)
 damage(base_pal, alpha_target, 50, { DamageInfo = field_info })
 run_game_tasks()
 local field_session = BossDPSBroadcastTestApi.sessions["__PAL_SKILL_DPS_MANUAL_TEST__"]
-assert(field_session ~= nil and field_session.total_damage == 0,
-    "field/dungeon profile accepted a trainerless base worker")
+assert(field_session ~= nil and field_session.total_damage == 50
+        and field_session.target_count == 1,
+    "field/dungeon Boss profile rejected a verified same-guild base worker")
+waza(base_pal, normal_target, 502, field_info)
+damage(base_pal, normal_target, 75, { DamageInfo = field_info })
+run_game_tasks()
+assert(field_session.total_damage == 50 and field_session.target_count == 1,
+    "field/dungeon Boss profile accepted base-Pal damage against a non-Boss")
+runtime_config.TargetScope = "all"
+phase = "game"
+BossDPSBroadcastTestApi.reset_skill_diagnostics()
+phase = "idle"
+waza(base_pal, normal_target, 502, field_info)
+damage(base_pal, normal_target, 75, { DamageInfo = field_info })
+run_game_tasks()
+local all_scope_session = BossDPSBroadcastTestApi.sessions["__PAL_SKILL_DPS_MANUAL_TEST__"]
+assert(all_scope_session ~= nil and all_scope_session.total_damage == 0,
+    "internal all-target diagnostics accepted base-Pal damage against a non-Boss")
 runtime_config.TargetScope = "tablet"
 phase = "game"
 BossDPSBroadcastTestApi.reset_skill_diagnostics()

@@ -1,18 +1,18 @@
 # PalSkillDPSAnalyzer v0.5.28-mummy-rush-four-hit
 
-Palworld 1.0 單機用 UE4SS 傷害驗證 Mod。它不是玩家排行榜，而是專門測量帕魯對 Boss 造成的技能傷害。F3 明確分成「野外／副本 Boss」與「石板 Boss」兩種測試，不由模組自動混判；普通野怪與未選用石板模式的基地混戰不納入正式統計。
+Palworld 1.0 單機用 UE4SS 傷害驗證 Mod。它不是玩家排行榜，而是專門測量帕魯對 Boss 造成的技能傷害。F3 明確分成「野外／副本 Boss」與「石板 Boss」兩種測試，不由模組自動混判；兩種模式都接受本機同公會、基地 ID 有效的基地帕魯，但普通野怪、野生帕魯與其他公會基地帕魯不納入正式統計。
 
 人物傷害預設關閉。需要測試武器時，可在另一場戰鬥中開啟人物來源；能辨識武器／投射物就分桶，不能辨識時保留為未知人物武器，不猜名稱。
 
 ## 獨立技能 DPS 面板
 
-第一次有效命中後，畫面左側安全區會開啟縮小至 85% 的透明置頂 HUD；模組完全不向遊戲聊天室送出任何資料，也沒有聊天輸出設定。野外／副本模式維持技能名稱、累計傷害、DPS、占比與測試時間。石板模式則改成簡化戰報：依「種類＋三技能配招」分組，同種同配招顯示 `×N`，同種不同配招分成 A／B 組；每組只顯示三技能占比數字與長條。主 HUD 固定只保留傷害最高的三組，其餘以提示導向 `F3`。F3 有三個同層分頁：「設定」、「分組百分比」完整列出所有配招組；第三頁「本次測試詳情」保留原有每隻帕魯的實際傷害、DPS、施放與 Hit 詳情。
+第一次有效命中後，畫面左側安全區會開啟縮小至 85% 的透明置頂 HUD；模組完全不向遊戲聊天室送出任何資料，也沒有聊天輸出設定。野外／副本模式會把通過驗證的基地帕魯保留為個別來源，並顯示技能名稱、累計傷害、DPS、占比與測試時間。石板模式則改成簡化戰報：依「種類＋三技能配招」分組，同種同配招顯示 `×N`，同種不同配招分成 A／B 組；每組只顯示三技能占比數字與長條。主 HUD 固定只保留傷害最高的三組，其餘以提示導向 `F3`。F3 有三個同層分頁：「設定」、「分組百分比」完整列出所有配招組；第三頁「本次測試詳情」保留原有每隻帕魯的實際傷害、DPS、施放與 Hit 詳情。
 
-預設是「手動測試區間＋野外／副本 Boss」：按 `F2` 可安全歸零並重新待命，直到第一下有效 Boss 傷害才開始計時；基地派駐帕魯在此模式會被排除。要測召喚石板戰，先在 F3 把「測試類型」切到「石板 Boss」，再按 `F2` 開始新測試。困難塔主只統計具有 `GYM` 角色身分、實際擁有塔主血條的主體；塔內小怪即使也帶 Boss／TowerBoss 資料旗標仍會排除。世界倍率產生的多隻真正 Boss 仍會持續累計，直到下一次 `F2` 才清空。
+預設是「手動測試區間＋野外／副本 Boss」：按 `F2` 可安全歸零並重新待命，直到第一下有效 Boss 傷害才開始計時；同公會且基地 ID 有效的基地派駐帕魯也會納入，但不會在主 HUD 合併。要測召喚石板戰與基地大量帕魯的配招分組，先在 F3 把「測試類型」切到「石板 Boss」，再按 `F2` 開始新測試。困難塔主只統計具有 `GYM` 角色身分、實際擁有塔主血條的主體；塔內小怪即使也帶 Boss／TowerBoss 資料旗標仍會排除。世界倍率產生的多隻真正 Boss 仍會持續累計，直到下一次 `F2` 才清空。
 
 實機已確認目前 Palworld／UE4SS 會在 Lua 動態 UMG 與 `PrintString` 路徑造成 GameThread 存取違規。顯示層因此隔離成隨附的 Windows WPF 程序：Lua 只寫入本機 UTF-8 結構化狀態檔，不再從傷害回呼呼叫 Unreal UI。面板只在 Palworld 位於前景時顯示，遊戲關閉後約 10 秒自行退出。
 
-目前 `v0.5.28` 保留嚴格的技能來源規則：引擎可直接對接的 Waza、效果或來源鏈列為精確歸屬；若同一隻帕魯對同一 Boss 僅有 2–4 筆最終傷害先到、隨後只有一個引擎 `OnAttack` Waza 來源，則進入該技能桶但明確標成「推定」。極寒雙星與鑽石星辰另允許同目標已連結 Hit 承接約 1.2 秒後的最後爆炸；完全缺少來源時，也只接受最近唯一、無鄰近衝突的這兩種已完成配裝動作。雙槍一閃若已在同一攻擊者／目標建立施放綁定，可承接 1 秒內且原生傷害序號緊接上一段的最後 Hit；中間插入任何其他原生傷害事件就不補接。閃雷衝鋒只在同一帕魯／目標的精確 Action 仍進行中、開始後 1.5–3.3 秒內接收第一筆無來源 Hit；每次施放最多一筆且不接受尾段。隕星雨則把每個 `Commet` 子技能標記一對一歸入已裝備的 `CommetRain` 父技能，只接受約 1 秒後的同目標命中且每個標記僅能使用一次。突襲木乃伊只在精確 Action 開始至少 2 秒後建立四段綁定，後續原生序號須嚴格遞增；全域序號可被其他已辨識事件推進，中間揮空也不限制相鄰命中間隔，Action 尾段最多保留 0.35 秒且每次最多四 Hit。其他較大批次、來源衝突、逾時或物件世代不符仍維持「未辨識傷害」。石板模式中的基地派駐帕魯必須同時具有非空基地 ID，且目前群組必須等於本機玩家公會。全程不按傷害大小、倍率＋元素或三格技能反推。
+目前 `v0.5.28` 保留嚴格的技能來源規則：引擎可直接對接的 Waza、效果或來源鏈列為精確歸屬；若同一隻帕魯對同一 Boss 僅有 2–4 筆最終傷害先到、隨後只有一個引擎 `OnAttack` Waza 來源，則進入該技能桶但明確標成「推定」。極寒雙星與鑽石星辰另允許同目標已連結 Hit 承接約 1.2 秒後的最後爆炸；完全缺少來源時，也只接受最近唯一、無鄰近衝突的這兩種已完成配裝動作。雙槍一閃若已在同一攻擊者／目標建立施放綁定，可承接 1 秒內且原生傷害序號緊接上一段的最後 Hit；中間插入任何其他原生傷害事件就不補接。閃雷衝鋒只在同一帕魯／目標的精確 Action 仍進行中、開始後 1.5–3.3 秒內接收第一筆無來源 Hit；每次施放最多一筆且不接受尾段。隕星雨則把每個 `Commet` 子技能標記一對一歸入已裝備的 `CommetRain` 父技能，只接受約 1 秒後的同目標命中且每個標記僅能使用一次。突襲木乃伊只在精確 Action 開始至少 2 秒後建立四段綁定，後續原生序號須嚴格遞增；全域序號可被其他已辨識事件推進，中間揮空也不限制相鄰命中間隔，Action 尾段最多保留 0.35 秒且每次最多四 Hit。其他較大批次、來源衝突、逾時或物件世代不符仍維持「未辨識傷害」。兩種 Boss 模式中的基地派駐帕魯都必須同時具有非空基地 ID，且目前群組必須等於本機玩家公會。全程不按傷害大小、血量門檻、倍率＋元素或三格技能反推。
 
 - 顯示語言（跟隨遊戲／17 種指定語言）
 - 技能 DPS 面板開關
@@ -71,7 +71,7 @@ powershell -ExecutionPolicy Bypass -File .\workshop\build_workshop.ps1
 ## 驗證流程
 
 1. 啟用本 Mod 與 UE4SS Experimental。
-2. 野外／副本測試保留預設類型後按 F2；石板測試先在 F3 選「石板 Boss」，再按 F2，讓基地帕魯攻擊召喚 Boss。
+2. 野外／副本測試保留預設類型後按 F2；石板測試先在 F3 選「石板 Boss」再按 F2。兩者都可讓同公會基地帕魯攻擊已確認 Boss，差別只在石板模式會依完整配招分組。
 3. 確認左側即時儀表沒有左右跳動，且晶鑽之雨沒有再被歸到暗能彈。
 4. 測試後保留 `UE4SS.log`，供技能建立、最終傷害與動作生命週期逐筆核對。
 5. 以原生 capabilities 中的 `attack_matches`、`exact_hits`、`unresolved_hits`，以及 `diagnostic-candidate`／`diagnostic-cast` 行確認精確來源鏈與顯示結果；沒有 exact 證據的命中不得進入具名技能桶。
@@ -104,3 +104,9 @@ powershell -ExecutionPolicy Bypass -File .\tests\run_all.ps1
 ## 授權與來源
 
 MIT License。Boss 遭遇辨識、帕魯歸屬與安全訊息核心衍生自 [AsahiChan-Game/PalBossDPSBroadcast](https://github.com/AsahiChan-Game/PalBossDPSBroadcast)，詳細見 [NOTICE.md](NOTICE.md)。17 語言技能名稱表由 `tools/update_skill_names.ps1` 從 [PalDB Active Skills](https://paldb.cc/en/Active_Skills) 的遊戲本地化資料產生。本專案為獨立 Mod，與 Pocketpair、PalDB、Steam 或 UE4SS 無隸屬關係。
+
+## 問題回報 / Issue reports
+
+一般使用者可直接加入 [Discord「帕魯模組問題回報」](https://discord.gg/Swzj4UjejE)，也可使用本專案的 [GitHub Issues](https://github.com/paul800901/PalSkillDPSAnalyzer/issues)。請附模組名稱、Palworld 版本、模組版本、單人／多人／專用伺服器環境、重現步驟，以及相關 `UE4SS.log` 片段。請勿公開密碼、帳號資料或完整私人路徑。
+
+General users can join [Palworld Mod Issue Reports on Discord](https://discord.gg/Swzj4UjejE), or use this project's [GitHub Issues](https://github.com/paul800901/PalSkillDPSAnalyzer/issues). Include the mod name, Palworld version, mod version, single-player/multiplayer/dedicated-server environment, reproduction steps, and relevant `UE4SS.log` excerpts. Do not post passwords, account information, or full private paths.

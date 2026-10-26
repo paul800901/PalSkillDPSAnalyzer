@@ -1125,6 +1125,35 @@ function hud.new(options)
         return true
     end
 
+    function self:release_native_settings_widget(remove_from_parent)
+        local widget = self.native_settings_widget
+        if remove_from_parent == true and object_is_valid(widget) then
+            call_method(widget, "DeactivateWidget")
+            call_method(widget, "RemoveFromParent")
+        end
+        self.native_settings_widget = nil
+        self.native_settings_added = false
+    end
+
+    function self:add_native_settings_widget()
+        if not object_is_valid(self.native_settings_widget) then
+            return false, "settings widget unavailable"
+        end
+        local invoked, result = call_method(
+            self.native_settings_widget,
+            "AddToViewport",
+            10000
+        )
+        if not invoked then
+            return false, result
+        end
+        if result == false then
+            return false, "AddToViewport returned false"
+        end
+        self.native_settings_added = true
+        return true
+    end
+
     function self:native_widget(name)
         if not object_is_valid(self.native_settings_widget) then return nil end
         local widget_name = tostring(name or "")
@@ -1465,11 +1494,7 @@ function hud.new(options)
         self.settings_open = false
         self.settings_page = 0
         self:sync_input_lock(false)
-        if object_is_valid(self.native_settings_widget) and self.native_settings_added then
-            call_method(self.native_settings_widget, "DeactivateWidget")
-            call_method(self.native_settings_widget, "RemoveFromParent")
-        end
-        self.native_settings_added = false
+        self:release_native_settings_widget(self.native_settings_added)
         self.last_rendered_text = nil
         if self.waiting_reset then
             self:publish_waiting()
@@ -1583,25 +1608,34 @@ function hud.new(options)
             self:show_notice(self:text("hud_settings_unavailable"), 3)
             return false
         end
-        self.settings_open = true
         self.settings_page = 0
         self.gameplay_available = true
         self:write_external_state("", false)
-        local added = call_method(self.native_settings_widget, "AddToViewport", 10000)
+        local added, add_error = self:add_native_settings_widget()
+        if not added then
+            self.log("F3 settings AddToViewport failed; rebuilding once: " .. tostring(add_error))
+            self:release_native_settings_widget(true)
+            local recreated, recreate_error = self:ensure_native_settings_widget()
+            if recreated then
+                added, add_error = self:add_native_settings_widget()
+            else
+                add_error = recreate_error
+            end
+        end
         if not added then
             self.settings_open = false
-            self.log("F3 settings refused: AddToViewport failed")
+            self:release_native_settings_widget(true)
+            self:sync_input_lock(false)
+            self.log("F3 settings refused: AddToViewport failed: " .. tostring(add_error))
             self:show_notice(self:text("hud_settings_unavailable"), 3)
             return false
         end
-        self.native_settings_added = true
+        self.settings_open = true
         call_method(self.native_settings_widget, "ActivateWidget")
         if not self:sync_input_lock(true) then
             self.settings_open = false
-            call_method(self.native_settings_widget, "DeactivateWidget")
-            call_method(self.native_settings_widget, "RemoveFromParent")
-            self.native_settings_added = false
             self:sync_input_lock(false)
+            self:release_native_settings_widget(true)
             self.log("F3 settings refused: Palworld UI input mode could not be acquired")
             self:show_notice(self:text("hud_settings_unavailable"), 3)
             return false

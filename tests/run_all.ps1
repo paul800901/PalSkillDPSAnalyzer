@@ -374,6 +374,11 @@ $overlayErrors = $null
 if ($overlayErrors.Count -gt 0) { throw "Workshop external HUD PowerShell parse failed" }
 
 $windowsPowerShell = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+$lifecycleValidation = & $windowsPowerShell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+    -File (Join-Path $testDirectory "test_overlay_lifecycle.ps1")
+if ($LASTEXITCODE -ne 0 -or -not ($lifecycleValidation -match "HUD lifecycle tests passed")) {
+    throw "external HUD lifecycle/idle regression failed: $lifecycleValidation"
+}
 $v1Validation = & $windowsPowerShell -NoLogo -NoProfile -NonInteractive -STA -ExecutionPolicy Bypass `
     -File $overlayScript -StatePath $hudV1Fixture -ValidationMode
 if ($LASTEXITCODE -ne 0 -or -not ($v1Validation -match "view=text rows=0")) {

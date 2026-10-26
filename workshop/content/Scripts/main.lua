@@ -4933,11 +4933,15 @@ local function process_damage_event(event)
         )
         return
     end
-    -- The encounter type is selected explicitly in F3. Trainerless base
-    -- workers belong only to the tablet lane; field/dungeon tests cannot
-    -- silently absorb nearby base combat merely because the target is a Boss.
-    if source_origin == "base" and not hooks.is_tablet_profile(effective_target_scope) then
-        return
+    -- Both operator-facing Boss profiles accept verified same-guild base
+    -- workers. The internal "all" diagnostics lane can also observe non-Boss
+    -- targets, so keep a separate Boss gate there instead of letting a valid
+    -- base identity turn ordinary base combat into DPS data.
+    if source_origin == "base" and not hooks.is_boss_profile(effective_target_scope) then
+        local base_target_info = get_boss_info(event.defender, utility)
+        if base_target_info == nil then
+            return
+        end
     end
 
     local target_info = nil
